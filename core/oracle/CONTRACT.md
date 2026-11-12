@@ -118,7 +118,7 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `alpha_round@1` | 1 | an op whose alpha rounds to zero paints nothing | |
 | `mesh_fixed_point@1` | 3 | triangle corners rounded to 1/256 px before the sample test | |
 | `mesh_edge_ownership@1` | 3 | a sample on an edge belongs to one triangle | |
-| `point_blocks@1` | 3 | a point is CE's square block of whole pixels | |
+| `point_blocks@3` | 3 | a point is CE's square block of whole pixels (replaces @2; the change is stated in §3) | |
 | `cell_presence@1` | 4 | a path fragment covers a sample where its cell byte is not 0 | |
 | `guard_chords@1` | 4 | curves far beyond the frame drawn as chords | |
 | `curve_key@1` | 5 | the key along a curve's centreline | |
@@ -126,8 +126,8 @@ Elsewhere, Cairo's rules that this text relies on are restated in full.
 | `facing_plane@1` | 5 | camera-facing records and points keyed on the plane facing the camera | |
 | `stroke_on_own_fill@2` | 5 | a stroke at least as near as its own fill where both cover (replaces @1; the change is stated in §5) | |
 | `shared_plane_read@1` | 5 | a layer read on a shared identity's plane against what shares it | |
-| `band_input@2` | 6 | how far the input grid's snap may move a key (`S`) (replaces @1; the change is stated in §6) | |
-| `band_arith@2` | 6 | how far a conforming computation may stand from the exact key (`R`) (replaces @1; the change is stated in §6) | |
+| `band_input@3` | 6 | how far the input grid's snap may move a key (`S`) (replaces @2; the change is stated in §6) | |
+| `band_arith@4` | 6 | how far a conforming computation may stand from the exact key (`R`) (replaces @3; the change is stated in §6) | |
 | `own_layers@1` | 7 | a fill against its own strokes keeps paint order | ✓ |
 | `one_plane@1` | 7 | two fragments on one registered plane tie within the snap's term | ✓ |
 | `near_parallel@1` | 7 | two flat records whose input cannot fix their relative tilt tie | ✓ |
@@ -421,7 +421,7 @@ closed forms, and against the engine's `arachne.camera.projection` (screen boxes
 record's member `i` of a `t`-triangle prototype, it is `t i` plus that index. All the triangles of
 one mesh drawn form one **surface**, and they may merge into one unit (§9).
 
-**Point blocks (`point_blocks@1`).** For a `points` record's point `i`:
+**Point blocks (`point_blocks@3`).** For a `points` record's point `i`:
 
 - **Position.** It is placed and shown, mapped as a point cloud (§2), and truncated toward zero to
   the pixel `(X, Y)`.
@@ -458,8 +458,19 @@ one mesh drawn form one **surface**, and they may merge into one unit (§9).
     the rules above, but a verdict never depends on which way a rounding near a half-step went.
 - **Point blocks.**
   - A block pixel is `Yes` at every sample.
-  - Where a point's screen coordinate lies within `ε` of an integer, the block's pixels along that
-    side are `Either`. Its truncation can then move by a pixel.
+  - Let `ε' = ε + η max(|at|, ε)`, the screen shift widened by the margin `η` (§6) at the scale of
+    the move test's inputs. Where a point's screen coordinate lies within `ε'` of an integer, the
+    block's pixels along that side are `Either`. Its truncation can then move by a pixel. The
+    distance is read exactly, as `|at − round(at)|`, whatever `at ± ε'` rounds to.
+  - The candidate truncations along a side whose truncation can move run from
+    `trunc(next_down(at − ε'))` to `trunc(next_up(at + ε'))`, truncating toward zero as the
+    producer does. Along a side where no integer lies within `ε'`, the one candidate is `trunc(at)`.
+  - **Change from `point_blocks@1`.** @1 left the candidates to `trunc(at ± ε)`, which list one
+    truncation wherever `at ± ε` rounds to `at` itself, a coordinate within `ε` of an integer
+    included.
+  - **Change from `point_blocks@2`.** @2 compared the distance with `ε` alone, so a coordinate
+    clearing `ε` by less than the margin listed one truncation where the move is undecided. @3
+    compares it with `ε'` and lists the candidates out to `at ± ε'`.
 
 **Rejects:** a mesh triangle missing from the core's fragments at a sample farther than `m` inside
 it (witness W7, §12).
@@ -638,6 +649,9 @@ where `extent` is the widest of the points' extents along the axes:
   the centroid.
 - **Curve.** Otherwise none.
 
+An extent, or its square, that is not finite makes the record's plane unknown: its layers state no
+bound (`band_unbounded`, §6).
+
 The plane is fitted to the points as drawn: the axis plane through the first point, or the canonical
 plane of the chosen normal through the first point (or through the centroid, for `Nearest`).
 
@@ -651,7 +665,8 @@ plane of the chosen normal through the first point (or through the centroid, for
 - **The widest normal** is `far × (p − f)` with the largest length over the points, where `far` is
   the point (relative to `f`) farthest from `f`. On equal lengths, both picks take the last.
 - **Points somewhere.** A normal `n` **points somewhere** when
-  `|n| > max(1e-9 · extent², 4 · g · sqrt(0.75) · perimeter)`. Here `extent` is the points' widest
+  `|n| > max(1e-9 · extent², 4 · g · sqrt(0.75) · perimeter)` (an `extent²` that is not finite: the
+  plane is unknown, above). Here `extent` is the points' widest
   extent along an axis, `perimeter` is their closed polygon's length, and `g` is the snap grid (0
   where not snapped).
 - **When a plane holds.** Planarity's tests take `g = 0` and a perimeter of 0. A normal's plane
@@ -808,7 +823,8 @@ screen position is `map(p)`, and its key is `−factor(p_2)`.
 - **Segments.** A segment joins consecutive vertices within a subpath. Its error is the larger of
   its two vertices' errors. A segment with a non-finite coordinate or key is dropped. If none
   remains, the centreline is the zero-length segment at its first finite vertex. If there is no
-  finite vertex, every layer read on it has key `−∞`.
+  finite vertex, no layer read on it has a bounded key (band_unbounded, §6). A record whose
+  placement declares −∞ never reaches a centreline; §6 keys it −∞ directly.
 - **The read at a point `P`.** A layer of **body** `h` reads as follows. `h` is half the stroke's
   width in pixels, `w |xx| / 2`, and 0 for a fill.
   - For each segment `A → B`, the foot parameter is
@@ -895,14 +911,23 @@ For each fragment `f` at each read point (a sample `k`, or the pixel's centre fo
 oracle computes three things from XF:
 
 - `o_f(k)`, the key of §5's model;
-- `R_f(k)`, its arithmetic bound (`band_arith@2`);
-- `S_f(k) = (S⁻, S⁺)`, its input bound (`band_input@2`).
+- `R_f(k)`, its arithmetic bound (`band_arith@4`);
+- `S_f(k) = (S⁻, S⁺)`, its input bound (`band_input@3`).
 
 These give the fragment's **interval**:
 
     I_f(k) = [o − S⁻ − 3R,  o + S⁺ + 3R]
 
 The oracle never reads the core's reported error bounds to form `R` or `S`.
+
+The contract's arithmetic is binary64, with `u = 2^-53` ("Numbers"). `band_arith`'s inequalities
+are checked for every `u <= 2^-24`, as a margin beyond that. `lines@1`'s constant widening `2^-40`
+is claimed at binary64 only.
+
+The bounds count roundings relative to their results, so they assume every quantity they count
+lies in binary64's normal range or is exactly 0: a result in the subnormal range rounds by an
+absolute amount, which no count covers. A quantity that overflows is infinite or not a number, and
+the bound it feeds states none (Unbounded keys, below).
 
 ### Why the band has this shape
 
@@ -937,6 +962,19 @@ An infinite `ε` also bounds no presence. The mesh margin (§3) and the presence
 it as absence, and never as `Either`: every sample of the record within the window the oracle is
 asked to judge is `truth_unable`, class `band_unbounded`. A move of unbounded size can bring the
 record anywhere in the window, so no sample there is known to be clear of it.
+
+### The margin `η`
+
+The oracle decides with one fixed margin, `η = 2^-20`, taken relative to the magnitude of a
+decision's inputs, so that a decision whose inputs cancel is covered. A sign or comparison
+decision within `η` times its inputs' scale of its degenerate point reads as unable: `Either`, an
+infinite bound, or the decision's existing unable outcome. An upper-bound quotient is multiplied by
+`(1 + 2η)`. The oracle's rounding counts are in the hundreds of `u = 2^-53`. `η = 2^33 u`, so it
+leaves slack above `2^20` over counts in the hundreds and covers any count up to 4096; no quantity
+carries a count of its own. At coordinates up to 4096 px, `η` is about `4·10^-3` px, far below
+what a viewer sees: the margin costs a few more unable samples. It is taken at the key reach and
+the depth share (below), at a plane through three keyed corners (`R`), and at a point block's move
+test (§3).
 
 ### The snap's departure
 
@@ -977,19 +1015,23 @@ size and never leaves it unstated.
 
 ### What a move does to a key
 
-- **Key reach.** On a world plane `P`, `kr(P, δ) = δ / (|D_P| − δ)`, infinite where `|D_P| <= δ`.
+- **Key reach.** On a world plane `P`, `kr(P, δ) = δ / (|D_P| − δ) (1 + 2η)`, infinite where
+  `|D_P| − δ <= η (|D_P| + δ)`.
 - **Depth share.** Along the sight axis, for points at rotated depths `z_i`,
-  `ds(δ) = max_i δ / (d − z_i − δ)`, infinite where a denominator is not positive. Under the
-  exponential option it is `δ / (d − δ)`.
+  `ds(δ) = max_i δ / (d − z_i − δ) (1 + 2η)`, infinite where a denominator
+  `d − z_i − δ <= η (|d| + |z_i| + δ)`. Under the exponential option it is `δ / (d − δ) (1 + 2η)`,
+  infinite where `d − δ <= η (|d| + δ)`.
 - **Screen shift.** Take a point whose inputs move by `a_0`, `a_1` along the camera's first two
   axes, with factor `f` and factor share `σ`. For a projected point `q`,
   `x_k = |f z0| (1 + σ) a_k + |q_k| σ`; for a point not projected, `x_k = a_k`. Then:
-  - `ε(q) = hypot(|xx| x_0, |yy| y_0) (1 + 64u)`, infinite for an infinite `σ`;
+  - `ε(q) = hypot(|xx| x_0, |yy| y_0) (1 + 256u)`, infinite for an infinite `σ`. Counted by the
+    rule below from its inputs (`Δ`, `σ`, `f` with them), `ε` passes at most 63 roundings in the
+    order given and 69 in any other, which `(1 + 256u)` covers;
   - for a record, `ε` is the largest over its points, with `a_k = Δ(R_k)` and
     `σ = ds(Δ(R_2))` (`R_k` the rotation's rows, or the points' own axes for a record not
     projected).
 
-### `S`, the input bound, by key (`band_input@2`)
+### `S`, the input bound, by key (`band_input@3`)
 
 - **On a world plane `P`.** This covers a flat path's fill, any layer's row on its own plane, a flat
   triangle, and an unregistered plane. Read at the world point `x` on `P` under the read, the
@@ -1059,7 +1101,13 @@ size and never leaves it unstated.
   **Change from `band_input@1`.** @1 took the hull of the two intervals, which holds keys the nearer
   of two keys can never take.
 
-### `R`, the arithmetic bound, by key (`band_arith@2`)
+  **Change from `band_input@2`.** @2 took the key reach and the depth share infinite only where a
+  denominator as computed was not positive. @3 takes both under the margin `η` (above): infinite
+  where the denominator is within `η` of zero at its inputs' scale, and otherwise times `(1 + 2η)`.
+  It takes the screen shift times `(1 + 256u)`, which covers its count from its inputs, where @2
+  took `(1 + 64u)`.
+
+### `R`, the arithmetic bound, by key (`band_arith@4`)
 
 **General terms.**
 
@@ -1068,7 +1116,8 @@ size and never leaves it unstated.
 - A plane read at a pixel `(x, y)` adds its reading's rounding, `ρ = 4u (|a| + |b x| + |c y|)`,
   the largest of its values at the pixel's far corner `(x + 1, y + 1)` and at every point the
   read takes. A fringe read (`fringe_key@1`) takes the outline's nearest point, which may lie
-  outside the pixel.
+  outside the pixel. On a world plane keyed on screen, `ρ` is also the largest over the rounded
+  planes `gap` admits, since the other computation may hold either.
 - One `R` serves the whole pixel per fragment. For a curve, it is the largest over the 16 samples
   and the pixel's centre.
 
@@ -1101,16 +1150,17 @@ differ as follows, with `γ_j = j u / (1 − j u)`, infinite where `j u >= 1`:
 - **The point.** A conforming computation may take the centroid of the face's `N` points `p_i` as
   `Σ p_i / N` or as `p_0 + Σ (p_i − p_0) / N`, in any order. Either lies within
   `γ_{N+2} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` of the exact centroid along axis `k`.
-- **`E_k` and `δe`.** `R` takes `E_k = γ_{2N+64} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` and
+- **`E_k` and `δe`.** `R` takes `E_k = γ_{2N+90} (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N` and
   `δe = 2 Σ_k |û_k| E_k`, both 0 for every plane but a `Nearest` face's. `δe` bounds how far the
   two computations' offsets can differ, the share of their points and each offset's own bound
-  included. The other computation's offset bound is at most `ε = ε_e + 4u δe`. Why `γ_{2N+64}`
-  suffices where `γ_{N+2}` does not is stated with `(1 + 64u)`, below.
+  included. The other computation's offset bound is at most `ε = ε_e + 4u δe`. Why `γ_{2N+90}`
+  suffices where `γ_{N+2}` does not is stated with `(1 + 128u)`, below.
 - **`Dn`** is the nearest the other computation's `D` can stand: `(|D| − δe) − 2 dD` for a
   `Nearest` face, and `|D|` for every other plane. The two offsets differ by under `δe`, and each
   computation's `D` lies within its `dD` (as in `A`, below) of the exact `D` through its offset.
 
-`R = (1 + 64u) ((M + ρ) + ν)`, where `M` is the largest, at the region's four corners `(X, Y)`, of
+`R = (1 + 128u) ((M + ρ + O) + ν)`, where `O` is a `Nearest` face's outline departure (below; 0
+for every other key) and `M` is the largest, at the region's four corners `(X, Y)`, of
 `gap + 3A + C + shift`:
 
 - **`gap`** is the largest `|K_r(X, Y) − K_u(X, Y)| + 4u (terms of both reads)`, where `K_r` is the
@@ -1141,32 +1191,39 @@ differ as follows, with `γ_j = j u / (1 − j u)`, infinite where `j u >= 1`:
 - **`shift`** is `f ε / (Dn − ε)`. **Where `Dn <= ε`**, that is where `|D| <= ε + δe + 2 dD` on a
   `Nearest` face, the key may still form, but `R` is infinite: the fragment's samples are
   `truth_unable`, class `band_unbounded` (Unbounded keys, above).
-- **`(1 + 64u)`** covers the order of `R`'s own sum. Take `D`, `f`'s numerator, `|K_r − K_u|`, `Dn`
-  and `Dn − ε` as computed (their cancellation is what `A`, `2A` and `C` bound). Count the roundings
-  a quantity's inputs pass through: a sum's count is one more than its larger operand's, a product
-  or quotient's is its operands' counts plus one, and a square root's is one more than its
-  operand's.
+- **`(1 + 128u)`** covers the order of `R`'s own sum. Take `D`, `f`'s numerator, `|K_r − K_u|`,
+  `Dn` and `Dn − ε` as computed (their cancellation is what `A`, `2A` and `C` bound). Count the
+  roundings a quantity's inputs pass through: a sum's count is one more than its larger operand's,
+  a product or quotient's is its operands' counts plus one, and a square root's is one more than
+  its operand's. A count starts afresh at a quantity the contract widens by a stated factor, where
+  the derivation shows that factor covers the quantity's own count from its inputs over the stated
+  range of u, in the direction its use requires, with the widening's own evaluation counted and its
+  finite and infinite branches decided conservatively, or at a quantity the contract declares it
+  takes as computed. Every other quantity is counted from its inputs.
   - **Through `E_k`.** Every path from a point's coordinate through `E_k` to `R` passes at most
-    `N + 32` roundings in the order the formulas give. The longest runs through `E_k`'s first sum,
-    `δe`, `C`'s product, `M`, `ρ`, `ν` and the factor. With `n = N + 32`,
-    `γ_{2n} (1 − γ_n) = 2 γ_n`. So on every such path, `δe` as computed counts for at least
-    `4 γ_{N+32} G`, where `G = Σ_k |û_k| (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N`. The two
-    computations' offsets differ by at most `(2 γ_{N+2} + 8u (1 + γ_{N+2})) G`: the share of their
-    points, and each offset's own bound, `4u (1 + γ_{N+2}) G` at most. `4 γ_{N+32} G` covers that
-    wherever `γ_{2N+64}` is finite, that is wherever `(2N + 64) u < 1`. Outside that domain `δe` is
-    infinite, and so is `R`.
-  - **Every other term** reaches `R` through at most 27 roundings in the order the formulas give,
-    the factor's own included. The longest runs through `|eye|`, `dD`, `f dD`, `A`, `3A`, `M`, `ρ`
-    and `ν`. A conforming computation of the same terms, with any of their sums taken in another
-    order, passes each through at most 26. Since `(1 + 64u)(1 − γ_27) >= 1 + γ_26`, `R` stands
-    above every such evaluation.
+    `N + 45` roundings in the order the formulas give. The longest runs through `E_k`'s first sum,
+    the rest of `δe`'s own operations, `C`'s product, `M`, `ρ`, `O`'s sum, `ν` and the factor.
+    With `n = N + 45`, `γ_{2n} (1 − γ_n) = 2 γ_n`. So on every such path, `δe` as computed counts
+    for at least `4 γ_{N+45} G`, where `G = Σ_k |û_k| (Σ_i |p_ik − p_0k| + Σ_i |p_ik|) / N`. The
+    two computations' offsets differ by at most `(2 γ_{N+2} + 8u (1 + γ_{N+2})) G`: the share of
+    their points, and each offset's own bound, `4u (1 + γ_{N+2}) G` at most. `4 γ_{N+45} G` covers
+    that wherever `γ_{2N+90}` is finite, that is wherever `(2N + 90) u < 1`. Outside that domain
+    the face states no bound: the oracle computes no `δe`, and `R` is infinite.
+  - **Every other term** reaches `R` through at most 35 roundings in the order the formulas give,
+    the factor's own included. The longest runs through `|eye|`, `dD`, `f dD`, `A`, `3A`, `M`, `ρ`,
+    `O`'s sum and `ν`. A conforming computation of the same terms, with any of their sums taken in
+    another order, passes each through at most 35. Since `(1 + 128u)(1 − γ_35) >= 1 + γ_35` for
+    `u <= 2^-24`, `R` stands above every such evaluation.
+
+  The counts are derived in [`derivations/band_arith3-departure.md`](derivations/band_arith3-departure.md),
+  recounted from the code for `band_arith@4` in its last section.
 
 Why: `R` is compared with the core's own bound, which the core computes from its own plane (the
 contract test, below), so two conforming evaluations of one formula must stay within it. Stating
 the plane's order removes its last-bit differences the way pinning libm's `hypot` removes a
 library's (shared components, above). What stays unpinned is bounded where it arises: the
 unrounded key's evaluation (`2A`), the centroid (`δe`, `Dn` and `C`), the order of `R`'s own sum
-(`64u`) and the points a read takes (`ρ`).
+(`128u`) and the points a read takes (`ρ`).
 
 **Change from `band_arith@1`.** @1 left the plane's order unstated and took `ρ` at the far corner
 alone. It took `A` and `shift` at the computation's own `D`. Its rounding window let a `Nearest`
@@ -1175,6 +1232,20 @@ left every difference between conforming evaluations to `ν`. `ν` scales with t
 while the unrounded key's differences scale with the corner keys and `1/|D|`. On the `Nearest`
 fringe reads measured, a core's own bound stood `6·10^-14` to `1.05·10^-12` of itself above @1's
 `R`.
+
+**Change from `band_arith@2`.** @2 added a `Nearest` face's outline departure after the factor,
+so `(1 + 64u)` did not cover the roundings of the departure's own sum or of the sum it joins. @3
+takes it inside, as `O`, which moves the counts to 28 and 27 and `E_k` to `γ_{2N+66}`. @3 also
+takes the whole of `O`, and a world plane's `ρ`, over the rounded planes `gap` admits: @2 took only
+`gap_q` over them, though the other computation's flattening term and reading rounding move with
+the plane it holds. No verdict was computed under @2.
+
+**Change from `band_arith@3`.** @3 stated its counts, 28 and 27 and `N + 33` through `E_k`, from
+@2's counts with `O` added. Counted from the code by the rule above, they are 35 and 35, and
+`N + 45`. `(1 + 64u)` does not cover 35 and 35, and `(1 + 128u)` does. `E_k` moves to
+`γ_{2N+90}`, and its domain `(2N + 90) u < 1` is stated as a refusal: outside it the face states
+no bound. A plane through three keyed corners states no bound where its determinant lies within
+its own rounding or within the margin `η` (above).
 
 **A plane through three keyed corners.** With corner keys `d0`, `d1`, `d2` and corner bounds
 `err_i`, let `in = max err_i`:
@@ -1186,6 +1257,8 @@ fringe reads measured, a core's own bound stood `6·10^-14` to `1.05·10^-12` of
   `det = e1x e2y − e2x e1y`.
   - **`det` zero or not finite:** the plane is the constant `mean = ((d0 + d1) + d2) / 3`, with bound
     `spread + in + 4u |mean|`, where `spread` is the largest `|d_i − mean|`.
+  - **`det` within its rounding:** where `|det| <= max(d_det, η (|e1x e2y| + |e2x e1y|))`, with
+    `d_det` as below, the determinant's sign is not known and the plane states no bound.
   - **Otherwise:** with `g1 = d1 − d0` and `g2 = d2 − d0`, the bound is
     `in + max(d_b |e1x| + d_c |e1y|, d_b |e2x| + d_c |e2y|) + 3u (|d0| + |b x0| + |c y0|)`, where:
     - `d_det = 4u (|e1x e2y| + |e2x e1y|)`;
@@ -1207,13 +1280,15 @@ the point's factor, `(x, y, z)` its shown position, and `r = |z| + hypot(x, y) /
 The pixel's bound is the largest over the 16 samples and the centre. The own-fill adjustment is
 applied after it.
 
-**A `Nearest` face.** It is its plane's bound plus its outline's departure: the largest over its
-subpaths' points `q`, and each closed subpath's closing point read at its first point's position, of
+**A `Nearest` face.** Its `R` takes its outline's departure `O` inside the factor,
+`R = (1 + 128u) ((M + ρ + O) + ν)`. `O` is the largest, over the rounded planes `gap` admits (the
+other computation may hold either), of that plane's departure: the largest, over its subpaths'
+points `q` and each closed subpath's closing point read at its first point's position, of
 
     gap_q + ρ(q) + key_error(q) + 4u |k_q| + u gap_q,    gap_q = |plane(map(q)) − k_q|
 
-plus `hypot(b, c) · 0.1` for the flattening. `gap_q` is the largest over the rounded planes `gap`
-admits, as the other computation may hold either.
+plus `hypot(b, c) · 0.1` for the flattening, with `plane`, `ρ(q)`, `b` and `c` all taken on that
+rounded plane. For every other key, `O` is 0.
 
 **A stroke adjusted on its own fill.** As `stroke_on_own_fill@2` states.
 
@@ -1231,7 +1306,7 @@ under input motion, the test is as above. Where the fill's cover is `Either` (§
 when it lies within `2 R_f(k)` of the stroke's own unadjusted key or of the key it takes where both
 cover, `R_f(k)` being the bound `stroke_on_own_fill@2` states there, the larger of the two.
 
-Why: `band_input@2` and `stroke_on_own_fill@2` already admit both keys there, since the core may
+Why: `band_input@3` and `stroke_on_own_fill@2` already admit both keys there, since the core may
 keep the stroke's own key. A test naming one `o` would fail an outcome the contract admits. This
 closes a gap in the test's text and relaxes no bound.
 
@@ -1522,7 +1597,10 @@ where `scale` is the largest screen coordinate magnitude of the centreline's ver
 
       O⁺ = (σ̂ + (1 + 4u) max_P slide⁺(P) / L⁻)(1 + 2^-40)
 
-  infinite where `L⁻ = 0`.
+  infinite where `L⁻ = 0`. The widening `(1 + 2^-40)` covers `O⁺` as a whole: counted from its
+  inputs by §6's rule, `O⁺` passes at most 395 roundings in the order the formulas give and 419 in
+  any other, which `2^-40` covers at binary64. The contract certifies `O⁺`, and claims nothing for
+  `slide⁺` on its own.
 
 Why it bounds the core's share: each term is the core's own charge with every condition that
 lowers it dropped, at the oracle's values of the same quantities widened by their last bits; the
@@ -1611,6 +1689,17 @@ writes a set `E` of admitted edges, drawn from: weak (paint order), strong `a`-f
 
    These bullets are examples. The sentence above them is the rule, and any other pair whose keys
    are one computation in every scenario is an `ExactTie` too.
+
+   A read that is `curve_recut` (§6) is no bar to an `ExactTie`: two reads of one curve
+   computation (the same record inputs the curve key reads: shape content, placings, blend,
+   reveal, pre-projected points, depth space, fixed-orientation centre, kind and its face ends
+   and the stroke-width inputs; under one projection, frame map and line-width multiple; read at
+   one point) give one key bit for bit however input motion rebuilds the centreline, so the pair
+   is an `ExactTie` though a recut read's band is not bounded. This lifts `curve_recut` alone: a
+   read that is `truth_unable` for another class (`band_unbounded`, `pivot_unknown`) stays so.
+   The inputs that parenthesis names are the core's obligation: a curve's key reads no record
+   input beyond them, so a change to the core that makes it read another is a change to this
+   contract.
 3. **A pair that may share an identity with a record of no plane of its own, through a flat
    identity:** every edge (`one_plane@1`, above).
 4. **Otherwise**, `E` is the union, over every scenario of §5's pair-dependent reads that §7's sets
@@ -3424,8 +3513,8 @@ in the partition and shaped the identities of others". View C, drawn in this ord
   keyed planar. Its plane does not key: at its first corner,
   `|D| / (|m| |q − (0, 0, d)|) ≈ 5·10^-10`, under `min_cos = 10^-9`. So it is keyed on the screen
   plane through its corners and carries no identity.
-- `A`, an open line from `(1, −2.0625, 0)` to `(1, 2, 0)`, stroke white, width `0.5` (2 px).
-- `B`, an open line from `(1, −2.0625, −1)` to `(1, 2, −1)`, stroke blue, width `0.5`.
+- `B`, an open line from `(1, −2.0625, −1)` to `(1, 2, −1)`, stroke blue, width `0.5` (2 px).
+- `A`, an open line from `(1, −2.0625, 0)` to `(1, 2, 0)`, stroke white, width `0.5`.
 
 Pixel `(35, 32)` is covered by both strokes, whose centrelines lie at screen `x = 36` and
 `x ≈ 35.81`. `T` holds no fragment there in the core's report: its nominal triangle starts at
@@ -3434,11 +3523,15 @@ far from its triangle, but an `Either` fragment counts only where the report hol
 keys `−1`, `B` `−20/21 ≈ −0.9524`. Trace: `A` and `B` have no plane of their own. `T` is a flat
 registry-offered record that passes the width test with each of them: all three lie in `x = 1`,
 so their union is 0 wide. The pair may therefore share through a flat identity, and `E(A, B)` is every edge
-(`Policy(one_plane@1)`). Report: at its 16 samples, `A` in front of `B` by a strong relation.
-Expected: agreement. Rejects: requiring the third record to keep its identity. That leaves the pair
-to the axis rule on `x = 1`, where both lie with their first points equal: an `ExactTie` with `B`
-in front by paint order, and the report a `mismatch`. Margins: `L = 16.25` (`A`) and `≈ 15.48`
-(`B`) px, 0.25 and 0.52 px from their steps. `T` is a mesh, with no cubic.
+(`Policy(one_plane@1)`). Report: at its 16 samples, `B` in front of `A` by a strong relation.
+Expected: agreement. Rejects: requiring the third record to keep its identity. Then no flat identity
+is shared, but `T` still passes (1) with each, so the pair is not taken by the axis rule alone (as
+in `axis_rule_unless_attached`). Where both read their rows on `x = 1` at the sample, one
+computation, they admit the weak edge. Where each reads its own key, `A` (`−1`) is nearer than `B`
+(`−20/21`) by `1/21`, past both intervals and past `lines@1`'s term, whose shares are under `10^-6`
+on two lines of constant key. That leaves `E = {weak, strong A}`, both with `A` in front, as `A` is
+drawn after `B`, and the report a `mismatch`. Margins: `L = 16.25` (`A`) and `≈ 15.48` (`B`) px,
+0.25 and 0.52 px from their steps. `T` is a mesh, with no cubic.
 
 **`axis_rule_unless_attached`.** Set: §7, what may share admits, "Records with no plane of their
 own, by the axis rule alone ((3), and no flat record passes (1) with either)." With it, the
@@ -3802,7 +3895,8 @@ These are reported by class for a human to view, never counted as ties:
 - **Unbounded bands.** Samples whose band is unbounded (`band_unbounded`, §6). They are
   `truth_unable` per sample.
 - **Rebuilt centrelines.** Reads exposed to a change of a cubic's count or of a joint's join
-  (`curve_recut`, §6). They are `truth_unable` per sample.
+  (`curve_recut`, §6). They are `truth_unable` per sample, unless their pair is an `ExactTie`
+  (§7).
 - **Far gradient ends.** Gradient layers with an end or a pixel's point beyond the fit limit
   (`gradient_far_ends`, §9). They are `truth_unable` for that layer's pixels.
 - **Open label cases.** Samples counted `label_rule_open` (§10), only by its named cases: the

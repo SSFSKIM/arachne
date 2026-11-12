@@ -1,0 +1,6 @@
+{
+  "quantity": "order",
+  "pixel": [100, 32],
+  "samples": [1, 5, 9, 13],
+  "value": [{"slot": 0, "layer": "fill", "sub": 1}, {"slot": 1, "layer": "fill", "sub": 1}]
+}

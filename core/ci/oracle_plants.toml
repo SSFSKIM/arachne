@@ -1,7 +1,8 @@
 # The oracle's plants: each removes one check from the oracle's source, and names the tests
 # that must fail without it. core/ci/oracle_plants.py applies each in turn and restores the
 # source; nothing here is built. `item` is XF.md's apply check ("Where each check is made"),
-# or the contract section the check serves; `find` occurs exactly once in `file`.
+# the contract section the check serves, or FORMAT.md for the decisions file's readers; `find`
+# occurs exactly once in `file`.
 
 [[plant]]
 name = "apply-1"
@@ -418,6 +419,33 @@ replace = "corners.map(|p| p.map(|v| v * libm::ldexp(1.0, -e)))"
 red = ["lib::cover::tests::a_triangle_of_subnormal_corners_keeps_its_winding_and_its_inradius"]
 
 [[plant]]
+name = "mesh-margin-4px"
+item = "§3"
+check = "a mesh triangle's margin is ε + 1/256 px, no wider: a sample 2.96 px inside is Yes"
+file = "core/oracle/src/cover.rs"
+find = "crate::bound::max(eps[e], eps[(e + 1) % 3]) + 1.0 / 256.0"
+replace = "crate::bound::max(eps[e], eps[(e + 1) % 3]) + 4.0"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree", "cover::a_collinear_triangle_is_absent_past_its_segments_ends", "cover::a_triangle_whose_corners_coincide_is_absent_past_the_margin", "cover::a_mesh_sample_is_yes_beyond_the_margin_inside_and_either_within_it", "cover::a_triangle_with_corners_far_out_keeps_its_verdicts", "cover::the_guard_clips_a_triangle_at_65536_px", "cover::a_triangle_whose_corners_differ_past_binary64_keeps_its_winding"]
+
+[[plant]]
+name = "presence-band-plus-0.04"
+item = "§4"
+check = "the presence band μ is α + 2^-24 + μ_ε, no wider: a cell byte 8/255 off its area is refused"
+file = "core/oracle/src/cover.rs"
+find = "    alpha + storage + moved\n"
+replace = "    alpha + storage + moved + 0.04\n"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree", "cover::a_half_planes_cells_take_their_exact_areas", "cover::a_discs_coverage_is_its_area_within_the_flattening_tolerance"]
+
+[[plant]]
+name = "presence-band-plus-0.75"
+item = "§4"
+check = "the presence band μ is α + 2^-24 + μ_ε, no wider: a cell half covered is present"
+file = "core/oracle/src/cover.rs"
+find = "    alpha + storage + moved\n"
+replace = "    alpha + storage + moved + 0.75\n"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree", "cover::a_half_planes_cells_take_their_exact_areas", "cover::a_discs_coverage_is_its_area_within_the_flattening_tolerance"]
+
+[[plant]]
 name = "join-first-to-both"
 item = "§8"
 check = "each occurrence of a join key takes the next unused decision, not its first"
@@ -434,6 +462,24 @@ file = "core/oracle/src/joins.rs"
 find = "let d = *list.get(*next)?;"
 replace = "let d = *list.last()?;"
 red = ["stroke_fixtures::join_occurrences_each_occurrence_takes_its_own_decision"]
+
+[[plant]]
+name = "join-closing-last-byte"
+item = "§8"
+check = "a closed subpath's closing join takes its first cubic's join byte, not its last's"
+file = "core/oracle/src/joins.rs"
+find = "decision(joins.get(first_cubic).copied()),"
+replace = "decision(joins.get(last_cubic).copied()),"
+red = ["stroke_fixtures::join_closing_takes_the_first_cubics_byte", "lib::joins::tests::a_closed_subpaths_closing_join_takes_its_first_cubics_byte", "lib::joins::tests::a_skipped_first_cubic_still_decides_the_closing_join"]
+
+[[plant]]
+name = "guarded-seam-unjoined"
+item = "§8"
+check = "a guarded closed subpath's seam is stroked as a join, its last run's dash joined onto its first"
+file = "core/oracle/src/guard.rs"
+find = "let seam = sub.closed && runs.len() > 1"
+replace = "let seam = false && sub.closed && runs.len() > 1"
+red = ["stroke_fixtures::guarded_seam_strokes_the_seam_as_a_join", "lib::guard::tests::a_guarded_seam_joins_the_last_runs_dash_onto_the_first"]
 
 [[plant]]
 name = "dash-gap-off-entry"
@@ -532,7 +578,7 @@ check = "class_named_twice"
 file = "core/oracle/src/source.rs"
 find = "if !names.iter().all(|n| seen.insert(n.as_str())) {"
 replace = "if false && !names.iter().all(|n| seen.insert(n.as_str())) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-slot-named-twice"
@@ -541,7 +587,7 @@ check = "slot_named_twice"
 file = "core/oracle/src/source.rs"
 find = "let code = if rows.iter().any(|earlier| earlier.slot == slot) {"
 replace = "let code = if false && rows.iter().any(|earlier| earlier.slot == slot) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-slot-removed"
@@ -550,7 +596,7 @@ check = "slot_removed"
 file = "core/oracle/src/source.rs"
 find = "} else if d.remove.contains(&slot) {"
 replace = "} else if false && d.remove.contains(&slot) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-row-empty"
@@ -559,7 +605,7 @@ check = "row_empty"
 file = "core/oracle/src/source.rs"
 find = "} else if facing_group == 0 && row.paths.is_empty() {"
 replace = "} else if false && facing_group == 0 && row.paths.is_empty() {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-path-empty"
@@ -568,7 +614,7 @@ check = "path_empty"
 file = "core/oracle/src/source.rs"
 find = "} else if row.paths.iter().any(Vec::is_empty) {"
 replace = "} else if false && row.paths.iter().any(Vec::is_empty) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-class-out-of-range"
@@ -577,7 +623,25 @@ check = "class_out_of_range"
 file = "core/oracle/src/source.rs"
 find = ".any(|&(_, c)| c as usize >= names.len())"
 replace = ".any(|&(_, c)| false && c as usize >= names.len())"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
+
+[[plant]]
+name = "class-check-after-rows"
+item = "XF 1.5"
+check = "a section's class names are checked (class_named_twice) before any of its rows"
+file = "core/oracle/src/source.rs"
+find = "    let mut seen = std::collections::HashSet::new();\n    if !names.iter().all(|n| seen.insert(n.as_str())) {\n        return Err(Unread::Code(StreamCause::ClassNamedTwice));\n    }\n    let n = r.u32().map_err(truncated)?;\n    let mut rows: Vec<Row> = Vec::new();\n    for _ in 0..n {\n        let slot = r.u32().map_err(truncated)?;\n        let facing_group = r.u32().map_err(truncated)?;\n        let paths_n = r.u32().map_err(truncated)?;\n        let mut paths = Vec::new();\n        for _ in 0..paths_n {\n            let nodes = r.u32().map_err(truncated)?;\n            let mut path = Vec::new();\n            for _ in 0..nodes {\n                path.push((r.u32().map_err(truncated)?, r.u32().map_err(truncated)?));\n            }\n            paths.push(path);\n        }\n        let row = Row {\n            slot,\n            facing_group,\n            paths,\n        };\n        let code = if rows.iter().any(|earlier| earlier.slot == slot) {\n            Some(StreamCause::SlotNamedTwice)\n        } else if d.remove.contains(&slot) {\n            Some(StreamCause::SlotRemoved)\n        } else if facing_group == 0 && row.paths.is_empty() {\n            Some(StreamCause::RowEmpty)\n        } else if row.paths.iter().any(Vec::is_empty) {\n            Some(StreamCause::PathEmpty)\n        } else if row\n            .paths\n            .iter()\n            .flatten()\n            .any(|&(_, c)| c as usize >= names.len())\n        {\n            Some(StreamCause::ClassOutOfRange)\n        } else {\n            None\n        };\n        if let Some(code) = code {\n            return Err(Unread::Code(code));\n        }\n        rows.push(row);\n    }\n    Ok(Section { names, rows })\n"
+replace = "    let mut seen = std::collections::HashSet::new();\n    let twice = !names.iter().all(|n| seen.insert(n.as_str()));\n    let n = r.u32().map_err(truncated)?;\n    let mut rows: Vec<Row> = Vec::new();\n    for _ in 0..n {\n        let slot = r.u32().map_err(truncated)?;\n        let facing_group = r.u32().map_err(truncated)?;\n        let paths_n = r.u32().map_err(truncated)?;\n        let mut paths = Vec::new();\n        for _ in 0..paths_n {\n            let nodes = r.u32().map_err(truncated)?;\n            let mut path = Vec::new();\n            for _ in 0..nodes {\n                path.push((r.u32().map_err(truncated)?, r.u32().map_err(truncated)?));\n            }\n            paths.push(path);\n        }\n        let row = Row {\n            slot,\n            facing_group,\n            paths,\n        };\n        let code = if rows.iter().any(|earlier| earlier.slot == slot) {\n            Some(StreamCause::SlotNamedTwice)\n        } else if d.remove.contains(&slot) {\n            Some(StreamCause::SlotRemoved)\n        } else if facing_group == 0 && row.paths.is_empty() {\n            Some(StreamCause::RowEmpty)\n        } else if row.paths.iter().any(Vec::is_empty) {\n            Some(StreamCause::PathEmpty)\n        } else if row\n            .paths\n            .iter()\n            .flatten()\n            .any(|&(_, c)| c as usize >= names.len())\n        {\n            Some(StreamCause::ClassOutOfRange)\n        } else {\n            None\n        };\n        if let Some(code) = code {\n            return Err(Unread::Code(code));\n        }\n        rows.push(row);\n    }\n    if twice {\n        return Err(Unread::Code(StreamCause::ClassNamedTwice));\n    }\n    Ok(Section { names, rows })\n"
+red = ["refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused", "xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "last-offending-row"
+item = "XF 1.5"
+check = "the first row of a section that offends decides its code"
+file = "core/oracle/src/source.rs"
+find = "    let mut rows: Vec<Row> = Vec::new();\n    for _ in 0..n {\n        let slot = r.u32().map_err(truncated)?;\n        let facing_group = r.u32().map_err(truncated)?;\n        let paths_n = r.u32().map_err(truncated)?;\n        let mut paths = Vec::new();\n        for _ in 0..paths_n {\n            let nodes = r.u32().map_err(truncated)?;\n            let mut path = Vec::new();\n            for _ in 0..nodes {\n                path.push((r.u32().map_err(truncated)?, r.u32().map_err(truncated)?));\n            }\n            paths.push(path);\n        }\n        let row = Row {\n            slot,\n            facing_group,\n            paths,\n        };\n        let code = if rows.iter().any(|earlier| earlier.slot == slot) {\n            Some(StreamCause::SlotNamedTwice)\n        } else if d.remove.contains(&slot) {\n            Some(StreamCause::SlotRemoved)\n        } else if facing_group == 0 && row.paths.is_empty() {\n            Some(StreamCause::RowEmpty)\n        } else if row.paths.iter().any(Vec::is_empty) {\n            Some(StreamCause::PathEmpty)\n        } else if row\n            .paths\n            .iter()\n            .flatten()\n            .any(|&(_, c)| c as usize >= names.len())\n        {\n            Some(StreamCause::ClassOutOfRange)\n        } else {\n            None\n        };\n        if let Some(code) = code {\n            return Err(Unread::Code(code));\n        }\n        rows.push(row);\n    }\n    Ok(Section { names, rows })\n"
+replace = "    let mut rows: Vec<Row> = Vec::new();\n    let mut last = None;\n    for _ in 0..n {\n        let slot = r.u32().map_err(truncated)?;\n        let facing_group = r.u32().map_err(truncated)?;\n        let paths_n = r.u32().map_err(truncated)?;\n        let mut paths = Vec::new();\n        for _ in 0..paths_n {\n            let nodes = r.u32().map_err(truncated)?;\n            let mut path = Vec::new();\n            for _ in 0..nodes {\n                path.push((r.u32().map_err(truncated)?, r.u32().map_err(truncated)?));\n            }\n            paths.push(path);\n        }\n        let row = Row {\n            slot,\n            facing_group,\n            paths,\n        };\n        let code = if rows.iter().any(|earlier| earlier.slot == slot) {\n            Some(StreamCause::SlotNamedTwice)\n        } else if d.remove.contains(&slot) {\n            Some(StreamCause::SlotRemoved)\n        } else if facing_group == 0 && row.paths.is_empty() {\n            Some(StreamCause::RowEmpty)\n        } else if row.paths.iter().any(Vec::is_empty) {\n            Some(StreamCause::PathEmpty)\n        } else if row\n            .paths\n            .iter()\n            .flatten()\n            .any(|&(_, c)| c as usize >= names.len())\n        {\n            Some(StreamCause::ClassOutOfRange)\n        } else {\n            None\n        };\n        if let Some(code) = code {\n            last = Some(code);\n            continue;\n        }\n        rows.push(row);\n    }\n    if let Some(code) = last {\n        return Err(Unread::Code(code));\n    }\n    Ok(Section { names, rows })\n"
+red = ["refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused", "xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
 
 [[plant]]
 name = "xf15-slot-not-held"
@@ -586,7 +650,16 @@ check = "slot_not_held, apply's last check"
 file = "core/oracle/src/stream.rs"
 find = "if !set && !self.records.contains_key(&row.slot) {"
 replace = "if false && !set && !self.records.contains_key(&row.slot) {"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
+
+[[plant]]
+name = "slot-not-held-before-apply"
+item = "13"
+check = "apply's own checks come before slot_not_held, which is last"
+file = "core/oracle/src/stream.rs"
+find = "        self.check(d)?;\n        // 13. `slot_not_held`, last: a held row (for a slot the delta neither sets nor removes;\n        // the reader refused a removed one) whose slot the stream does not hold before the delta.\n        if let Some(s) = section {\n            for row in &s.rows {\n                let set = d.set.iter().any(|r| r.slot == row.slot);\n                if !set && !self.records.contains_key(&row.slot) {\n                    self.refused = Some((d.seq, StreamCause::SlotNotHeld));\n                    return Err(self.stream_refusal().expect(\"just refused\"));\n                }\n            }\n        }\n"
+replace = "        // 13. `slot_not_held`, last: a held row (for a slot the delta neither sets nor removes;\n        // the reader refused a removed one) whose slot the stream does not hold before the delta.\n        if let Some(s) = section {\n            for row in &s.rows {\n                let set = d.set.iter().any(|r| r.slot == row.slot);\n                if !set && !self.records.contains_key(&row.slot) {\n                    self.refused = Some((d.seq, StreamCause::SlotNotHeld));\n                    return Err(self.stream_refusal().expect(\"just refused\"));\n                }\n            }\n        }\n        self.check(d)?;\n"
+red = ["refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-sticky"
@@ -595,7 +668,7 @@ check = "a refused stream stays refused"
 file = "core/oracle/src/stream.rs"
 find = "self.refused = Some((w.seq, *cause));\n                Err(self.stream_refusal().expect(\"just refused\"))"
 replace = "Err(Refusal {\n                    stream: Some((w.seq, *cause)),\n                    ..Refusal::new(Reason::StreamRefused, \"not kept\")\n                })"
-red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused"]
+red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states", "xf15_fixtures::xf15_fixtures_a_refused_stream_stays_refused", "refusal_witnesses::a_refused_delta_refuses_what_its_code_says_and_valid_deltas_after_it_clear_nothing"]
 
 [[plant]]
 name = "xf15-held-row"
@@ -623,3 +696,1417 @@ file = "core/oracle/src/stream.rs"
 find = "            self.rules15 = true;\n"
 replace = ""
 red = ["xf15_fixtures::xf15_fixtures_read_as_xf_md_states"]
+
+[[plant]]
+name = "order-meet"
+item = "§7"
+check = "weak where the intervals meet"
+file = "core/oracle/src/order.rs"
+find = "        weak: a.lo() <= b.hi() && b.lo() <= a.hi(),\n"
+replace = "        weak: false,\n"
+red = ["order::the_nontransitive_triple_ties_its_neighbours_and_orders_its_ends", "order::intervals_that_only_touch_still_meet"]
+
+[[plant]]
+name = "order-own-layers"
+item = "§7"
+check = "own_layers@1 keeps paint order"
+file = "core/oracle/src/order.rs"
+find = "        if own_layers(fa, fb) {\n"
+replace = "        if false && own_layers(fa, fb) {\n"
+red = ["order::a_fill_and_its_own_stroke_keep_paint_order_whatever_their_keys", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "order-exact-tie"
+item = "§7"
+check = "two keys of minus infinity are an ExactTie"
+file = "core/oracle/src/order.rs"
+find = "            && x.o == f64::NEG_INFINITY\n            && y.o == f64::NEG_INFINITY\n"
+replace = "            && false\n            && x.o == f64::NEG_INFINITY\n            && y.o == f64::NEG_INFINITY\n"
+red = ["format_facts::each_strong_edge_names_how_it_is_read", "order::keys_of_minus_infinity_tie_exactly_and_meet_any_finite_key_by_depth"]
+
+[[plant]]
+name = "cycle-rank-ties"
+item = "§7"
+check = "cycle_rank@2: the later painted on equal wins"
+file = "core/oracle/src/order.rs"
+find = "(wins, paint(x))"
+replace = "(wins, std::cmp::Reverse(paint(x)))"
+red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order"]
+
+[[plant]]
+name = "cycle-rank-weak-yields"
+item = "§7"
+check = "cycle_rank@2: free of strong edges, so weak edges yield"
+file = "core/oracle/src/order.rs"
+find = ".filter(|&x| !left.iter().any(|&y| y != x && strong[y][x]))"
+replace = ".filter(|&x| !left.iter().any(|&y| y != x && front[y][x]))"
+red = ["order::a_cycle_through_a_weak_order_keeps_every_strong_order", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "band-s-world-plane"
+item = "§6"
+check = "S on a world plane: (|o| + R) kr(P, δ)"
+file = "core/oracle/src/keys.rs"
+find = "(o.abs() + r) * kr(w.big_d, delta)"
+replace = "0.0 * (o.abs() + r) * kr(w.big_d, delta)"
+red = ["closed_form_depth::two_planes_meeting_on_a_line_are_ordered_by_depth_off_a_tie_band_as_wide_as_s6_predicts"]
+
+[[plant]]
+name = "curve-key"
+item = "§5"
+check = "curve_key@1: the key along the centreline"
+file = "core/oracle/src/keys.rs"
+find = "                    let o = reads[k].key;\n"
+replace = "                    let o = 2.0 * reads[k].key;\n"
+red = ["closed_form_depth::a_stroke_crossing_a_surface_is_in_front_on_its_near_side_and_ties_only_at_the_crossing"]
+
+[[plant]]
+name = "curve-s-plus-0.06"
+item = "§6"
+check = "a curve's S is the keys within reach plus σ·max|k|, no wider: a line 1/19 nearer in key than a surface stays in front"
+file = "core/oracle/src/keys.rs"
+find = "let sp = crate::bound::max(hi - o, 0.0) + sigma * m;"
+replace = "let sp = crate::bound::max(hi - o, 0.0) + (sigma + 0.06) * m;"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree", "format_facts::each_strong_edge_names_how_it_is_read", "closed_form_depth::a_stroke_crossing_a_surface_is_in_front_on_its_near_side_and_ties_only_at_the_crossing", "pair_rules::a_path_s_row_on_a_shared_axis_plane_is_read_where_its_own_key_alone_would_order_the_pair", "pair_rules::an_axis_identity_whose_row_does_not_form_is_not_kept"]
+
+[[plant]]
+name = "order-strong-edge"
+item = "§7"
+check = "strong a-front only where min I_a < max I_b"
+file = "core/oracle/src/order.rs"
+find = "        a_front: a.lo() < b.hi(),\n"
+replace = "        a_front: true,\n"
+red = ["probes::every_class_probe_check_holds_in_the_oracle_s_admissible_orders"]
+
+[[plant]]
+name = "band-r-plane"
+item = "§6"
+check = "R of a world plane's key: the region's bound, rho and nu"
+file = "core/oracle/src/keys.rs"
+find = "let r = (1.0 + 128.0 * U) * (((r0 + rho) + extra) + nu(omax));"
+replace = "let r = 0.0 * ((1.0 + 128.0 * U) * (((r0 + rho) + extra) + nu(omax)));"
+red = ["contract::core_err_within_band"]
+
+[[plant]]
+name = "stroke-on-own-fill"
+item = "§5"
+check = "stroke_on_own_fill@2: the nearer of the stroke's and its fill's keys"
+file = "core/oracle/src/pairs.rs"
+find = "        next[s] = on_own_fill(own[s], fill[s], fill_cover[s] == 2);\n"
+replace = ""
+red = ["contract::core_err_within_band", "contract::core_err_within_band_on_the_named_reads"]
+
+[[plant]]
+name = "own-fill-stroke-either"
+item = "§6"
+check = "band_input@3: an adjusted stroke reaches its own far end where its fill's cover is Either, not where its own is"
+file = "core/oracle/src/pairs.rs"
+find = "next[s] = on_own_fill(own[s], fill[s], fill_cover[s] == 2);"
+replace = "next[s] = on_own_fill(own[s], fill[s], fill_cover[s] == 2 || stroke[s] == 2);"
+red = ["contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "colour-premultiply"
+item = "§9"
+check = "cairo_premultiply@1: each channel times the alpha"
+file = "core/oracle/src/colour.rs"
+find = "        short_byte(clamp01(c[0]) * a),\n"
+replace = "        short_byte(clamp01(c[0])),\n"
+red = ["colour::a_solid_is_premultiplied_as_cairo_quantises_it", "contract::core_colours_are_the_oracle_s"]
+
+[[plant]]
+name = "colour-shade-halved"
+item = "§9"
+check = "ce_shading@1: a negative shading term is halved"
+file = "core/oracle/src/colour.rs"
+find = "        delta *= 0.5;\n"
+replace = ""
+red = ["colour::a_corner_is_shaded_as_ce_s_get_shaded_rgb_shades_it", "contract::core_colours_are_the_oracle_s"]
+
+[[plant]]
+name = "colour-centroid"
+item = "§9"
+check = "ce_shading@1: read at the centroid of the samples covered"
+file = "core/oracle/src/decide.rs"
+find = "            vec![[sum[0] / n, sum[1] / n]]\n"
+replace = "            vec![point(yes[0])]\n"
+red = ["contract::core_colours_are_the_oracle_s"]
+
+[[plant]]
+name = "alpha-round"
+item = "§1"
+check = "alpha_round@1: an op whose alpha byte is 0 paints nothing"
+file = "core/oracle/src/draw.rs"
+find = "        .any(|r| alpha_short(r[3] * opacity) > 0xff)"
+replace = "        .any(|r| alpha_short(r[3] * opacity) > 0)"
+red = ["colour::at_the_alpha_band_s_edges_only_an_alpha_byte_above_zero_paints", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "lines-step-b"
+item = "§7"
+check = "lines@1 step⁺: B, the cubic collinear in place and key"
+file = "core/oracle/src/lines.rs"
+find = "        let b = crate::bound::max(1.0 + sh, 2.0) * (high - low + eps);\n"
+replace = "        let b = 0.0 * eps;\n"
+red = ["order::lines_straight_cubic_step_charges_at_least_the_core_s_step"]
+
+[[plant]]
+name = "lines-share-plus-0.1"
+item = "§7"
+check = "lines@1's share O⁺ is its slide over L⁻, no wider: two lines 1/19 apart in key read Depth"
+file = "core/oracle/src/lines.rs"
+find = "(self.sigma_hat + (1.0 + 4.0 * U) * slide / l_minus) * (1.0 + WIDEN)"
+replace = "(self.sigma_hat + (1.0 + 4.0 * U) * slide / l_minus) * (1.0 + WIDEN) + 0.1"
+red = ["format_facts::each_strong_edge_names_how_it_is_read", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree", "pair_rules::an_axis_identity_whose_row_does_not_form_is_not_kept"]
+
+[[plant]]
+name = "core-alpha-edge"
+item = "§1"
+check = "alpha_round@1 on the oracle's side of the core comparison"
+file = "core/oracle/src/draw.rs"
+find = "pub fn alpha_short(d: f64) -> u32 {\n"
+replace = "pub fn alpha_short(d: f64) -> u32 {\n    let d = d * 2.0;\n"
+red = ["contract::the_core_paints_at_the_alpha_band_s_edges_as_alpha_round_says", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "classes-walk-stops-at-cylinder"
+item = "§10"
+check = "label_classes@2 rule 3: the walk stops at the first cylinder"
+file = "core/oracle/src/label_classes.rs"
+find = "            Kind::Cylinder => return cylinder(path, at),\n"
+replace = ""
+red = ["label_classes::the_cylinder_rule_reads_a_cylinder_by_where_it_stands"]
+
+[[plant]]
+name = "classes-paths-disagree"
+item = "§10"
+check = "label_classes@2: paths that disagree are open"
+file = "core/oracle/src/label_classes.rs"
+find = "            Some(prev) if prev != o => return Outcome::Open(Cause::PathsDisagree),\n"
+replace = ""
+red = ["label_classes::a_record_s_paths_agree_or_it_is_open"]
+
+[[plant]]
+name = "format-provenance-one-plane"
+item = "§7"
+check = "a strong edge admitted through a flat identity is named as that, not as a shared plane's row read"
+file = "core/oracle/src/order.rs"
+find = "                    via: [Via::Flat; 2],"
+replace = "                    via: [Via::Row; 2],"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
+
+[[plant]]
+name = "format-provenance-row-read"
+item = "§7"
+check = "a strong edge some shared-plane scenario admits through its rows is not read as own-key"
+file = "core/oracle/src/order.rs"
+find = "                if ra.row.is_some() || rb.row.is_some() {\n                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {\n                        if strong {\n                            *v = Via::Row;"
+replace = "                if ra.row.is_some() || rb.row.is_some() {\n                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {\n                        if strong {\n                            *v = Via::Own;"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
+
+[[plant]]
+name = "format-provenance-axis-row-read"
+item = "§7"
+check = "a strong edge the axis rule admits through a path's row is not read as own-key"
+file = "core/oracle/src/order.rs"
+find = "                    tie_meet |= meet(&wa, &wb);\n                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {\n                        if strong {\n                            *v = Via::Row;"
+replace = "                    tie_meet |= meet(&wa, &wb);\n                    for (v, strong) in via.iter_mut().zip([e.a_front, e.b_front]) {\n                        if strong {\n                            *v = Via::Own;"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
+
+[[plant]]
+name = "format-offered-invisible"
+item = "§5"
+check = "the counterfactual sets offer the records that paint nothing"
+file = "core/oracle/src/decide.rs"
+find = "let with_invisible = (!extra.is_empty()).then("
+replace = "let with_invisible = (false && !extra.is_empty()).then("
+red = ["format_facts::the_edges_with_the_invisible_records_offered_admit_what_their_flat_identity_allows", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "format-zero-alpha-flag"
+item = "§1"
+check = "a zero-alpha mesh triangle is written flagged"
+file = "core/oracle/src/decide.rs"
+find = "flags: FLAG_ZERO_ALPHA,"
+replace = "flags: 0,"
+red = ["format_facts::a_mesh_triangle_whose_alpha_byte_is_0_is_written_flagged_with_no_rows", "cover::an_op_whose_alpha_rounds_to_zero_paints_nothing"]
+
+[[plant]]
+name = "exact-tie-axis-fills"
+item = "§7"
+check = "two fills on one axis plane read at the sample are an ExactTie"
+file = "core/oracle/src/order.rs"
+find = "                let one = ca.is_some() && ca == cb;"
+replace = "                let one = false;"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-drawn-otherwise"
+item = "§10"
+check = "every pair of a label drawn otherwise is open, cause label"
+file = "core/oracle/src/label.rs"
+find = "let d = if otherwise[l as usize] || sheet.ungrouped {"
+replace = "let d = if sheet.ungrouped {"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-ungrouped-open"
+item = "§10"
+check = "an ungrouped record kept facing the camera is an open sheet"
+file = "core/oracle/src/label.rs"
+find = "let d = if otherwise[l as usize] || sheet.ungrouped {"
+replace = "let d = if otherwise[l as usize] {"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-mesh-open"
+item = "§10"
+check = "a sheet drawn as a mesh is open, cause mesh"
+file = "core/oracle/src/label.rs"
+find = "        } else if sheet.mesh {\n"
+replace = "        } else if false {\n"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-folded"
+item = "§10"
+check = "two fills of a sheet holding one counted point leave the pair open, folded"
+file = "core/oracle/src/label.rs"
+find = "if fs.len() >= 2 && !sheets[sh].mesh {"
+replace = "if false {"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-disconnected"
+item = "§10"
+check = "sheets sharing their object and winding that both meet the label are open"
+file = "core/oracle/src/label.rs"
+find = "        } else if rules15\n            && sheet.winding != 0"
+replace = "        } else if false\n            && sheet.winding != 0"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-join-two-corners"
+item = "§10"
+check = "fills join at two shared corners"
+file = "core/oracle/src/label.rs"
+find = "cs[a].intersection(&cs[b]).count() >= 2"
+replace = "cs[a].intersection(&cs[b]).count() >= 99"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-surface-object-outermost"
+item = "§10"
+check = "a record's surface object is the outermost surface node of its first path"
+file = "core/oracle/src/label.rs"
+find = "            .rev()\n            .find(|&i| label_classes::path_outcome"
+replace = "            .find(|&i| label_classes::path_outcome"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-by-centre"
+item = "§10"
+check = "a sheet holding the label's centre is decided there"
+file = "core/oracle/src/label.rs"
+find = "    if stands.is_empty() {\n        return None;"
+replace = "    if true {\n        return None;"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-centre-on-edge"
+item = "§10"
+check = "the centre on a fill's outline, a horizontal edge included, is held"
+file = "core/oracle/src/label.rs"
+find = "!(inside(rings, c) || on_outline(rings, c))"
+replace = "!inside(rings, c)"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-insertion-at-points"
+item = "§10"
+check = "a qualifying sheet anchors the label only where it holds the order point"
+file = "core/oracle/src/label.rs"
+find = "                                } else if holds(f, p, r.cover[s]) {"
+replace = "                                } else if true {"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-genuine-straddle"
+item = "§10"
+check = "a sheet farther at some counted point does not qualify"
+file = "core/oracle/src/label.rs"
+find = "            Some(Stand::NotNearer) => return Decision::Not,"
+replace = "            Some(Stand::NotNearer) => {}"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-interval-open"
+item = "§10"
+check = "a point whose interval meets the label's leaves the pair open, interval"
+file = "core/oracle/src/label.rs"
+find = "            _ => open = true,"
+replace = "            _ => {}"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-run-one-centre"
+item = "§10"
+check = "an XF 1.4 label is a run of records with one carried centre"
+file = "core/oracle/src/label.rs"
+find = "Some(c) if last == Some(c) => {"
+replace = "Some(_) if last.is_some() => {"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-class-open"
+item = "§10"
+check = "a record whose class is open is counted under its class cause"
+file = "core/oracle/src/label.rs"
+find = "Class::Open(c) => (ROLE_OPEN, 0, class_code(c)),"
+replace = "Class::Open(_) => (ROLE_FRONT, 0, 0),"
+red = ["contract_mutation::mutation_source_witnesses_read_the_source_the_frame_holds"]
+
+[[plant]]
+name = "label-frame-draws-a-group"
+item = "§10"
+check = "a frame that draws no facing group is read as XF 1.4"
+file = "core/oracle/src/label.rs"
+find = "let rules15 = st.rules15 && st.order.iter().any(|e| group_of(e.slot) != 0);"
+replace = "let rules15 = st.rules15;"
+red = ["contract_mutation::mutation_source_witnesses_read_the_source_the_frame_holds"]
+
+[[plant]]
+name = "label-line-never-qualifies"
+item = "§10"
+check = "a line's parts never qualify"
+file = "core/oracle/src/label.rs"
+find = "                Outcome::Line => Class::Front,"
+replace = "                Outcome::Line => Class::Surface,"
+red = ["contract_mutation::mutation_source_witnesses_read_the_source_the_frame_holds"]
+
+[[plant]]
+name = "label-plate-model-named"
+item = "§10"
+check = "the label's own order is read through LABL, not as the plate model"
+file = "core/oracle/src/decide.rs"
+find = "    for (f, l) in fragments.iter_mut().zip(label_of) {\n        f.label = l;\n    }"
+replace = "    let _ = label_of;"
+red = ["contract_mutation::mutation_label_witnesses_on_the_core_s_own_report", "contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-window-qualifies-tile"
+item = "§10"
+check = "a window's label facts are qualified over the whole frame, not the window"
+file = "core/oracle/src/decide.rs"
+find = "if window == whole || !matches!(view.camera, Camera::ThreeD(_)) {"
+replace = "if true || !matches!(view.camera, Camera::ThreeD(_)) {"
+red = ["label_window::a_window_reads_the_whole_frames_qualification"]
+
+[[plant]]
+name = "plate-is-edges"
+item = "§10"
+check = "a label's pair carries the plate model's own edges, not PAIR's snapped sets"
+file = "core/oracle/src/pairs.rs"
+find = "let plate = if labelled[frags[i]] || labelled[frags[j]] {"
+replace = "let plate = if false && labelled[frags[i]] || labelled[frags[j]] && false {"
+red = ["judge::only_the_plate_models_own_order_is_named_label_plate_model"]
+
+[[plant]]
+name = "shared-scenario-needs-both-rows"
+item = "§5"
+check = "a shared scenario reads a fragment with no row by its own key"
+file = "core/oracle/src/order.rs"
+find = "if ra.row.is_some() || rb.row.is_some() {"
+replace = "if ra.row.is_some() && rb.row.is_some() {"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
+
+[[plant]]
+name = "gradient-alpha-max-only"
+item = "§10"
+check = "a gradient's alpha bound runs from its least stop, not its greatest alone"
+file = "core/oracle/src/decide.rs"
+find = "(lo.saturating_sub(1), hi.saturating_add(1))"
+replace = "(hi, hi)"
+red = ["label_alpha::a_gradient_whose_alpha_bound_holds_zero_and_a_positive_byte_straddles"]
+
+[[plant]]
+name = "gradient-alpha-not-widened"
+item = "§10"
+check = "a gradient's alpha bound is one level wider each way than its stops"
+file = "core/oracle/src/decide.rs"
+find = "(lo.saturating_sub(1), hi.saturating_add(1))"
+replace = "(lo, hi)"
+red = ["label_alpha::a_gradient_whose_alpha_bound_holds_zero_and_a_positive_byte_straddles"]
+
+[[plant]]
+name = "gradient-alpha-unknown"
+item = "§10"
+check = "an opaque gradient's alpha is bounded, never read as unknown"
+file = "core/oracle/src/decide.rs"
+find = "(lo.saturating_sub(1), hi.saturating_add(1))"
+replace = "(0, 255)"
+red = ["label_alpha::an_opaque_gradient_decides_as_a_solid_does"]
+
+[[plant]]
+name = "judge-order-from-itself"
+item = "§7"
+check = "a sample's reported order lists each fragment reported present there once"
+file = "core/oracle/tests/common/judge.rs"
+find = "    if listed != present {"
+replace = "    if false && listed != present {"
+red = ["judge::a_samples_order_is_a_permutation_of_its_present_fragments"]
+
+[[plant]]
+name = "label-join-winding"
+item = "§10"
+check = "fills join only where wound one way"
+file = "core/oracle/src/label.rs"
+find = "if wind[a] != 0 && wind[a] == wind[b] &&"
+replace = "if wind[a] != 0 &&"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-otherwise-by-outline"
+item = "§10"
+check = "a label drawn otherwise is read over the whole frame, not by its path outlines alone"
+file = "core/oracle/src/label.rs"
+find = "&& (otherwise[l as usize]"
+replace = "&& (false"
+red = ["contract_mutation::mutation_label_rule_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "label-ungrouped-uncounted"
+item = "§10"
+check = "an ungrouped record makes a pair with a label only where it holds a counted point"
+file = "core/oracle/src/label.rs"
+find = "Class::Open(c) => (ROLE_OPEN, 0, class_code(c)),"
+replace = "Class::Open(c) => (ROLE_OPEN, 0, class_code(c)),\n                        Class::Ungrouped => (ROLE_OPEN, PairCause::Label as u8, 0),"
+red = ["label_overlap::an_ungrouped_sliver_between_order_points_opens_no_sample"]
+
+[[plant]]
+name = "plate-tie-unread"
+item = "§10"
+check = "equal keys are a tie in the plate model, ordered by paint order"
+file = "core/oracle/src/order.rs"
+find = "        if a.o == b.o {\n            Plate::Tie"
+replace = "        if false {\n            Plate::Tie"
+red = ["judge::a_tied_line_painted_after_the_label_is_drawn_over_it_by_the_plate_model"]
+
+[[plant]]
+name = "plate-undetermined-admits-all"
+item = "§10"
+check = "a plate relation the keys do not establish names no deviation"
+file = "core/oracle/src/order.rs"
+find = "Plate::Undetermined => 0,"
+replace = "Plate::Undetermined => 7,"
+red = ["judge::a_plate_relation_the_keys_do_not_establish_names_no_deviation"]
+
+[[plant]]
+name = "preprojected-fit-on-shown"
+item = "§2"
+check = "a pre-projected path is fitted on its shown points put back by unproject"
+file = "core/oracle/src/keys.rs"
+find = "    let (how, plane) = planarity(&put_back, code, item.face);"
+replace = "    let put_back = item.world.clone();\n            let (how, plane) = planarity(&put_back, code, item.face);"
+red = ["key_rules::a_pre_projected_fill_is_fitted_on_its_points_put_back_by_unproject", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "fixed-points-front"
+item = "§5"
+check = "a fixed-orientation point block is keyed on its facing plane"
+file = "core/oracle/src/keys.rs"
+find = "            facing_model(pr, &map, *centre, delta_c)"
+replace = "            let _ = delta_c;\n            Model::NegInf"
+red = ["key_rules::a_fixed_orientation_point_block_is_keyed_on_its_facing_plane", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "preprojected-points-front"
+item = "§2"
+check = "a pre-projected point block is keyed in the camera's axes"
+file = "core/oracle/src/keys.rs"
+find = "if c.record.pre_projected.is_some() {"
+replace = "if false {"
+red = ["key_rules::a_pre_projected_point_block_is_keyed_in_the_camera_s_axes", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "axis-identity-unformed"
+item = "§5"
+check = "a path on axis planes alone keeps only the axis identities whose rows form"
+file = "core/oracle/src/keys.rs"
+find = "            axes.retain(|(k, _)| {\n                key_plane("
+replace = "            axes.retain(|(k, _)| {\n                true || key_plane("
+red = ["pair_rules::an_axis_identity_whose_row_does_not_form_is_not_kept", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "third-record-retains"
+item = "§7"
+check = "a flat record that keeps no identity still witnesses a shared one"
+file = "core/oracle/src/order.rs"
+find = "            self.offered[m].flat.is_some()\n                && (m == i || self.width_passes(m, i))"
+replace = "            self.offered[m].flat.is_some()\n                && self.offered[m].retains\n                && (m == i || self.width_passes(m, i))"
+red = ["pair_rules::a_flat_record_that_keeps_no_identity_still_witnesses_a_shared_one", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "attach-retains"
+item = "§7"
+check = "a flat record that keeps no identity still takes a record of no plane of its own out of the axis rule alone"
+file = "core/oracle/src/order.rs"
+find = ".any(|m| m != i && self.offered[m].flat.is_some() && self.width_passes(m, i))"
+replace = ".any(|m| m != i && self.offered[m].flat.is_some() && self.offered[m].retains && self.width_passes(m, i))"
+red = ["pair_rules::a_flat_record_that_keeps_no_identity_still_takes_a_line_out_of_the_axis_rule_alone", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "outside-hull-narrow"
+item = "§6"
+check = "a read outside a hull no wider than twice its tolerance is unbounded"
+file = "core/oracle/src/keys.rs"
+find = "let theta = if hull.width > 2.0 * tau {"
+replace = "let theta = if hull.width > 0.0 {"
+red = ["key_rules::a_row_read_outside_a_hull_no_wider_than_twice_its_tolerance_is_unbounded", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "const-bounds-unchecked"
+item = "§6"
+check = "a key whose bounds are not finite states no bound"
+file = "core/oracle/src/keys.rs"
+find = "            Model::Const { k, r, s, .. } => std::array::from_fn(|_| {\n                if !(s.is_finite() && r.is_finite()) {"
+replace = "            Model::Const { k, r, s, .. } => std::array::from_fn(|_| {\n                if false && !(s.is_finite() && r.is_finite()) {"
+red = ["key_rules::a_facing_key_whose_bounds_overflow_states_no_bound", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "planeless-self-witness"
+item = "§7"
+check = "a record with no plane of its own is no flat witness for itself"
+file = "core/oracle/src/order.rs"
+find = "        if i == j && self.offered[i].flat.is_some() {\n            return self.offered[i].retains;\n        }"
+replace = "        if i == j {\n            return true;\n        }"
+red = ["pair_rules::a_record_with_no_plane_of_its_own_is_no_flat_witness_for_itself", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "preprojected-pivot-unmoved"
+item = "§2"
+check = "a pre-projected pivot moves as the record's first point moved"
+file = "core/oracle/src/draw.rs"
+find = "Some((to, from)) => Pivot::At(std::array::from_fn(|k| c[k] + (to[k] - from[k]))),"
+replace = "Some(_) => Pivot::At(c),"
+red = ["key_rules::a_pre_projected_pivot_moves_as_the_record_s_first_point_moved", "key_rules::a_pre_projected_point_block_s_pivot_moves_as_its_first_point_moved", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "own-fill-meets-for-tied"
+item = "§5"
+check = "an adjusted stroke takes both bounds only where its keys are tied (§7)"
+file = "core/oracle/src/pairs.rs"
+find = "    let took = if tied(&o, &f) {\n"
+replace = "    let took = if o.lo() <= f.hi() && f.lo() <= o.hi() {\n"
+red = ["lib::pairs::tests::an_adjusted_stroke_takes_both_bounds_only_where_its_keys_are_tied"]
+
+[[plant]]
+name = "pivot-unknown-carried"
+item = "§2"
+check = "a pre-projected pivot with no first point to move it by states no key"
+file = "core/oracle/src/draw.rs"
+find = "                None => Pivot::Unknown,"
+replace = "                None => Pivot::At(c),"
+red = ["key_rules::a_pre_projected_pivot_with_no_first_point_to_move_by_states_no_bound"]
+
+[[plant]]
+name = "shared-skipped-without-rows"
+item = "§7"
+check = "two flat records that may share read the shared scenario though neither has a row"
+file = "core/oracle/src/order.rs"
+find = "            if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {"
+replace = "            if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) && (ra.row.is_some() || rb.row.is_some()) {"
+red = ["pair_rules::two_flat_triangles_that_may_share_tie_within_term_though_neither_has_a_row", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "shared-scenario-one-row"
+item = "§7"
+check = "two flat records that may share read the shared scenario though only one has a row"
+file = "core/oracle/src/order.rs"
+find = "if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) {"
+replace = "if ra_.flat.is_some() && rb_.flat.is_some() && self.may_share_flat(i, j) && ra.row.is_some() && rb.row.is_some() {"
+red = ["contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "may-share-width-plus-1.25"
+item = "§7"
+check = "two records may share a flat identity only when their width lower bound is within 2τ⁺: a line 1.08 from a square may not"
+file = "core/oracle/src/order.rs"
+find = "w <= 2.0 * crate::bound::max(a.tau_plus, b.tau_plus)"
+replace = "w <= 1.25 + 2.0 * crate::bound::max(a.tau_plus, b.tau_plus)"
+red = ["contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "near-parallel-may-always"
+item = "§7"
+check = "near_parallel@1 holds only within θ_A + θ_B: two faces 14° apart read Depth"
+file = "core/oracle/src/order.rs"
+find = "        high <= rhs + (high + 1.0) / 1_099_511_627_776.0\n"
+replace = "        true || high <= rhs + (high + 1.0) / 1_099_511_627_776.0\n"
+red = ["format_facts::each_strong_edge_names_how_it_is_read"]
+
+[[plant]]
+name = "exact-tie-own-unread"
+item = "§7"
+check = "two keys of one computation in every scenario are an ExactTie"
+file = "core/oracle/src/order.rs"
+find = "        let one = not_shared && ra.own_at.is_some() && ra.own_at == rb.own_at;"
+replace = "        let one = false;"
+red = ["pair_rules::two_keys_of_one_computation_in_every_scenario_are_an_exact_tie", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "own-keys-read-first"
+item = "§6"
+check = "an own read no scenario uses leaves the pair judged (curve_recut is per read)"
+file = "core/oracle/src/order.rs"
+find = "        for r in [ra, rb] {\n            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
+replace = "        ra.own?;\n        rb.own?;\n        for r in [ra, rb] {\n            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
+red = ["pair_rules::an_axis_only_pair_reads_no_own_key", "order::an_axis_only_pair_needs_no_own_read_but_a_fragment_with_no_bound_stays_unable", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "band-unbounded-per-read"
+item = "§6"
+check = "a fragment with no bounded key stays truth_unable whatever the pair reads"
+file = "core/oracle/src/order.rs"
+find = "Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown))"
+replace = "Err(u @ Unable::PivotUnknown)"
+red = ["order::an_axis_only_pair_needs_no_own_read_but_a_fragment_with_no_bound_stays_unable"]
+
+[[plant]]
+name = "unable-before-own-layers"
+item = "§6"
+check = "a fragment with no key stated is unable against its own record's other layer"
+file = "core/oracle/src/order.rs"
+find = "            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
+replace = "            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own\n                && !own_layers(fa, fb)\n            {"
+red = ["order::a_fragment_with_no_key_stated_is_unable_against_its_own_record_s_other_layer", "key_rules::a_pivot_with_no_move_leaves_its_record_s_layers_unable_against_each_other", "key_rules::a_record_whose_keys_have_no_bound_leaves_its_layers_unable_against_each_other"]
+
+[[plant]]
+name = "centre-key-computation"
+item = "§7"
+check = "two facing keys of one centre are one computation where the facing plane does not key"
+file = "core/oracle/src/keys.rs"
+find = "            Model::Const { at, .. } => Some(Computation::Centre(*at)),\n"
+replace = ""
+red = ["pair_rules::two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "centre-key-inputs"
+item = "§7"
+check = "equal facing keys of other centres are not one computation"
+file = "core/oracle/src/keys.rs"
+find = "            frame_centre: pr.c,\n            d: pr.d,\n            exponential: pr.exponential,\n            centre,\n"
+replace = "            frame_centre: pr.c,\n            d: pr.d,\n            exponential: pr.exponential,\n            centre: [0.0, 0.0, centre[2]],\n"
+red = ["pair_rules::two_facing_keys_of_one_centre_are_an_exact_tie_where_the_facing_plane_does_not_key", "contract_mutation::mutation_uncited_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "cycle-own-keys-completion"
+item = "§7"
+check = "cycle_rank@2: a choice whose own-key strong edges cycle is not a completion"
+file = "core/oracle/src/order.rs"
+find = "        if !cycles(&own) && rank(n, &front, &strong, &|i| paint(present[i])) == target {"
+replace = "        if rank(n, &front, &strong, &|i| paint(present[i])) == target {"
+red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order", "order::the_nontransitive_triple_admits_its_reversal_only_through_a_row_read_cycle", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "cycle-row-read-stays"
+item = "§7"
+check = "cycle_rank@2: a cycle through an edge read through a row stays"
+file = "core/oracle/src/order.rs"
+find = "                    own[i][j] = provenance & 3 == 0;"
+replace = "                    own[i][j] = true;"
+red = ["order::an_all_strong_cycle_through_a_row_read_is_ranked_by_wins_then_paint_order", "contract_mutation::mutation_uncited_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "own-fill-pixel-unable"
+item = "§5"
+check = "stroke_on_own_fill: an adjusted stroke whose pixel bound rests on an unable read is unable at the pixel"
+file = "core/oracle/src/pairs.rs"
+find = "    if let Some(u) = worst {"
+replace = "    if let Some(u) = None::<Unable> {"
+red = ["lib::pairs::tests::an_adjusted_stroke_whose_bound_rests_on_an_unable_read_is_unable_at_the_pixel", "pair_rules::an_adjusted_stroke_unable_at_a_pixel_is_unable_against_others_and_judged_against_its_fill"]
+
+[[plant]]
+name = "own-fill-pixel-scope"
+item = "§5"
+check = "stroke_on_own_fill: an adjusted stroke's pixel bound counts its own reads where the fill does not cover"
+file = "core/oracle/src/pairs.rs"
+find = "            .filter(|&s| stroke[s] != 0)\n            .filter_map(|s| next[s].err())"
+replace = "            .filter(|&s| adjusted[s])\n            .filter_map(|s| next[s].err())"
+red = ["lib::pairs::tests::an_adjusted_stroke_whose_bound_rests_on_an_unable_read_is_unable_at_the_pixel", "pair_rules::an_adjusted_stroke_is_unable_at_a_pixel_where_one_of_its_unadjusted_reads_is"]
+
+[[plant]]
+name = "own-fill-hull"
+item = "§6"
+check = "band_input@3: where both cover, an adjusted stroke ends at the nearer far end, not the hull's"
+file = "core/oracle/src/pairs.rs"
+find = "    let hi = if fill_either {\n        o.hi()\n    } else {\n        crate::bound::least([o.hi(), f.hi()], f64::INFINITY)\n    };"
+replace = "    let hi = o.hi().max(f.hi());"
+red = ["lib::pairs::tests::where_both_cover_an_adjusted_stroke_ends_at_the_nearer_far_end", "pair_rules::a_stroke_adjusted_on_its_own_fill_ends_at_the_nearer_far_end_where_both_cover", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "own-fill-either-far"
+item = "§6"
+check = "band_input@3: where the fill's cover is Either, an adjusted stroke reaches its own far end"
+file = "core/oracle/src/pairs.rs"
+find = "    let hi = if fill_either {\n        o.hi()\n    } else {\n        crate::bound::least([o.hi(), f.hi()], f64::INFINITY)\n    };"
+replace = "    let hi = o.hi().min(f.hi());"
+red = ["lib::pairs::tests::where_the_fill_s_cover_is_either_an_adjusted_stroke_reaches_its_own_far_end", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "own-fill-either-bound"
+item = "§5"
+check = "stroke_on_own_fill@2: where the fill's cover is Either, the larger of the stroke's own bound and the taken one"
+file = "core/oracle/src/pairs.rs"
+find = "    let r = if fill_either {\n        crate::bound::max(o.r, took)\n    } else {\n        took\n    };"
+replace = "    let r = took;"
+red = ["lib::pairs::tests::where_the_fill_s_cover_is_either_an_adjusted_stroke_takes_the_larger_bound"]
+
+[[plant]]
+name = "offered-provenance"
+item = "§7"
+check = "PAIR's offered edges carry their own provenance, read by cycle_rank@2 as the edges' is"
+file = "core/oracle/src/pairs.rs"
+find = "                        Ok(p) => (p.edges.bits(), p.provenance()),"
+replace = "                        Ok(p) => (p.edges.bits(), provenance),"
+red = ["format_facts::the_edges_with_the_invisible_records_offered_admit_what_their_flat_identity_allows"]
+
+[[plant]]
+name = "judge-band-status"
+item = "§6"
+check = "the judge takes truth_unable from a fragment's own BAND status, a pair or none"
+file = "core/oracle/tests/common/judge.rs"
+find = "            if let Some(name) = own.and_then(|b| unable_status(b.status[s])) {"
+replace = "            if let Some(name) = own.and(None::<&'static str>) {"
+red = ["judge::a_lone_fragment_whose_key_states_no_bound_is_unable_not_agreement", "contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "either-two-keys"
+item = "§6"
+check = "the soundness test of R passes a stroke's key over an Either fill within 2R of either key"
+file = "core/oracle/tests/contract.rs"
+find = "    let two = unadjusted.filter(|u| own.status[s] == 1 && u.status[s] == 1);"
+replace = "    let two = unadjusted.filter(|_| false);"
+red = ["contract::over_an_either_fill_a_stroke_s_key_passes_within_2r_of_either_key"]
+
+[[plant]]
+name = "unadjusted-row-written"
+item = "§5"
+check = "BAND writes an adjusted stroke's own key unadjusted where its fill's cover is Either"
+file = "core/oracle/src/pairs.rs"
+find = "            bands.push(band_row(x, y, r.fragment, 2, either, before));"
+replace = "            let _ = (either, before);"
+red = ["pair_rules::over_an_either_fill_an_adjusted_stroke_s_own_key_is_written_unadjusted"]
+
+[[plant]]
+name = "curve-recut-by-fragment"
+item = "§6"
+check = "a curve_recut read is unable per read: one record's own layers, reading no key, stay judged"
+file = "core/oracle/src/order.rs"
+find = "            if let Err(u @ (Unable::BandUnbounded | Unable::PivotUnknown)) = r.own {"
+replace = "            if let Err(u) = r.own {"
+red = ["pair_rules::an_adjusted_stroke_unable_at_a_pixel_is_unable_against_others_and_judged_against_its_fill", "order::a_fragment_with_no_key_stated_is_unable_against_its_own_record_s_other_layer"]
+
+[[plant]]
+name = "colour-unknown-opens-order"
+item = "§9"
+check = "a fragment whose colour is unknown (COLR kind 0) is still judged for its presence and order"
+file = "core/oracle/tests/common/judge.rs"
+find = "            // Its own key's status at the sample: a fragment with no key bounded is\n"
+replace = "            if d.colours[f as usize].kind == 0 {\n                return Verdict::Unable(\"band_unbounded\");\n            }\n            // Its own key's status at the sample: a fragment with no key bounded is\n"
+red = ["judge::a_fragment_whose_colour_is_unknown_is_still_judged_for_its_order"]
+
+[[plant]]
+name = "unbounded-only-where-reported"
+item = "§6"
+check = "an unbounded fragment is truth_unable at every sample of the window, whether reported or not"
+file = "core/oracle/tests/common/judge.rs"
+find = "        .any(|f| f.flags & FLAG_UNBOUNDED != 0 && inside(f.bbox))\n"
+replace = "        .any(|f| {\n            f.flags & FLAG_UNBOUNDED != 0\n                && inside(f.bbox)\n                && rep.entries.iter().any(|e| e.identity == (f.object, f.part, f.layer, f.sub) && e.cells[s] > 0)\n        })\n"
+red = ["judge::an_unbounded_fragment_is_unable_at_every_sample_whether_reported_or_not"]
+
+[[plant]]
+name = "one-colour-rows-solid"
+item = "§9"
+check = "an unshaded layer whose rows are all one colour is that solid (COLR kind 1)"
+file = "core/oracle/src/decide.rs"
+find = "                        Some(r) if one_colour(r) && !p.shaded => {"
+replace = "                        Some(r) if r.len() == 1 && !p.shaded => {"
+red = ["colour::a_layer_whose_rows_are_one_colour_is_that_solid"]
+
+[[plant]]
+name = "curve-key-computation"
+item = "§7"
+check = "two strokes of one curve read at one point are one computation"
+file = "core/oracle/src/keys.rs"
+find = "            Model::Curve { of, .. } => Some(Computation::Curve(of.clone(), p)),\n"
+replace = ""
+red = ["pair_rules::two_strokes_of_one_curve_read_at_one_point_are_an_exact_tie"]
+
+[[plant]]
+name = "curve-key-inputs"
+item = "§7"
+check = "a curve's computation is named by its body too: two layers of one record input, of two widths, are not one"
+file = "core/oracle/src/keys.rs"
+find = "            shown: item.shown.clone(),\n            h,\n"
+replace = "            shown: item.shown.clone(),\n            h: 0.0,\n"
+red = ["pair_rules::equal_bodies_of_other_stroke_widths_are_not_one_computation"]
+
+[[plant]]
+name = "uncovered-fills-join"
+item = "§10"
+check = "a fill that covers no pixel of the frame still joins its object's sheets"
+file = "core/oracle/src/decide.rs"
+find = "            uncovered.push((fragment, depth.model, spec));\n"
+replace = ""
+red = ["label_sheets::a_fill_outside_the_frame_joins_the_sheets_it_shares_corners_with"]
+
+[[plant]]
+name = "pivot-path-carried-precision"
+item = "§6"
+check = "a pre-projected path's facing key at its pivot takes the carried centre's precision"
+file = "core/oracle/src/keys.rs"
+find = "                    let delta_c = carried_centre_delta(&cam, g);\n"
+replace = "                    let delta_c = 0.0;\n"
+red = ["key_rules::a_pre_projected_pivot_s_facing_key_takes_its_carried_centre_s_precision"]
+
+[[plant]]
+name = "pivot-block-carried-precision"
+item = "§6"
+check = "a pre-projected point block's facing key at its pivot takes the carried centre's precision"
+file = "core/oracle/src/keys.rs"
+find = "                facing_model(&cam, &map, pivot, carried_centre_delta(&cam, g))\n"
+replace = "                facing_model(&cam, &map, pivot, 0.0)\n"
+red = ["key_rules::a_pre_projected_pivot_s_facing_key_takes_its_carried_centre_s_precision"]
+
+[[plant]]
+name = "zero-length-segment-keys"
+item = "§6"
+check = "a zero-length segment within reach gives K both its ends' keys"
+file = "core/oracle/src/centreline.rs"
+find = "                    (0.0, 1.0)\n"
+replace = "                    (0.0, 0.0)\n"
+red = ["lib::centreline::tests::a_zero_length_segment_within_reach_gives_both_its_ends_keys"]
+
+[[plant]]
+name = "axis-triangles-own-keys"
+item = "§7"
+check = "two mesh triangles on one axis plane have no rows and are read on their own keys"
+file = "core/oracle/src/order.rs"
+find = "            if self.axis_shared(i, j) && (ra_.path || rb_.path) {\n                if ra_.path && rb_.path {\n"
+replace = "            if self.axis_shared(i, j) {\n                if ra_.path == rb_.path {\n"
+red = ["pair_rules::mesh_triangles_on_one_axis_plane_are_read_on_their_own_keys"]
+
+[[plant]]
+name = "world-key-rounding-settled"
+item = "§7"
+check = "a world plane whose rounding is not settled names no one computation"
+file = "core/oracle/src/keys.rs"
+find = "        rounded: (conforming.len() == 1).then(|| conforming[0]),\n"
+replace = "        rounded: conforming.first().copied(),\n"
+red = ["pair_rules::equal_screen_keys_of_planes_whose_rounding_is_not_settled_are_not_one_computation"]
+
+[[plant]]
+name = "world-key-rounded-plane"
+item = "§7"
+check = "a world plane whose rounding is settled still names one computation"
+file = "core/oracle/src/keys.rs"
+find = "        rounded: (conforming.len() == 1).then(|| conforming[0]),\n"
+replace = "        rounded: None,\n"
+red = ["pair_rules::equal_screen_keys_of_planes_whose_rounding_is_not_settled_are_not_one_computation"]
+
+[[plant]]
+name = "axis-path-triangle-row"
+item = "§7"
+check = "a path and a mesh triangle on one axis plane read the path's row against the triangle's key, never weak alone"
+file = "core/oracle/src/order.rs"
+find = "                if ra_.path && rb_.path {\n"
+replace = "                if ra_.path || rb_.path {\n"
+red = ["pair_rules::a_path_and_a_mesh_triangle_on_one_axis_plane_read_the_path_s_row_against_the_triangle_s_key"]
+
+[[plant]]
+name = "axis-rule-own-scenario"
+item = "§7"
+check = "two paths with no plane of their own on one axis plane, attached to no flat record, are an ExactTie by the axis rule alone, with no own-key scenario"
+file = "core/oracle/src/order.rs"
+find = "                if !(self.attaches_somewhere(i) || self.attaches_somewhere(j)) {"
+replace = "                if false && !(self.attaches_somewhere(i) || self.attaches_somewhere(j)) {"
+red = ["contract_mutation::mutation_read_path_witnesses_fail_and_their_twins_agree", "contract_mutation::mutation_depth_witnesses_fail_and_their_twins_agree"]
+
+[[plant]]
+name = "crop-fragment-by-pixel"
+item = "§10"
+check = "a window's LABL rows name the fragment present at their own pixel, a point block's candidates sharing a sub included"
+file = "core/oracle/src/decide.rs"
+find = "            .find(|(_, b)| (b[0]..b[2]).contains(&x) && (b[1]..b[3]).contains(&y))\n"
+replace = "            .find(|(_, b)| x < 0 && y < 0 && b[0] < 0)\n"
+red = ["label_window::a_window_s_label_rows_name_the_fragments_present_where_they_stand"]
+
+[[plant]]
+name = "judge-unable-present-pairs"
+item = "§7"
+check = "only a pair of fragments the report holds present decides an unable verdict"
+file = "core/oracle/tests/common/judge.rs"
+find = "            label == LABEL_UNABLE && order.contains(&a) && order.contains(&b)\n"
+replace = "            label == LABEL_UNABLE && (a, b) != (u32::MAX, u32::MAX)\n"
+red = ["judge::an_either_fragment_left_out_of_the_report_is_absent_from_its_pairs"]
+
+[[plant]]
+name = "judge-label-rows-present"
+item = "§7"
+check = "only the label rows of fragments the report holds present open a sample"
+file = "core/oracle/tests/common/judge.rs"
+find = "                && order.contains(&r.fragment)\n                && order\n"
+replace = "                && order\n"
+red = ["judge::an_either_fragment_left_out_of_the_report_opens_no_label_pair"]
+
+[[plant]]
+name = "measure-own-status-unable"
+item = "§6"
+check = "the open share counts a fragment truth_unable by its own key, a pair or none"
+file = "core/oracle/tests/contract.rs"
+find = "                if let Some(n) = own.and_then(|st| match st {\n"
+replace = "                if let Some(n) = own.filter(|_| false).and_then(|st| match st {\n"
+red = ["contract::a_fragment_whose_key_states_no_bound_is_counted_unjudged_with_a_pair_or_none"]
+
+[[plant]]
+name = "measure-unbounded-everywhere"
+item = "§6"
+check = "the open share counts an unbounded fragment at every sample of the window, rows or none"
+file = "core/oracle/tests/contract.rs"
+find = "    m.samples += beyond.len();\n"
+replace = "    beyond.clear();\n    m.samples += beyond.len();\n"
+red = ["contract::a_fragment_whose_key_states_no_bound_is_counted_unjudged_with_a_pair_or_none"]
+
+[[plant]]
+name = "measure-completion-search"
+item = "§7"
+check = "the open share counts the completion bound only where the reported order needs the search"
+file = "core/oracle/tests/contract.rs"
+find = "                && reports.get(&(x, y)).is_some_and(|r| {\n"
+replace = "                && reports.get(&(x, y)).is_none_or(|r| r.x == r.x || {\n"
+red = ["contract::the_completion_bound_is_counted_only_where_the_reported_order_needs_the_search"]
+
+[[plant]]
+name = "judge-kind-unknown-anchor"
+item = "§10"
+check = "a kind-unknown fragment is read as an anchor and not, however many there are"
+file = "core/oracle/tests/common/judge.rs"
+find = "            || (place > anchored && role(l, others[place - 1]) == Some(ROLE_KIND_UNKNOWN));\n"
+replace = "            || (place > anchored && role(l, others[place - 1]) == Some(ROLE_ANCHOR));\n"
+red = ["judge::a_label_among_many_kind_unknown_faces_is_judged_however_many_they_are"]
+
+[[plant]]
+name = "axis-mixed-own-key"
+item = "§5"
+check = "a path is read on its row for the axis plane it shares with a mesh triangle, never its own key"
+file = "core/oracle/src/order.rs"
+find = "                    let read = |r: &Reads| r.axis_row.unwrap_or(r.own);\n"
+replace = "                    let read = |r: &Reads| r.own;\n"
+red = ["pair_rules::a_path_s_row_on_a_shared_axis_plane_is_read_where_its_own_key_alone_would_order_the_pair"]
+
+[[plant]]
+name = "curve-key-placings"
+item = "§7"
+check = "a curve's computation is named by its record's placings: equal shown points placed from another shape are not one"
+file = "core/oracle/src/keys.rs"
+find = "            placings: item.common.placings.clone(),\n"
+replace = "            placings: Vec::new(),\n"
+red = ["pair_rules::equal_shown_points_placed_from_another_shape_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-blend-t"
+item = "§7"
+check = "curve_key@1: a curve's computation is named by its blend's t, held in its placings' weights and its signed blend_t: equal shown points blended at another t are not one"
+file = "core/oracle/src/keys.rs"
+find = "            placings: item.common.placings.clone(),\n            blend_t: rec.geometry.blend.as_ref().map(|b| b.t),\n"
+replace = "            placings: item.common.placings.iter().map(|p| Placing { weight: 0.0, ..p.clone() }).collect(),\n            blend_t: None,\n"
+red = ["pair_rules::equal_shown_points_blended_at_another_t_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-reveal"
+item = "§7"
+check = "a curve's computation is named by its reveal window: equal shown points under another window are not one"
+file = "core/oracle/src/keys.rs"
+find = "            reveal: rec.geometry.reveal,\n"
+replace = "            reveal: None,\n"
+red = ["pair_rules::equal_shown_points_under_a_full_reveal_window_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-space"
+item = "§7"
+check = "a curve's computation is named by its depth space: equal shown points of another space are not one"
+file = "core/oracle/src/keys.rs"
+find = "            space: rec.depth.space,\n"
+replace = "            space: Space::World,\n"
+red = ["pair_rules::equal_shown_points_of_another_depth_space_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-widths"
+item = "§7"
+check = "a curve's computation is named by its stroke-width inputs: one body of other widths is not one"
+file = "core/oracle/src/keys.rs"
+find = "            widths: [rec.paint.stroke_width, rec.paint.background_stroke_width],\n"
+replace = "            widths: [0.0; 2],\n"
+red = ["pair_rules::equal_bodies_of_other_stroke_widths_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-paint-blend"
+item = "§7"
+check = "a curve's computation is named by a paint blend's widths and mix: one body under a paint blend is not one"
+file = "core/oracle/src/keys.rs"
+find = "                .map(|b| [b.stroke_width, b.background_stroke_width, rec.paint.mix]),\n"
+replace = "                .and(None::<[f64; 3]>),\n"
+red = ["pair_rules::equal_bodies_of_other_stroke_widths_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-pre-projected-shape"
+item = "§7"
+check = "a pre-projected curve's computation is named by its record's own shape: equal tails of other shapes are not one"
+file = "core/oracle/src/keys.rs"
+find = "                .map(|t| (t.points, rec.geometry.shape_a, rec.geometry.place_a)),\n"
+replace = "                .map(|t| (t.points, None, rec.geometry.place_a)),\n"
+red = ["pair_rules::equal_tails_of_pre_projected_records_of_other_shapes_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-pre-projected"
+item = "§7"
+check = "a curve's computation is named by its pre-projected tail: a pre-projected record and a projected one at equal points are not one"
+file = "core/oracle/src/keys.rs"
+find = "            pre_projected: rec\n                .pre_projected\n                .as_ref()\n                .map(|t| (t.points, rec.geometry.shape_a, rec.geometry.place_a)),\n"
+replace = "            pre_projected: None,\n"
+red = ["pair_rules::a_pre_projected_record_and_a_projected_one_at_equal_points_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-kind"
+item = "§7"
+check = "a curve's computation is named by its record's kind: a path and a face group of one face at equal points are not one"
+file = "core/oracle/src/keys.rs"
+find = "            kind: rec.kind,\n"
+replace = "            kind: RecordKind::Path,\n"
+red = ["pair_rules::a_path_and_a_face_group_of_one_face_at_equal_points_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-face-ends"
+item = "§7"
+check = "a curve's computation is named by its face group's face ends"
+file = "core/oracle/src/draw.rs"
+find = "                            faces.face_ends.as_slice().into(),\n"
+replace = "                            faces.face_ends[..0].into(),\n"
+red = ["pair_rules::face_groups_of_one_run_under_other_face_lists_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-face-widths"
+item = "§7"
+check = "a curve's computation is named by its face group's face widths"
+file = "core/oracle/src/draw.rs"
+find = "                            faces.face_widths.as_slice().into(),\n"
+replace = "                            faces.face_widths[..0].into(),\n"
+red = ["pair_rules::face_groups_of_one_run_under_other_face_lists_are_not_one_computation"]
+
+[[plant]]
+name = "curve-key-centre-pin"
+item = "§5"
+check = "a record kept facing its centre is keyed by its facing plane, never along its curve"
+file = "core/oracle/src/keys.rs"
+find = "            return none(facing_model(pr, &map, *centre, delta_c));\n        }\n        (_, true) => {\n"
+replace = "            let _ = (centre, delta_c);\n        }\n        (_, true) => {\n"
+red = ["pair_rules::a_record_kept_facing_its_centre_never_reaches_a_curve_key"]
+
+[[plant]]
+name = "recut-exact-tie"
+item = "§7"
+check = "a curve_recut read is no bar to an ExactTie where both reads are one computation"
+file = "core/oracle/src/order.rs"
+find = "        let one = not_shared && ra.own_at.is_some() && ra.own_at == rb.own_at;\n"
+replace = "        let one = not_shared && ra.own_at.is_some() && ra.own_at == rb.own_at && ra.own.is_ok() && rb.own.is_ok();\n"
+red = ["order::a_recut_read_of_one_curve_computation_is_an_exact_tie_and_of_another_stays_unable", "pair_rules::recut_reads_of_one_curve_computation_are_an_exact_tie_and_of_two_stay_unable"]
+
+[[plant]]
+name = "recut-exact-tie-identity"
+item = "§7"
+check = "a recut read's ExactTie needs every input of the curve's computation equal: one dropped, two computations pass for one"
+file = "core/oracle/src/keys.rs"
+find = "            widths: [rec.paint.stroke_width, rec.paint.background_stroke_width],\n"
+replace = "            widths: [0.0; 2],\n"
+red = ["pair_rules::recut_reads_of_one_curve_computation_are_an_exact_tie_and_of_two_stay_unable"]
+
+
+[[plant]]
+name = "band-arith-factor"
+item = "§6"
+check = "band_arith@4: R's sum under (1 + 128u), the factor removed"
+file = "core/oracle/src/keys.rs"
+find = "let r = (1.0 + 128.0 * U) * (((r0 + rho) + extra) + nu(omax));"
+replace = "let r = ((r0 + rho) + extra) + nu(omax);"
+red = ["band_arith::a_plane_reads_r_as_its_terms_summed_in_order_under_one_factor"]
+
+[[plant]]
+name = "band-arith-departure-inside"
+item = "§6"
+check = "band_arith@4: a Nearest face's departure O inside the factor, added after it as @2 had it"
+file = "core/oracle/src/keys.rs"
+find = "let r = (1.0 + 128.0 * U) * (((r0 + rho) + extra) + nu(omax));"
+replace = "let r = (1.0 + 128.0 * U) * ((r0 + rho) + nu(omax)) + extra;"
+red = ["band_arith::a_plane_reads_r_as_its_terms_summed_in_order_under_one_factor"]
+
+[[plant]]
+name = "band-arith-rho-reads"
+item = "§6"
+check = "band_arith@4: rho over every point the read takes, read at the far corner alone"
+file = "core/oracle/src/depth.rs"
+find = "            .map(|p| self.rho_at(*p))\n            .fold(far, crate::bound::max)"
+replace = "            .map(|p| self.rho_at(*p))\n            .fold(far, |a, _| a)"
+red = ["band_arith::rho_is_the_largest_over_the_far_corner_and_every_point_the_read_takes", "band_arith::a_triangle_planes_rho_is_the_largest_over_the_far_corner_and_its_reads"]
+
+[[plant]]
+name = "band-arith-tri-rho-reads"
+item = "§6"
+check = "band_arith@4: a triangle plane's rho over its reads, none passed"
+file = "core/oracle/src/keys.rs"
+find = "let r = bound + key.rho(px, py, &pts) + nu(omax);"
+replace = "let r = bound + key.rho(px, py, &[]) + nu(omax);"
+red = ["band_arith::a_triangle_planes_rho_is_the_largest_over_the_far_corner_and_its_reads"]
+
+[[plant]]
+name = "band-arith-3a"
+item = "§6"
+check = "band_arith@4: M's 3A, the other computation's 2A dropped"
+file = "core/oracle/src/depth.rs"
+find = "worst = crate::bound::max(worst, ((gap + 3.0 * a_term) + c_term) + shift);"
+replace = "worst = crate::bound::max(worst, ((gap + a_term) + c_term) + shift);"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-c"
+item = "§6"
+check = "band_arith@4: M's C, the exact key's move with the offset by de, dropped"
+file = "core/oracle/src/depth.rs"
+find = "let c_term = (f + dnum / near) * spread / near;"
+replace = "let c_term = 0.0 * ((f + dnum / near) * spread / near);"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-dn"
+item = "§6"
+check = "band_arith@4: Dn, the nearest the other computation's D can stand, taken as |D|"
+file = "core/oracle/src/depth.rs"
+find = "Some(spread) => (u.big_d.abs() - spread) - 2.0 * dd,"
+replace = "Some(_) => u.big_d.abs(),"
+red = ["band_arith::a_nearest_face_the_other_computation_may_hold_too_near_its_eye_is_unbounded", "band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-dn-unbounded"
+item = "§6"
+check = "band_arith@4: R infinite where Dn <= eps, left to the formulas"
+file = "core/oracle/src/depth.rs"
+find = "if near.is_nan() || near <= eps {"
+replace = "if false && (near.is_nan() || near <= eps) {"
+red = ["band_arith::a_nearest_face_the_other_computation_may_hold_too_near_its_eye_is_unbounded"]
+
+[[plant]]
+name = "band-arith-de-spread"
+item = "§6"
+check = "band_arith@4: de taken at |e| + de, the spread dropped"
+file = "core/oracle/src/depth.rs"
+find = "let de = 4.0 * U * ((p.unrounded_e.abs() + spread) + m_len * norm(c));"
+replace = "let de = 4.0 * U * (p.unrounded_e.abs() + m_len * norm(c));"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-eps-spread"
+item = "§6"
+check = "band_arith@4: the other computation's offset bound eps = eps_e + 4u de, its 4u de dropped"
+file = "core/oracle/src/depth.rs"
+find = "let eps = p.e_err + 4.0 * U * spread;"
+replace = "let eps = p.e_err + 0.0 * spread;"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-m-length"
+item = "§6"
+check = "band_arith@4: dn = 8u |m| and de's |m| |c|, taken at the normal's length"
+file = "core/oracle/src/depth.rs"
+find = "let m_len = norm(u.m);"
+replace = "let m_len = norm(p.unrounded_n);"
+red = ["band_arith::m_takes_three_a_c_and_the_shift_at_the_nearest_d_the_other_computation_can_hold"]
+
+[[plant]]
+name = "band-arith-window-spread"
+item = "§6"
+check = "band_arith@4: a Nearest face's offset window 2^-30 + de / 2^-20, the spread dropped"
+file = "core/oracle/src/depth.rs"
+find = "let e_window = window + self.offset_spread.unwrap_or(0.0) / PLANE_GRID;"
+replace = "let e_window = window + 0.0 * self.offset_spread.unwrap_or(0.0);"
+red = ["band_arith::a_nearest_faces_offset_rounds_either_way_within_its_spread_of_a_half_step"]
+
+[[plant]]
+name = "band-arith-ek-gamma"
+item = "§6"
+check = "band_arith@4: E_k at γ_{2N+90}, taken at @3's γ_{2N+66}"
+file = "core/oracle/src/depth.rs"
+find = "let g = gamma_at(2 * n + 90, U);"
+replace = "let g = gamma_at(2 * n + 66, U);"
+red = ["band_arith::a_nearest_faces_offset_spread_is_gamma_2n_plus_90_of_its_points"]
+
+[[plant]]
+name = "band-arith-departure-gap"
+item = "§6"
+check = "band_arith@4: a Nearest face's gap_q over every rounded plane gap admits, the oracle's own alone"
+file = "core/oracle/src/keys.rs"
+find = "let gap = (plane.at(at[0], at[1]) - k).abs();"
+replace = "let gap = (rounded[0].at(at[0], at[1]) - k).abs();"
+red = ["lib::keys::tests::a_nearest_faces_departure_takes_the_gap_of_every_rounded_plane_it_admits"]
+
+[[plant]]
+name = "measure-made-family"
+item = "§7"
+check = "the soundness measures read a smoke case's made.xf as its own family, never summed with its stream.xf"
+file = "core/oracle/tests/contract.rs"
+find = "        Some(family) if rel.ends_with(\"/made.xf\") => format!(\"smoke-made:{family}\"),\n"
+replace = "        Some(family) if rel.is_empty() => format!(\"smoke-made:{family}\"),\n"
+red = ["contract::a_smoke_case_s_made_stream_is_its_own_family_beside_the_stream_the_core_is_handed"]
+
+[[plant]]
+name = "band-arith-departure-planes"
+item = "§6"
+check = "band_arith@4: a Nearest face's rho(q) and flattening term on each admitted rounded plane, the own plane's taken"
+file = "core/oracle/src/keys.rs"
+find = "let rho = plane.rho_at(*at);\n                worst = crate::bound::max(\n                    worst,\n                    gap + rho + key_error(pr, *q) + 4.0 * U * k.abs() + U * gap,\n                );\n            }\n            worst + libm::hypot(plane.b, plane.c) * 0.1\n"
+replace = "let rho = rounded[0].rho_at(*at);\n                worst = crate::bound::max(\n                    worst,\n                    gap + rho + key_error(pr, *q) + 4.0 * U * k.abs() + U * gap,\n                );\n            }\n            worst + libm::hypot(rounded[0].b, rounded[0].c) * 0.1\n"
+red = ["lib::keys::tests::a_nearest_faces_departure_takes_each_admitted_planes_rho_and_flattening_with_its_gap"]
+
+[[plant]]
+name = "band-arith-rho-planes"
+item = "§6"
+check = "band_arith@4: a world plane's rho the largest over the rounded planes gap admits, the own key's taken"
+file = "core/oracle/src/keys.rs"
+find = ".map(|plane| plane.rho(px, py, &at))"
+replace = ".map(|_| key.rho(px, py, &at))"
+red = ["band_arith::a_world_planes_rho_is_the_largest_over_the_rounded_planes_it_admits"]
+
+[[plant]]
+name = "measure-add-every-counter"
+item = "§7"
+check = "the soundness measures add each frame's every counter to its class, exact_tie dropped"
+file = "core/oracle/tests/contract.rs"
+find = "        self.exact_tie += exact_tie;\n"
+replace = "        let _ = exact_tie;\n"
+red = ["contract::a_class_s_measures_are_the_sum_of_its_frames_measured_once_each"]
+
+[[plant]]
+name = "departure-nan-dropped"
+item = "§6"
+check = "a NaN term of a world plane's M states no bound, not dropped from the largest"
+file = "core/oracle/src/depth.rs"
+find = "worst = crate::bound::max(worst, ((gap + 3.0 * a_term) + c_term) + shift);"
+replace = "worst = worst.max(((gap + 3.0 * a_term) + c_term) + shift);"
+red = ["band_arith::a_nan_term_leaves_the_departure_bound_unbounded"]
+
+[[plant]]
+name = "adjusted-first-unable-class"
+item = "§5"
+check = "stroke_on_own_fill@2: an adjusted stroke unable at a pixel takes its most severe read's class, not its first"
+file = "core/oracle/src/pairs.rs"
+find = ".find(|u| *u != Unable::CurveRecut)"
+replace = ".find(|_| true)"
+red = ["lib::pairs::tests::an_adjusted_stroke_takes_its_most_severe_unable_class"]
+
+[[plant]]
+name = "curve-key-absolute-weight"
+item = "§7"
+check = "curve_key@1: a curve's computation is named by its blend's signed t, not its weights |1 − t|, |t|"
+file = "core/oracle/src/keys.rs"
+find = "blend_t: rec.geometry.blend.as_ref().map(|b| b.t),"
+replace = "blend_t: rec.geometry.blend.as_ref().map(|b| b.t.abs()),"
+red = ["pair_rules::two_blends_of_opposite_sign_are_two_computations"]
+
+[[plant]]
+name = "connector-outside-centre-test"
+item = "§10"
+check = "a fill of a sheet that covers no pixel of the frame still decides it where it holds the label's centre"
+file = "core/oracle/src/label.rs"
+find = "    for &j in &sheet.connectors {\n"
+replace = "    for &j in sheet.connectors.iter().take(0) {\n"
+red = ["label_sheets::an_off_frame_connector_holding_the_centre_decides_the_sheet"]
+
+[[plant]]
+name = "axis-read-unemitted"
+item = "§6"
+check = "shared_plane_read@1: a pair's read of a fragment on their shared axis plane reaches the facts as its AXBD row"
+file = "core/oracle/src/pairs.rs"
+find = "        axis_bands.push(axis_band_row(row, rows[*j].fragment));\n"
+replace = "        let _ = (axis_band_row(row, rows[*j].fragment), &axis_bands);\n"
+red = ["pair_rules::an_unbounded_axis_read_names_its_pair_band_unbounded"]
+
+[[plant]]
+name = "measures-add-drops-on-fill"
+item = "§7"
+check = "the soundness measures add each frame's every counter to its class, on_fill dropped"
+file = "core/oracle/tests/contract.rs"
+find = "        pair(&mut self.on_fill, on_fill);\n"
+replace = "        let _ = on_fill;\n"
+red = ["contract::measures_add_sums_every_field_and_component"]
+
+[[plant]]
+name = "reader-skips-unknown-tag"
+item = "FORMAT.md"
+check = "a reader of the decisions file refuses a section tag it does not know, never skips it"
+file = "core/oracle/src/out.rs"
+find = "        if !TAGS.contains(&&tag) {\n"
+replace = "        if false && !TAGS.contains(&&tag) {\n"
+red = ["out::a_section_this_reader_does_not_know_is_refused"]
+
+[[plant]]
+name = "extent-overflow-decides"
+item = "§5"
+check = "a record whose extent or its square is not finite has no plane and states no bound"
+file = "core/oracle/src/depth.rs"
+find = "    (e * e).is_finite()\n"
+replace = "    let _ = e;\n    true\n"
+red = ["key_rules::a_triangle_whose_extent_overflows_has_no_plane", "key_rules::a_triangle_whose_extent_squared_overflows_has_no_plane"]
+
+[[plant]]
+name = "curve-infinite-is-exact"
+item = "§5"
+check = "a centreline with no finite vertex keys no layer: no bound, never an exact −∞"
+file = "core/oracle/src/keys.rs"
+find = "                if !(eps.is_finite() && sigma.is_finite()) || line.infinite {\n                    return std::array::from_fn(|_| Err(Unable::BandUnbounded));\n                }\n"
+replace = "                if !(eps.is_finite() && sigma.is_finite()) {\n                    return std::array::from_fn(|_| Err(Unable::BandUnbounded));\n                }\n                if line.infinite {\n                    return std::array::from_fn(|_| Ok(Band::exact(f64::NEG_INFINITY)));\n                }\n"
+red = ["key_rules::a_pre_projected_curve_at_the_eye_plane_states_no_bound", "key_rules::a_pre_projected_curve_beyond_the_exponential_range_states_no_bound"]
+
+[[plant]]
+name = "depth-share-denominator-unbounded"
+item = "§6"
+check = "band_input@3: ds(δ) infinite where its denominator is within η (|d| + |z| + δ) of zero, the margin's scale dropped"
+file = "core/oracle/src/shift.rs"
+find = "zs.map(|z| crate::bound::quotient(delta, p.d - z - delta, p.d.abs() + z.abs() + delta))"
+replace = "zs.map(|z| crate::bound::quotient(delta, p.d - z - delta, 0.0))"
+red = ["lib::shift::tests::a_depth_share_whose_denominator_is_within_its_rounding_is_unbounded"]
+
+[[plant]]
+name = "point-block-edge-rounded-away"
+item = "§3"
+check = "point_blocks@3: where at ∓ ε' is an exact integer the candidates reach the truncation past it, next_down/next_up dropped"
+file = "core/oracle/src/cover.rs"
+find = "trunc((a - m).next_down())..=trunc((a + m).next_up()),"
+replace = "trunc(a - m)..=trunc(a + m),"
+red = ["lib::cover::tests::a_point_block_on_an_integer_coordinate_lists_both_truncations"]
+
+[[plant]]
+name = "point-block-move-margin"
+item = "§3"
+check = "point_blocks@3: a coordinate within ε' = ε + η max(|at|, ε) of an integer may move, η dropped"
+file = "core/oracle/src/cover.rs"
+find = "let m = eps + crate::bound::ETA * a.abs().max(eps);"
+replace = "let m = eps;"
+red = ["lib::cover::tests::a_point_block_clearing_its_shift_by_less_than_the_margin_lists_both_truncations", "lib::cover::tests::a_point_block_on_an_integer_coordinate_lists_both_truncations"]
+
+[[plant]]
+name = "own-fill-sentinel"
+item = "§6"
+check = "a stroke and its fill both at the −∞ sentinel keep their exact zero bounds, not an infinite S or none"
+file = "core/oracle/src/pairs.rs"
+find = "    if o.o == f64::NEG_INFINITY && f.o == f64::NEG_INFINITY {\n        return Ok(Band::exact(f64::NEG_INFINITY));\n    }\n"
+replace = ""
+red = ["pair_rules::a_flat_path_stroked_on_its_own_fill_keeps_its_exact_bounds"]

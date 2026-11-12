@@ -1,0 +1,10 @@
+{
+  "fixture": "refused_first_offending_row",
+  "kind": "refusal",
+  "frames": [
+    {"seq": 1, "outcome": "judged"},
+    {"seq": 2, "outcome": "stream_refused at_seq 2 cause slot_removed"},
+    {"seq": 3, "outcome": "stream_refused at_seq 2 cause slot_removed"},
+    {"seq": 4, "outcome": "stream_refused at_seq 2 cause slot_removed"}
+  ]
+}

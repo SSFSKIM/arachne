@@ -1,0 +1,10 @@
+{
+  "fixture": "insertion_at_points_not_held",
+  "kind": "witness",
+  "rule": "label_placement@2",
+  "seq": 1,
+  "pixel": [100, 32],
+  "samples": [1, 5, 9, 13],
+  "defect_verdict": "mismatch:mismatch",
+  "twin_verdict": "agreement"
+}

@@ -7,16 +7,22 @@ Each plant in ``core/ci/oracle_plants.toml`` names a source file, a text found i
 and what replaces it (the check, removed), and the tests that must fail without the check, as
 ``TARGET::TEST`` (``TARGET`` a test file of ``core/oracle/tests``, or ``lib`` for the library's own
 tests). For each plant the file is changed, the target's tests run, the file restored, and one line
-printed; the last line is the total. It exits 1 if any plant's tests do not all fail (or its text
-is not found exactly once, or the plant does not build), 2 if a source is not as it was when the
-run began.
+printed; the last line is the total. A plant that cannot be applied (its file is gone, or its text
+does not occur there exactly once) removes no check: it is printed ``STALE`` before any build and
+fails the run as a plant whose tests pass does. It exits 1 if any plant is stale, does not build,
+or leaves a test it names passing, 2 if a source is not as it was when the run began.
 
-Before any plant, every target the selected plants name is run once on the unchanged tree. A test
+Before any plant, every target the applying plants name is run once on the unchanged tree. A test
 that fails there would read as a kill under any plant, so the run is refused (exit 3, no plant
 applied) unless each target builds, none of its tests fails, and every test a plant names passes.
+A name given that matches no plant refuses the run too (exit 3).
 
 It builds the oracle once per plant: a development check, run on a build machine, not a CI gate.
 The plants are never built into anything: this script writes each into the source and restores it.
+
+``python3 core/ci/oracle_plants.py --anchors`` is the CI gate's part: it reads every plant's text,
+writes and builds nothing, prints each plant that does not apply as ``STALE`` with its reason and
+then the total, and exits 1 if any plant does not apply.
 """
 
 from __future__ import annotations
@@ -29,11 +35,10 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-ORACLE = ROOT / "core" / "oracle"
 PLANTS = Path(__file__).resolve().parent / "oracle_plants.toml"
 
 
-def run_target(target: str) -> tuple[set[str], set[str], str]:
+def run_target(target: str, root: Path) -> tuple[set[str], set[str], str]:
     """The tests of ``target`` that pass and that fail, and the build's error where it does not
     build.
     """
@@ -42,7 +47,7 @@ def run_target(target: str) -> tuple[set[str], set[str], str]:
     env.pop("CARGO_TARGET_DIR", None)
     run = subprocess.run(
         ["cargo", "test", "--release", "--locked", *which],
-        cwd=ORACLE,
+        cwd=root / "core" / "oracle",
         env=env,
         capture_output=True,
         text=True,
@@ -57,13 +62,13 @@ def run_target(target: str) -> tuple[set[str], set[str], str]:
     return passed, failed, ""
 
 
-def failing(target: str) -> tuple[set[str], str]:
+def failing(target: str, root: Path) -> tuple[set[str], str]:
     """The tests of ``target`` that fail, and the build's error where it does not build."""
-    _, failed, broke = run_target(target)
+    _, failed, broke = run_target(target, root)
     return failed, broke
 
 
-def baseline(plants: list[dict]) -> list[str]:
+def baseline(plants: list[dict], root: Path) -> list[str]:
     """Why the unchanged tree cannot carry the plants: each target that does not build, a test of
     it that fails, or a named test that does not pass. Empty when every target passes.
     """
@@ -74,7 +79,7 @@ def baseline(plants: list[dict]) -> list[str]:
             named.setdefault(target, set()).add(test)
     problems = []
     for target in sorted(named):
-        passed, failed, broke = run_target(target)
+        passed, failed, broke = run_target(target, root)
         if broke:
             problems.append(f"{target}: {broke}")
         problems += [
@@ -88,12 +93,59 @@ def baseline(plants: list[dict]) -> list[str]:
     return problems
 
 
-def main(argv: list[str]) -> int:
-    plants = tomllib.loads(PLANTS.read_text(encoding="utf-8"))["plant"]
+def not_applied(plant: dict, root: Path) -> str:
+    """Why ``plant`` cannot be written into the tree at ``root``: its file is absent or its text does
+    not occur there exactly once. Empty when it applies.
+    """
+    path = root / plant["file"]
+    if not path.is_file():
+        return f"{plant['file']} does not exist"
+    found = path.read_text(encoding="utf-8").count(plant["find"])
+    if found == 0:
+        return f"its text is not in {plant['file']}"
+    if found > 1:
+        return f"its text occurs {found} times in {plant['file']}"
+    return ""
+
+
+def anchors(plants: list[dict], root: Path) -> int:
+    """Every plant's text read against its file, nothing written or built: each one that does not
+    apply printed as the run prints it, then the total. 1 if any does not apply.
+    """
+    stale = 0
+    for p in plants:
+        if why := not_applied(p, root):
+            stale += 1
+            print(f"STALE {p['name']} [{p['item']}] {p['check']}: {why}", flush=True)
+    if stale:
+        print(f"anchors: {stale} of {len(plants)} plants do not apply")
+        return 1
+    print(f"anchors: each of {len(plants)} plants applies")
+    return 0
+
+
+def main(argv: list[str], plants_file: Path = PLANTS, root: Path = ROOT) -> int:
+    plants = tomllib.loads(plants_file.read_text(encoding="utf-8"))["plant"]
+    if argv == ["--anchors"]:
+        return anchors(plants, root)
     if argv:
+        unknown = sorted(set(argv) - {p["name"] for p in plants})
+        if unknown:
+            print(f"plants: refused, no plant is named {', '.join(unknown)}")
+            return 3
         plants = [p for p in plants if p["name"] in argv]
-    sources = {f: (ROOT / f).read_bytes() for f in {p["file"] for p in plants}}
-    problems = baseline(plants)
+    # A plant whose text the tree no longer holds exactly once removes no check: it fails the run
+    # as a plant left GREEN does, and is never skipped.
+    stale = {p["name"]: why for p in plants if (why := not_applied(p, root))}
+    for p in plants:
+        if p["name"] in stale:
+            print(
+                f"STALE {p['name']} [{p['item']}] {p['check']}: {stale[p['name']]}",
+                flush=True,
+            )
+    live = [p for p in plants if p["name"] not in stale]
+    sources = {f: (root / f).read_bytes() for f in {p["file"] for p in live}}
+    problems = baseline(live, root)
     if problems:
         for problem in problems:
             print(f"BASE {problem}", flush=True)
@@ -101,23 +153,16 @@ def main(argv: list[str]) -> int:
             "plants: refused, the unchanged tree does not pass every target they name"
         )
         return 3
-    failed = 0
-    for p in plants:
-        path = ROOT / p["file"]
+    failed = len(stale)
+    for p in live:
+        path = root / p["file"]
         text = path.read_text(encoding="utf-8")
-        found = text.count(p["find"])
-        if found != 1:
-            failed += 1
-            print(
-                f"FAIL {p['name']} [{p['item']}] {p['check']}: its text occurs {found} times"
-            )
-            continue
         path.write_text(text.replace(p["find"], p["replace"]), encoding="utf-8")
         try:
             red: set[str] = set()
             broke = ""
             for target in sorted({t.split("::", 1)[0] for t in p["red"]}):
-                tests, broke = failing(target)
+                tests, broke = failing(target, root)
                 red |= {f"{target}::{t}" for t in tests}
                 if broke:
                     break
@@ -135,10 +180,11 @@ def main(argv: list[str]) -> int:
                 f"RED  {p['name']} [{p['item']}] {p['check']}: {', '.join(p['red'])}{also}",
                 flush=True,
             )
-    if any((ROOT / f).read_bytes() != b for f, b in sources.items()):
+    if any((root / f).read_bytes() != b for f, b in sources.items()):
         print("plants: a source was not restored")
         return 2
-    print(f"plants: {len(plants) - failed} of {len(plants)} RED")
+    not_red = f", {len(stale)} not applied" if stale else ""
+    print(f"plants: {len(plants) - failed} of {len(plants)} RED{not_red}")
     return 1 if failed else 0
 
 

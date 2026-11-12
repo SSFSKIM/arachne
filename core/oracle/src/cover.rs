@@ -172,7 +172,7 @@ impl Line {
             Some((side, along))
                 if along.v + along.err >= 0.0 && along.v - along.err <= self.len =>
             {
-                ends.min(side.v.abs() - side.err)
+                crate::bound::least([ends, side.v.abs() - side.err], 0.0)
             }
             _ => ends,
         }
@@ -251,8 +251,9 @@ fn inradius_above(corners: [[f64; 2]; 3]) -> f64 {
 /// The clipped corners lie on the nominal edges, and their rounding to the 1/256 px grid is within
 /// the margin as the triangle's own corners' is.
 pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<PixelCover> {
-    let margins: [f64; 3] = std::array::from_fn(|e| eps[e].max(eps[(e + 1) % 3]) + 1.0 / 256.0);
-    let reach = margins.iter().copied().fold(0.0, f64::max);
+    let margins: [f64; 3] =
+        std::array::from_fn(|e| crate::bound::max(eps[e], eps[(e + 1) % 3]) + 1.0 / 256.0);
+    let reach = margins.iter().copied().fold(0.0, crate::bound::max);
     let lo = |k: usize| corners.iter().map(|c| c[k]).fold(f64::INFINITY, f64::min);
     let hi = |k: usize| {
         corners
@@ -348,7 +349,7 @@ pub fn triangle(corners: [[f64; 2]; 3], eps: [f64; 3], window: Window) -> Vec<Pi
     out
 }
 
-/// A point block's pixels (contract §3, `point_blocks@1`): for a point at pixel position `at`
+/// A point block's pixels (contract §3, `point_blocks@3`): for a point at pixel position `at`
 /// with screen shift `eps`, block side `t`, each candidate truncation `(X, Y)` and the pixels its
 /// block covers with their offsets `(o, o')` from it. A pixel is `Yes` where the truncation cannot
 /// move, else `Either` under each candidate.
@@ -357,21 +358,36 @@ pub struct BlockPixel {
     pub offset: (i64, i64),
 }
 
-/// The pixels a block covers in the frame `size`, per candidate truncation, for a finite `eps`
-/// (a point with an infinite one is unbounded, which the caller writes).
-pub fn block(at: [f64; 2], eps: f64, side: i64, size: [u32; 2], window: Window) -> Vec<BlockPixel> {
+/// A point's candidate truncations along one side at coordinate `a` with screen shift `eps`, and
+/// whether its truncation can move there. It can where `a` lies within
+/// `ε' = eps + η max(|a|, eps)` of an integer: the shift widened by the margin `η` (§6) at the
+/// scale of the move test's inputs. The distance is read exactly (`|a − round(a)|` is exact in
+/// binary64), whatever `a ± ε'` rounds to. There the candidates run from
+/// `trunc(next_down(a − ε'))` to `trunc(next_up(a + ε'))`, the producer truncating toward zero;
+/// elsewhere no integer lies within `ε'`, and `trunc(a)` is the one. The range is only bounds:
+/// `block` clips it to the candidates that reach the window before listing any.
+fn candidates(a: f64, eps: f64) -> (std::ops::RangeInclusive<i64>, bool) {
     let trunc = |v: f64| v.trunc() as i64;
+    let m = eps + crate::bound::ETA * a.abs().max(eps);
+    if (a - a.round()).abs() <= m {
+        (trunc((a - m).next_down())..=trunc((a + m).next_up()), true)
+    } else {
+        (trunc(a)..=trunc(a), false)
+    }
+}
+
+/// The pixels a block covers in the frame `size`, per candidate truncation, for a finite `eps`
+/// (a point with an infinite one is unbounded, which the caller writes). The candidates along
+/// each side are `candidates`'s, clipped to those whose block reaches the window.
+pub fn block(at: [f64; 2], eps: f64, side: i64, size: [u32; 2], window: Window) -> Vec<BlockPixel> {
     let lo = (-side as f64 / 2.0).floor() as i64 + 1;
     let (w0, h0) = (window[0] as i64, window[1] as i64);
     let (w1, h1) = (
         (window[2].min(size[0])) as i64,
         (window[3].min(size[1])) as i64,
     );
-    let (xs, ys) = (
-        trunc(at[0] - eps)..=trunc(at[0] + eps),
-        trunc(at[1] - eps)..=trunc(at[1] + eps),
-    );
-    let moves = xs.start() != xs.end() || ys.start() != ys.end();
+    let ((xs, x_moves), (ys, y_moves)) = (candidates(at[0], eps), candidates(at[1], eps));
+    let moves = x_moves || y_moves;
     let code = if moves { Cover::Either } else { Cover::Yes };
     // Only the candidates whose block reaches the window: a wide `eps` lists no more than it shows.
     let reaching = |r: std::ops::RangeInclusive<i64>, w0: i64, w1: i64| {
@@ -817,5 +833,110 @@ mod tests {
             sign == Some(1.0) && bound.is_finite() && bound >= r,
             "winding {sign:?}, inradius at most {bound:e} against {r:e}"
         );
+    }
+
+    /// The block candidates `block` lists for a point, read from its pixels' offsets, and
+    /// whether every pixel it lists is `Either`.
+    fn candidates(at: [f64; 2], eps: f64) -> (std::collections::BTreeSet<i64>, bool) {
+        let pixels = block(at, eps, 2, [4096, 64], [0, 0, 4096, 64]);
+        let xs = pixels
+            .iter()
+            .map(|b| b.cover.x as i64 - b.offset.0)
+            .collect();
+        let either = !pixels.is_empty()
+            && pixels
+                .iter()
+                .all(|b| b.cover.cover.iter().all(|&c| c == Cover::Either as u8));
+        (xs, either)
+    }
+
+    #[test]
+    fn a_point_block_on_an_integer_coordinate_lists_both_truncations() {
+        // §3, point blocks, `point_blocks@3`: the candidates run from `trunc(next_down(at − ε'))`
+        // to `trunc(next_up(at + ε'))`, so where `at ∓ ε'` is exactly an integer the truncation
+        // past it is listed too: a point within `ε'` may lie just beyond it (the producer
+        // truncates toward zero). At `x = 2048.5` with `ε = 0.5 − η · 2048.5`, exact,
+        // `ε' = ε + η · 2048.5` is exactly 0.5, and `2048.5 ∓ ε'` are 2048 and 2049: the
+        // candidates are 2047, 2048 and 2049, and every pixel is `Either`.
+        let eps = 0.5 - crate::bound::ETA * 2048.5;
+        assert_eq!(eps, f64::from_bits(0x3fdf_dffe_0000_0000));
+        let (xs, either) = candidates([2048.5, 10.5], eps);
+        assert!(
+            either && xs == [2047, 2048, 2049].into(),
+            "candidates {xs:?}, every pixel Either: {either}"
+        );
+    }
+
+    #[test]
+    fn a_point_block_clearing_its_shift_by_less_than_the_margin_lists_both_truncations() {
+        // §3, point blocks, `point_blocks@3`: the move test reads the distance to the nearest
+        // integer against `ε' = ε + η max(|at|, ε)`. A producer 2D view of 4096 x 64 px about
+        // frame centre 0, input grid 1/256: a point at (1/256, 1/2) is shown at
+        // x = 2048.00390625 with a screen shift of about 0.00276214. It clears `ε` by 0.00114411,
+        // under `η · 2048 ≈ 0.00195`: the move is undecided, so both truncations are listed and
+        // every pixel is `Either`.
+        let (xs, either) = candidates([2048.00390625, 10.5], 0.00276214);
+        assert!(
+            either && xs == [2047, 2048].into(),
+            "candidates {xs:?}, every pixel Either: {either}"
+        );
+    }
+
+    #[test]
+    fn a_point_block_within_its_shift_of_zero_is_either() {
+        // §3, point blocks, as the contract states it: a coordinate within `ε` of an integer makes
+        // the block's pixels `Either`. At `x = 0.1` with `ε = 0.2` the producer's truncation
+        // toward zero gives block 0 over all of `[−0.1, 0.3]`, so the block cannot in fact move:
+        // this pins the contract's conservative form, not a missing candidate.
+        let (xs, either) = candidates([0.1, 10.5], 0.2);
+        assert!(
+            either && xs == [0].into(),
+            "candidates {xs:?}, every pixel Either: {either}"
+        );
+    }
+
+    #[test]
+    fn a_point_block_far_beyond_its_shift_s_ulp_is_either() {
+        // §3, point blocks, `point_blocks@3`: the move test reads `|at − round(at)|` exactly, so a
+        // coordinate past 2^52, where every binary64 value is an integer, moves however small its
+        // shift is against its ulp: at `4·10^18` (ulp 512) with `ε = 100` the truncation can move,
+        // and the candidates reach a truncation on either side of `trunc(at)`. This reads the
+        // candidates rather than a block. Under @3 `ε' ≥ η |at| ≫ ulp(at)`, so `at ± ε'` never
+        // rounds back to `at`; and at this `|at|` the range is about 7.6·10^12 wide, which a block
+        // reaching a window from here would list only at a side no stream carries (a stream
+        // refuses a side above 2^16).
+        let at = 4e18;
+        let (range, moves) = super::candidates(at, 100.0);
+        let t = at.trunc() as i64;
+        assert!(
+            moves && range.contains(&(t - 1)) && range.contains(&(t + 1)),
+            "candidates {range:?}, moves {moves}"
+        );
+    }
+
+    #[test]
+    fn a_far_point_of_a_legal_side_lists_only_the_candidates_that_reach_the_window() {
+        // §3, point blocks: a block lists only the candidates whose block reaches the window, so
+        // a point far out lists at most its side plus the window's width along each side, however
+        // wide `ε'` is. At `|at| = 10^12` (`ε'` about 9.5·10^5 px), with side 2^16, the largest a
+        // stream carries, and a 4096 x 4096 window, `block` returns at once.
+        let side: i64 = 65_536;
+        for at in [[1e12, 1e12], [-1e12, 10.5], [10.5, 1e12]] {
+            let pixels = block(at, 0.25, side, [4096, 4096], [0, 0, 4096, 4096]);
+            let xs: std::collections::BTreeSet<i64> = pixels
+                .iter()
+                .map(|b| b.cover.x as i64 - b.offset.0)
+                .collect();
+            let ys: std::collections::BTreeSet<i64> = pixels
+                .iter()
+                .map(|b| b.cover.y as i64 - b.offset.1)
+                .collect();
+            assert!(
+                xs.len() as i64 <= side + 4096 && ys.len() as i64 <= side + 4096,
+                "at {at:?}: {} and {} candidates",
+                xs.len(),
+                ys.len()
+            );
+        }
     }
 }

@@ -1,0 +1,10 @@
+{
+  "fixture": "refused_class_out_of_range",
+  "kind": "refusal",
+  "frames": [
+    {"seq": 1, "outcome": "judged"},
+    {"seq": 2, "outcome": "stream_refused at_seq 2 cause class_out_of_range"},
+    {"seq": 3, "outcome": "stream_refused at_seq 2 cause class_out_of_range"},
+    {"seq": 4, "outcome": "stream_refused at_seq 2 cause class_out_of_range"}
+  ]
+}

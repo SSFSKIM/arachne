@@ -1,10 +1,11 @@
-# The oracle's decisions file: `ORACLE_FORMAT` 1
+# The oracle's decisions file: `ORACLE_FORMAT` 2
 
 `arachne-oracle decide --xf <file> --seq <delta seq> --out <file> [--pixels x0,y0,x1,y1]` applies the
 XF file's deltas in order, from an empty stream, up to and including the delta whose `seq` is given,
 and writes what the frame drawn there should hold: every fragment the draw order draws and its
 coverage verdict at each of the 16 samples of every pixel of the window (the whole frame by
-default), or why the frame is `truth_unable`. It carries decisions, never pixel bytes.
+default), with each present fragment's depth band and each present pair's admitted edges and
+label at every sample, or why the frame is `truth_unable`. It carries decisions, never pixel bytes.
 
 `read.py` beside this file is the one reader for other programs (standard library only); its
 `DTYPES` give each section's layout as a numpy dtype, so a section also reads whole with
@@ -16,13 +17,13 @@ input error (an XF file that does not read, a `seq` it does not hold).
 ## Layout
 
 Little-endian throughout. A fixed header of 88 bytes, a directory of sections, then each section
-on an 8-byte boundary. Sections are arrays of fixed-size records; a reader skips a tag it does not
-know, and treats a section that is absent as empty. Later sections (pairwise relations, colours)
-arrive as new tags.
+on an 8-byte boundary. Sections are arrays of fixed-size records; a reader refuses a tag or a
+version it does not know, and treats a section that is absent as empty. A new section bumps the
+version.
 
 ```
 header     4s  magic "AROR"
-           u16 format (1)          u16 header size (88)
+           u16 format (2)          u16 header size (88)
            u16 XF major            u16 XF minor       (the decided delta's version)
            u32 width               u32 height         (the view's pixel size)
            u32 x0, y0, x1, y1                         (the window decided, [x0, x1) x [y0, y1))
@@ -38,9 +39,15 @@ cell `((dx + 8) div 4, (dy + 8) div 4)` of the pixel's 4 x 4 grid.
 
 | Tag | Record | What |
 |---|---|---|
-| `FRAG` | 64 bytes | one per fragment that has a row, or is unbounded |
+| `FRAG` | 64 bytes | one per fragment that has a row, or is unbounded, then one per zero-alpha mesh triangle |
 | `COVR` | 456 bytes | one per fragment at a pixel, sorted by `(y, x, fragment)` |
 | `PIXL` | 12 bytes | one per pixel of the window, row by row: its first `COVR` row and their count |
+| `BAND` | 544 bytes | one per `COVR` row, in its order (its own row), then one more where the fragment has a row on its record's plane |
+| `AXBD` | 544 bytes | one per ordered pair of fragments at a pixel where one is read on an axis plane it shares with the other, sorted by `(y, x, fragment, against)` |
+| `PAIR` | 24 bytes | one per pair of fragments present at a sample, sorted by `(y, x, sample, a, b)` |
+| `COLR` | 12 bytes | one per fragment, by id: its colour's kind and a solid's bytes |
+| `COLP` | 24 bytes | one per `COVR` row of a per-pixel fragment, in `COVR`'s order |
+| `LABL` | 20 bytes | one per camera-facing label and other fragment present at one sample, sorted by `(y, x, sample, label, fragment)` |
 | `REFU` | 40 bytes | one per refusal; empty when the frame is decided |
 | `TEXT` | 1 byte | the refusals' words, UTF-8 |
 
@@ -49,7 +56,7 @@ cell `((dx + 8) div 4, (dy + 8) div 4)` of the pixel's 4 x 4 grid.
 ```
 u32 id  u32 entry (order index)  u32 slot  u32 object  u32 part  u32 sub
 u8 layer  u8 kind (record kind code)  u16 flags  u32 group
-f64 epsilon (screen shift, px)  i32 x0, y0, x1, y1 (its rows' pixel box)  u32 plane  u32 reserved
+f64 epsilon (screen shift, px)  i32 x0, y0, x1, y1 (its rows' pixel box)  u32 plane  u32 label
 ```
 
 - **Identity.** `(object, part, layer, sub)` names a fragment as the core's report does. `layer`:
@@ -58,13 +65,24 @@ f64 epsilon (screen shift, px)  i32 x0, y0, x1, y1 (its rows' pixel box)  u32 pl
   shape (`t i` plus it for member `i` of a `t`-triangle prototype), a point block pixel's
   `(offset index) · n + i`. An instance's fragments carry the instance's object.
 - **`group`**: the drawn path a layer belongs to (its three layers share it); `0xffffffff` for a
-  mesh triangle or a point block. **`plane`**: the registered plane identity, `0xffffffff` until
-  depth is written.
+  mesh triangle or a point block. **`plane`**: the index, in the frame, of the registry-offered
+  record the fragment belongs to (a path's layers share it), else `0xffffffff`. The oracle does
+  not settle the registry's identities; which records may share one is in `PAIR`'s labels
+  (contract §7).
 - **`flags`**: bit 0, *unbounded*: the fragment's screen shift is infinite (or its nominal
   geometry is not finite), so it may stand anywhere: it is `truth_unable` at every sample of the
   window, never absent. Its `epsilon` is infinite, its box the window, and it has no `COVR` rows; a
   reader treats it as present-unknown at every pixel. An unbounded point has one fragment, the
-  `sub` of its first block offset.
+  `sub` of its first block offset. Bit 1, *zero alpha*: a mesh triangle whose alpha byte is 0
+  (contract §1, `alpha_round@1`). The contract makes it not present, so it has no `COVR` rows, no
+  `BAND` rows and no pairs, and its colour is `(0, 0, 0, 0)`; its box is the pixels it would
+  cover. It is written so that a report carrying that fragment is named: a fragment the oracle
+  holds no `COVR` row for is a `mismatch`, and where its identity is a zero-alpha fragment's it is
+  counted `zero_alpha_fragment`. These rows follow every other fragment's.
+- **`label`**: the camera-facing label the fragment belongs to (contract §10,
+  `label_placement@2`: a facing group read under XF 1.5's rules, else a run of camera-facing
+  records with one carried centre), numbered in the frame from 0; `0xffffffff` for a fragment of
+  no label. The order at a sample holding a label is read through `LABL`.
 
 ### `COVR`
 
@@ -81,8 +99,165 @@ f64 pixel_area  f64 cell_area[16]  f64 depth[16]  f64 band[16]
 - **`pixel_area`, `cell_area[s]`**: a path layer's exact nonzero-rule area of the pixel and of
   sample `s`'s cell, each as a fraction of it (1 covered whole); NaN for a mesh triangle or a point
   block, whose verdicts are masks.
-- **`depth`, `band`**: NaN in this version.
+- **`depth[s]`, `band[s]`**: the fragment's own key `o` and arithmetic bound `R` at sample `s`
+  (contract §5, §6), as its own `BAND` row holds them; NaN where it is absent or its key is not
+  bounded.
 - A row is written where some sample is not absent or the admitted pixel bytes reach above 0.
+
+### `BAND`
+
+```
+u32 x  u32 y  u32 fragment  u8 which  3 bytes pad
+f64 o[16]  f64 r[16]  f64 s_minus[16]  f64 s_plus[16]  u8 status[16]
+```
+
+A fragment's band at each sample: `I = [o − S⁻ − 3R, o + S⁺ + 3R]` (contract §6), `I = {−∞}` for a
+key of `−∞`.
+
+- **`which`**: 0, its own row: its own key, a stroke's adjusted on its own fill where both cover
+  (`stroke_on_own_fill@2`: keyed at the nearer key; its interval from the nearer of the two near
+  ends to the nearer of the two far ends, or to its own far end where the fill's cover is
+  `Either`, `band_input@3`, §6; its bound the pixel's largest taken, the larger of its own and
+  the taken one where the fill's cover is `Either`, and every sample of it at the pixel unable
+  where an adjusted read is);
+  1, its row on its record's plane (`shared_plane_read@1`), read against a fragment that may share
+  it;
+  2, a stroke adjusted on its own fill: its own key unadjusted, at the samples where it is adjusted
+  and the fill's cover is `Either` (status 0 elsewhere), the key the core may keep there
+  (`stroke_on_own_fill@2`). The soundness test of `R` passes the core's key within `2R` of this
+  key or of the own row's, `R` the own row's.
+  A fragment has at most one of each at a pixel, in that order.
+- **`status[s]`**: 0 absent, 1 bounded, 2 `band_unbounded`, 3 `curve_recut` (the sample is
+  `truth_unable`, contract §6), 4 `pivot_unknown` (`truth_unable` too: a pre-projected record's
+  pivot moves as its first point moved, §2, and the record or its tail has none). The floats are
+  NaN unless the status is 1.
+
+### `AXBD`
+
+```
+u32 x  u32 y  u32 fragment  u32 against
+f64 o[16]  f64 r[16]  f64 s_minus[16]  f64 s_plus[16]  u8 status[16]
+```
+
+A fragment's row on the axis plane it shares with `against` (`shared_plane_read@1`): the read the
+pair takes of it against that fragment, which depends on the pair and so is not one of the
+fragment's `BAND` rows. Its band, floats and `status` are as a `BAND` row's, at the samples where
+the fragment is not absent. A pair `truth_unable` at a sample is named by the first status that
+states no bound among its fragments' `BAND` rows and their `AXBD` rows against each other there.
+
+### `PAIR`
+
+```
+u32 x  u32 y  u32 a  u32 b  u8 sample  u8 edges  u8 label  u8 provenance  u8 offered  u8 plate  u8 offered_provenance  1 byte pad
+```
+
+Every pair of fragments present (`Yes` or `Either`) at a sample, `a < b` by fragment id (contract
+§7, "the edges a pair admits").
+
+- **`edges`**: bit 0 weak (paint order: the later in the order, then the higher `sub`, in front),
+  bit 1 strong `a` in front, bit 2 strong `b` in front.
+- **`label`**: 1 `Depth(a)`, 2 `Depth(b)`, 3 `TieBand`, 4 `ExactTie`, 5 `own_layers@1`,
+  6 `one_plane@1`, 7 `lines@1`, 8 `near_parallel@1`; 0 where a read of either is not bounded
+  (`truth_unable`, every edge).
+- **`provenance`**: how each strong edge is read, a two-bit code for each: bits 0–1 the edge of
+  `a` in front (`edges` bit 1), bits 2–3 that of `b` in front (`edges` bit 2). 0 *own keys*: every
+  scenario that admits the edge reads both fragments at their own keys (each one number at the
+  sample, `stroke_on_own_fill@2` included), or `edges` holds no such edge; 1 *row read*: some
+  scenario admits it through the pair's rows on a plane they may share (`shared_plane_read@1`);
+  2 *flat identity*: the pair may share a flat identity with a record of no plane of its own
+  (`one_plane@1`, every edge). 3 is not written. The completions rule that discards a strong cycle
+  of own-key edges reads it.
+- **`offered`**: the pair's edges, in `edges`' bits, in the sets built with the records that paint
+  nothing offered to the registry too (contract §5), and **`offered_provenance`** how each of its
+  strong edges is read, coded as `provenance` is. Equal to `edges` and `provenance` where the
+  frame has no such record. A reported order outside `edges`' admissible orders and inside `offered`'s is counted
+  `invisible_registry_offer`.
+- **`plate`**: where `a` or `b` belongs to a label (`FRAG` `label`), the pair's relation as the
+  plate model orders it (§10, `facing_plane@1`), read in the scenarios `edges` reads from the two
+  keys without their input bound (`S⁻ = S⁺ = 0`, §6) and with no snap share in a policy's term,
+  since the core reads its keys from the inputs it holds. It has three states, and is one only
+  where every scenario gives it:
+  - **tie**, `1` (`edges`' weak bit): the keys are equal (`tied`, §7), a weak order, which is
+    paint order;
+  - **strong**, `2` (`a` in front) or `4` (`b` in front): the keys are separated beyond their
+    bounds (`±3R`), and no tie policy's term holds;
+  - **undetermined**, `0`: neither. A pair whose rows hang on what the registry settles (a record
+    with no plane of its own that may share a flat identity) is undetermined.
+
+  For every other pair `plate` equals `edges`. The plate model's orders at a sample are those the
+  `plate` relations admit; where a label's pair there is undetermined, no order is the plate
+  model's. A label 2^-30 behind a line at its depth is inside the snap, so `edges` admits either
+  order, and `plate` is `2`, the label's in front. A line on the label's plane ties it (`plate`
+  `1`), and the plate model draws the later painted in front; a line 2^-45 nearer is inside the
+  keys' bounds, and `plate` is `0`.
+- **Admissible orders** of the fragments present at a sample are the ranks (`cycle_rank@2`) of the
+  completions that pick one edge per pair, a choice whose strong edges read from own keys
+  (`provenance` 0) cycle being none; an order every pair agrees with is one. At a sample
+  that holds a label fragment, `PAIR` still holds every pair, the label's included, as §7 reads
+  them; the label rule's order is read through `LABL`.
+- An unbounded fragment (`FRAG` flag bit 0) has no rows and no pairs: it is `truth_unable`
+  everywhere.
+
+### `LABL`
+
+```
+u32 x  u32 y  u32 label  u32 fragment  u8 sample  u8 role  u8 pair_cause  u8 class_cause
+```
+
+A camera-facing label's placement facts at a sample (contract §10, `label_placement@2`): one row
+for each label with a fragment present at the sample and each other fragment present there that
+belongs to no label.
+
+- **`role`**: 0 *front*: the label goes in front of the fragment unless the fragment is in front of
+  an anchor; 1 *anchor*: the fragment is a fill of a sheet that qualifies for the label and holds
+  the sample's order point; 2 *open*: the pair, or the fragment's class, is open
+  (`label_rule_open`), the causes below; 3 *kind unknown* (`label_kind_unknown`, a stream read as
+  XF 1.4): an anchor under one reading and not under the other; 4 *alpha straddle*
+  (`label_alpha_straddle`): the fill's admitted alpha at the pixel holds 0 and a positive byte, and
+  the oracle cannot place it. A gradient fill's admitted alpha (its colour is not computed, `COLR`
+  kind 0) is bounded by its stops: their premultiplied alpha bytes at the record's group opacity,
+  as a solid's (`cairo_premultiply@1`), from the least to the greatest, one level wider each way
+  for the walker's single-precision interpolation; pad extend keeps every pixel within them.
+- **`pair_cause`** (role 2): 1 `interval`, 2 `folded`, 3 `disconnected`, 4 `mesh`, 5 `label`; 0
+  where the class is open instead. **`class_cause`** (role 2): 1 `unmapped`, 2 `generic_only`,
+  3 `paths_disagree`, 4 `no_source`, 5 `cylinder_grouped`, 6 `point_cloud`; 0 where the pair is
+  open instead.
+- **The label rule's order** at the sample. Take the reported order of the fragments of no label;
+  it must be admissible by `PAIR` alone. Each label is inserted immediately behind the rearmost, in
+  that order, of its anchors (role 1), or in front of every fragment where it has none; labels at
+  one place keep paint order, and so do a label's own fragments. A role-3 fragment is read both
+  as an anchor and not, and the orders of both readings are admitted. A sample where some row of a
+  label is role 2 is counted `label_rule_open` under its causes, and one with a role-4 row is
+  `label_alpha_straddle`: neither is a mismatch nor an agreement.
+- A reported order outside the label rule's orders that is one of the plate model's orders
+  (admitted by `PAIR`'s `plate` relations, as `edges` admit the ordinary ones) is a `mismatch`
+  counted `label_plate_model`; any other order outside them is a plain `mismatch`, every order
+  at a sample where a label's `plate` is undetermined included. So the count of
+  `label_plate_model` is exact where `plate` is determined. Past the completion bound the
+  mismatch is certain and its name is not.
+
+### `COLR`
+
+```
+u32 fragment  u8 kind  u8 rgba[4]  3 bytes pad
+```
+
+Each fragment's premultiplied colour from XF (contract §9). `kind`: 1 solid (`rgba` at every
+pixel: `cairo_premultiply@1` of an unshaded layer's one colour, its one row or rows that are all
+that colour bit for bit, or a point block's bytes); 2 per pixel (a lit mesh triangle,
+`ce_shading@1`; its bytes in `COLP`); 0 a gradient (`cairo_linear_gradient@1`, a layer of two or
+more rows or a shaded path), which this oracle does not compute: `rgba` is 0 and a reader takes
+the colour as unknown.
+
+### `COLP`
+
+```
+u32 x  u32 y  u32 fragment  u8 lo[4]  u8 hi[4]  u32 reserved
+```
+
+A per-pixel fragment's bytes at a pixel: the corners' colours interpolated as planes on the pixel
+plane, read at the centroid of the samples it covers (`lo = hi`), or, where one of its samples is
+`Either`, the least and most bytes over every sample it may cover.
 
 ### `REFU`
 
@@ -118,7 +293,7 @@ A 16 x 16 flat view whose frame units are pixels, and one path record filling th
 $ arachne-oracle decide --xf stream.xf --seq 4 --out d.oracle
 decide: seq 4 16x16 window [0, 0, 16, 16]: 1 fragments, 20 rows
 $ python3 read.py --canonical d.oracle
-header format=1 xf=1.0 size=16x16 window=0,0,16,16 status=decided seq=4
+header format=2 xf=1.0 size=16x16 window=0,0,16,16 status=decided seq=4
 offsets -8,-7 -1,-8 3,-6 5,-5 -6,-1 -4,-4 0,-3 6,-2 -7,2 -2,0 2,3 4,1 -5,5 -3,4 1,7 7,6
 fragment id=0 entry=0 slot=0 object=100 part=0 sub=1 layer=1 kind=1 flags=0 group=0 plane=4294967295 epsilon=3d00f876ccdf6cfb bbox=2,2,7,6
 cover x=2 y=2 fragment=0 cover=1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 cell=255-255,... pixel=255-255 area=3ff0000000000000 ...

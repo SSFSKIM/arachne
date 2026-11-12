@@ -197,7 +197,12 @@ def test_merge_commit_content_is_checked(repo: Repo):
         "-q",
         "--no-commit",
         "side",
-        env={"GIT_AUTHOR_NAME": "x", "GIT_COMMITTER_NAME": "x"},
+        env={
+            "GIT_AUTHOR_NAME": "x",
+            "GIT_AUTHOR_EMAIL": CLEAN_EMAIL,
+            "GIT_COMMITTER_NAME": "x",
+            "GIT_COMMITTER_EMAIL": CLEAN_EMAIL,
+        },
     )
     (repo.path / "resolved.txt").write_text("zorblaxian\n")
     repo.git("add", "resolved.txt")

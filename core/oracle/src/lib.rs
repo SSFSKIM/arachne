@@ -18,17 +18,34 @@
 //! - [`shift`] bounds how far the input grid may move a record on screen (contract §6, the screen
 //!   shift `ε` that §3's and §4's margins read).
 //! - [`cover`] decides coverage at every sample (contract §3, §4).
-//! - [`decide`] runs a frame; [`out`] writes and reads its decisions (`ORACLE_FORMAT` 1,
+//! - Depth (contract §5, §6): [`depth`] fits and keys world planes; [`centreline`] keys a curve
+//!   along its centreline; [`band`] holds the band's input terms; [`keys`] gives each fragment its
+//!   key model and band at a pixel's samples.
+//! - The order (contract §7): [`order`] gives a pair's admitted edges and label and tests an order's
+//!   admissibility through `cycle_rank@2`; [`lines`] bounds `lines@1`'s share; [`pairs`] runs a
+//!   frame's bands and pairs, with both stroke-depth adjustments.
+//! - [`decide`] runs a frame; [`out`] writes and reads its decisions (`ORACLE_FORMAT` 2,
 //!   `FORMAT.md`).
 
+pub mod band;
+pub mod bound;
 pub mod camera;
+pub mod centreline;
+pub mod colour;
 pub mod cover;
 pub mod decide;
+pub mod depth;
 pub mod draw;
 pub mod flatten;
 pub mod guard;
 pub mod joins;
+pub mod keys;
+pub mod label;
+pub mod label_classes;
+pub mod lines;
+pub mod order;
 pub mod out;
+pub mod pairs;
 pub mod shift;
 pub mod source;
 pub mod stream;

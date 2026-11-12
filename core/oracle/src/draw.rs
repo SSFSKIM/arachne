@@ -6,6 +6,7 @@
 //! paints at all (`alpha_round@1`). Colour beyond that is not.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arachne_core::xf::{
     Affine, Body, Camera, Cap, Dash, IDENTITY, Joint, Key, Paint, PaintBlock, Record, RecordKind,
@@ -279,7 +280,22 @@ pub struct Common<'a> {
     pub projection: Option<Projection>,
     /// The placings whose departure bounds its screen shift.
     pub placings: Vec<Placing>,
+    /// A pre-projected record's pivot (contract §2), where it carries a centre.
+    pub pivot: Option<Pivot>,
 }
+
+/// A pre-projected record's pivot (contract §2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pivot {
+    /// The carried centre moved as the record's first point moved to its tail's first point.
+    At([f64; 3]),
+    /// The record or its tail has no first point to move it by: no key is stated
+    /// (`pivot_unknown`).
+    Unknown,
+}
+
+/// A face group's face ends and face widths: one copy per record, shared by its faces.
+pub type FaceLists = (Arc<[u32]>, Arc<[f64]>);
 
 /// One path drawn: a `path` record, a face of a face group, or a path instance's member.
 #[derive(Clone, Debug)]
@@ -289,6 +305,9 @@ pub struct PathItem<'a> {
     pub index: u32,
     /// Its shown points, in frame units.
     pub shown: Vec<[f64; 3]>,
+    /// Its drawn points before display: placed, cut to its reveal window and blended (a
+    /// pre-projected tail's points as produced). Depth reads them (contract §5).
+    pub world: Vec<[f64; 3]>,
     /// Per layer (background stroke, fill, stroke): drawn or not, and the stroke's width in frame
     /// units (0 for the fill).
     pub layers: [Option<f64>; 3],
@@ -299,6 +318,12 @@ pub struct PathItem<'a> {
     pub joins: Option<Vec<u8>>,
     /// A face of a face group (`round_cap_dot@1` reads it).
     pub face: bool,
+    /// For a face, its record's face lists.
+    pub face_lists: Option<FaceLists>,
+    /// Per layer, its straight RGBA rows (`paint_rows@1`), for colour (§9).
+    pub rows: [Option<Vec<[f64; 4]>>; 3],
+    /// Whether the camera shades it (`ce_shading@1`).
+    pub shaded: bool,
     pub map: FrameMap,
 }
 
@@ -310,6 +335,15 @@ pub struct MeshItem<'a> {
     pub sub: u32,
     /// Per triangle, its shown corners.
     pub triangles: Vec<[[f64; 3]; 3]>,
+    /// Per triangle, its placed corners (before display).
+    pub placed: Vec<[[f64; 3]; 3]>,
+    /// Its fill, straight RGBA (a member's row for an instance).
+    pub fill: [f64; 4],
+    /// Per triangle, its corners' carried normals as placed (`ce_shading@1`), where it carries
+    /// them.
+    pub normals: Option<Vec<[[f64; 3]; 3]>>,
+    /// Whether the camera shades it (`ce_shading@1`).
+    pub shaded: bool,
     pub map: FrameMap,
 }
 
@@ -323,12 +357,16 @@ pub struct BlockPoint {
     pub shown: [f64; 3],
     /// Its pixel position (not yet truncated).
     pub at: [f64; 2],
+    /// Shown at a position or a key that is not a number: it states no bound.
+    pub unbounded: bool,
 }
 
 /// A `points` record's points that draw blocks.
 #[derive(Clone, Debug)]
 pub struct PointsItem<'a> {
     pub common: Common<'a>,
+    /// Per point of the record (by `index`), its straight RGBA.
+    pub colours: Vec<[f64; 4]>,
     /// Point count `n` of `sub = offset index · n + i`.
     pub count: u32,
     pub side: i64,
@@ -342,6 +380,18 @@ pub enum Item<'a> {
     Points(PointsItem<'a>),
 }
 
+/// Which drawn things [`items_of`] yields: those that paint, or only those dropped for painting
+/// nothing (`alpha_round@1`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which {
+    Visible,
+    /// A path all of whose layers paint nothing, as one fill of width 0, and a mesh whose alpha
+    /// byte is 0: what the registry is offered beside the painting records in the counterfactual
+    /// sets of `invisible_registry_offer` (contract §5), and the mesh triangles the contract names
+    /// `zero_alpha_fragment` (§1).
+    Invisible,
+}
+
 /// Everything the frame's order draws, in order (overlay entries excluded). The frame is assumed
 /// not refused ([`crate::stream::State::refusals`] empty).
 pub fn items<'a>(
@@ -351,15 +401,39 @@ pub fn items<'a>(
     shapes: &'a HashMap<Key, Shape>,
     tables: &'a HashMap<Key, Stops>,
 ) -> Vec<Item<'a>> {
+    items_of(view, records, order, shapes, tables, Which::Visible)
+}
+
+/// [`items`], or what it drops for painting nothing ([`Which`]).
+pub fn items_of<'a>(
+    view: &'a View,
+    records: &'a std::collections::BTreeMap<u32, Record>,
+    order: &'a [arachne_core::xf::OrderEntry],
+    shapes: &'a HashMap<Key, Shape>,
+    tables: &'a HashMap<Key, Stops>,
+    which: Which,
+) -> Vec<Item<'a>> {
+    let invisible = which == Which::Invisible;
     let mut out = Vec::new();
     let pr = projection(view);
     let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
+    let mut face_lists: HashMap<u32, FaceLists> = HashMap::new();
     for (entry, e) in order.iter().enumerate() {
         let rec = &records[&e.slot];
         if crate::stream::is_overlay(rec) {
             continue;
         }
         let placement = Placement::of(rec, view);
+        let pivot = rec.pre_projected.as_ref().and_then(|tail| {
+            let c = rec.depth.fixed_orientation_centre?;
+            let moved = path_shape(shapes, &tail.points)
+                .and_then(|t| t.first().copied())
+                .zip(path_points(rec, shapes).and_then(|p| p.first().copied()));
+            Some(match moved {
+                Some((to, from)) => Pivot::At(std::array::from_fn(|k| c[k] + (to[k] - from[k]))),
+                None => Pivot::Unknown,
+            })
+        });
         let common = |object: u32, placings: Vec<Placing>| Common {
             entry: entry as u32,
             record: rec,
@@ -368,6 +442,7 @@ pub fn items<'a>(
             placement: placement.clone(),
             projection: pr.clone(),
             placings,
+            pivot,
         };
         let shaded = rec.pre_projected.is_none() && shading && rec.depth.shade_in_3d;
         let prototype = rec
@@ -436,6 +511,7 @@ pub fn items<'a>(
                     rec.joins.clone(),
                     false,
                     shaded,
+                    which,
                 ) {
                     out.push(Item::Path(item));
                 }
@@ -465,7 +541,7 @@ pub fn items<'a>(
                     points: run.to_vec(),
                     weight: 1.0,
                 };
-                if let Some(item) = path_item(
+                if let Some(mut item) = path_item(
                     view,
                     common(rec.object, vec![placing]),
                     0,
@@ -474,7 +550,15 @@ pub fn items<'a>(
                     None,
                     true,
                     shaded,
+                    which,
                 ) {
+                    let lists = face_lists.entry(e.slot).or_insert_with(|| {
+                        (
+                            faces.face_ends.as_slice().into(),
+                            faces.face_widths.as_slice().into(),
+                        )
+                    });
+                    item.face_lists = Some(lists.clone());
                     out.push(Item::Path(item));
                 }
             }
@@ -514,6 +598,7 @@ pub fn items<'a>(
                             None,
                             false,
                             shaded,
+                            which,
                         ) {
                             out.push(Item::Path(item));
                         }
@@ -522,6 +607,7 @@ pub fn items<'a>(
                 Some(ShapeData::Mesh {
                     positions,
                     triangles,
+                    normals,
                     ..
                 }) => {
                     if !matches!(rec.paint.fill, Paint::One(_)) {
@@ -532,8 +618,9 @@ pub fn items<'a>(
                     };
                     let per = triangles.len() as u32;
                     for (i, member) in body.placements.iter().enumerate() {
-                        let alpha = fill.rows()[i][3] * rec.opacity;
-                        if alpha_byte(alpha) == 0 {
+                        let row = fill.rows()[i];
+                        let alpha = row[3] * rec.opacity;
+                        if (alpha_byte(alpha) == 0) != invisible {
                             continue;
                         }
                         let m = compose(member, &rec.geometry.place_a);
@@ -549,7 +636,10 @@ pub fn items<'a>(
                             per * i as u32,
                             positions,
                             triangles,
+                            normals.as_ref(),
                             &m,
+                            row,
+                            shaded,
                         ) {
                             out.push(Item::Mesh(item));
                         }
@@ -561,6 +651,7 @@ pub fn items<'a>(
                 let Some(ShapeData::Mesh {
                     positions,
                     triangles,
+                    normals,
                     ..
                 }) = prototype
                 else {
@@ -570,7 +661,7 @@ pub fn items<'a>(
                 let Some(colour) = fill.as_ref().and_then(|r| r.first()) else {
                     continue;
                 };
-                if alpha_byte(colour[3] * rec.opacity) == 0 {
+                if (alpha_byte(colour[3] * rec.opacity) == 0) != invisible {
                     continue;
                 }
                 let placing = Placing {
@@ -584,7 +675,10 @@ pub fn items<'a>(
                     0,
                     positions,
                     triangles,
+                    normals.as_ref(),
                     &rec.geometry.place_a,
+                    *colour,
+                    shaded,
                 ) {
                     out.push(Item::Mesh(item));
                 }
@@ -629,7 +723,10 @@ pub fn items<'a>(
                         && c.projection
                             .as_ref()
                             .is_some_and(|pr| pr.key(shown[2]).is_nan());
-                    if at.iter().any(|v| !v.is_finite() || v.abs() > 4e18) || key_nan {
+                    // Shown at a position or a key that is not a number, the point is kept: the
+                    // producer's, within its departure, may be finite, so it states no bound.
+                    let unbounded = at.iter().any(|v| !v.is_finite()) || key_nan;
+                    if !unbounded && at.iter().any(|v| v.abs() > 4e18) {
                         continue;
                     }
                     pts.push(BlockPoint {
@@ -637,11 +734,13 @@ pub fn items<'a>(
                         placed,
                         shown,
                         at,
+                        unbounded,
                     });
                 }
                 if side >= 1 && !pts.is_empty() {
                     out.push(Item::Points(PointsItem {
                         common: c,
+                        colours: colours.rows().to_vec(),
                         count: positions.len() as u32,
                         side,
                         points: pts,
@@ -666,6 +765,7 @@ fn path_item<'a>(
     joins: Option<Vec<u8>>,
     face: bool,
     shaded: bool,
+    which: Which,
 ) -> Option<PathItem<'a>> {
     if world.len() < 4 || world.iter().flatten().any(|v| !v.is_finite()) {
         return None;
@@ -685,7 +785,7 @@ fn path_item<'a>(
             }
         }
     };
-    let layers = [
+    let mut layers = [
         layer(
             &paint.background_stroke,
             Some(paint.background_stroke_width),
@@ -693,8 +793,12 @@ fn path_item<'a>(
         layer(&paint.fill, None),
         layer(&paint.stroke, Some(paint.stroke_width)),
     ];
-    if layers.iter().all(Option::is_none) {
+    let paints_nothing = layers.iter().all(Option::is_none);
+    if paints_nothing != (which == Which::Invisible) {
         return None;
+    }
+    if paints_nothing {
+        layers = [None, Some(0.0), None];
     }
     let shown = world
         .iter()
@@ -703,25 +807,37 @@ fn path_item<'a>(
     Some(PathItem {
         index,
         shown,
+        world,
         layers,
         joint: rec.paint.joint,
         cap: rec.paint.cap,
         dash: rec.dash,
         joins,
         face,
+        face_lists: None,
+        rows: [
+            paint.background_stroke.clone(),
+            paint.fill.clone(),
+            paint.stroke.clone(),
+        ],
+        shaded,
         map: FrameMap::of_paths(view),
         common,
     })
 }
 
 /// One mesh drawn under the placement `m`, or `None` where a placed vertex is not finite.
+#[allow(clippy::too_many_arguments)]
 fn mesh_item<'a>(
     view: &View,
     common: Common<'a>,
     sub: u32,
     positions: &[[f64; 3]],
     triangles: &[[u32; 3]],
+    normals: Option<&Vec<[f64; 3]>>,
     m: &Affine,
+    fill: [f64; 4],
+    shaded: bool,
 ) -> Option<MeshItem<'a>> {
     let placed: Vec<[f64; 3]> = positions.iter().map(|p| place(m, *p)).collect();
     if placed.iter().flatten().any(|v| !v.is_finite()) {
@@ -731,13 +847,24 @@ fn mesh_item<'a>(
         .iter()
         .map(|p| common.placement.show(common.projection.as_ref(), *p))
         .collect();
-    let triangles = triangles
-        .iter()
-        .map(|t| t.map(|v| shown[v as usize]))
-        .collect();
+    let corners = |t: &[u32; 3], of: &[[f64; 3]]| t.map(|v| of[v as usize]);
+    let placed_corners = triangles.iter().map(|t| corners(t, &placed)).collect();
+    // A carried normal goes through the placement's cofactors, then to unit length (contract §9).
+    let normals = normals.filter(|n| n.len() == positions.len()).map(|n| {
+        let turned: Vec<[f64; 3]> = n
+            .iter()
+            .map(|v| crate::colour::place_normal(m, *v))
+            .collect();
+        triangles.iter().map(|t| corners(t, &turned)).collect()
+    });
+    let triangles = triangles.iter().map(|t| corners(t, &shown)).collect();
     Some(MeshItem {
         sub,
         triangles,
+        placed: placed_corners,
+        fill,
+        normals,
+        shaded,
         map: FrameMap::of_paths(view),
         common,
     })

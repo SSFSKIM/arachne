@@ -197,9 +197,7 @@ fn dot_rule(item: &PathItem, entries: Option<[f64; 2]>) -> Option<bool> {
 pub fn layer_rings(item: &PathItem, size: [u32; 2]) -> [Option<Vec<Ring>>; 3] {
     let map = &item.map;
     let user = outline(&item.shown);
-    let widest = item.layers[0]
-        .unwrap_or(0.0)
-        .max(item.layers[2].unwrap_or(0.0));
+    let widest = crate::bound::max(item.layers[0].unwrap_or(0.0), item.layers[2].unwrap_or(0.0));
     let area = guard::area(&user, map, size, widest);
     let guarded_outline = match area {
         Some(area) => guard::guarded(&user, area),

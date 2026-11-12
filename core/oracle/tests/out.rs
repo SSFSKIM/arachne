@@ -1,4 +1,4 @@
-//! `ORACLE_FORMAT` 1 round-trips: the oracle's own reader and `read.py` read back exactly what it
+//! `ORACLE_FORMAT` 2 round-trips: the oracle's own reader and `read.py` read back exactly what it
 //! wrote, and the command line writes a file `read.py` reads.
 
 mod common;
@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use arachne_oracle::out::{
-    CoverRow, Decisions, Fragment, Header, Refused, STATUS_UNABLE, canonical, read, write,
+    AxisBandRow, BandRow, ColourRow, CoverRow, Decisions, Fragment, Header, LabelRow, PairRow,
+    PixelColour, Refused, STATUS_UNABLE, canonical, read, write,
 };
 use common::*;
 
@@ -81,6 +82,7 @@ fn sample() -> Decisions {
                 plane: u32::MAX,
                 epsilon: f64::INFINITY,
                 bbox: [1, 0, 3, 2],
+                label: u32::MAX,
             },
             Fragment {
                 id: 1,
@@ -96,9 +98,114 @@ fn sample() -> Decisions {
                 plane: 7,
                 epsilon: 1.0 / 256.0,
                 bbox: [-2, -1, 4, 3],
+                label: 2,
             },
         ],
         covers: vec![row(1, 0, 0), row(2, 0, 0), row(2, 0, 1), row(3, 2, 1)],
+        bands: vec![
+            BandRow {
+                x: 2,
+                y: 0,
+                fragment: 1,
+                which: 0,
+                o: std::array::from_fn(|s| -1.0 - s as f64 / 64.0),
+                r: [1.0 / 1_099_511_627_776.0; 16],
+                s_minus: [0.25; 16],
+                s_plus: std::array::from_fn(|s| if s == 3 { f64::NAN } else { 0.5 }),
+                status: std::array::from_fn(|s| (s % 4) as u8),
+            },
+            BandRow {
+                x: 2,
+                y: 0,
+                fragment: 1,
+                which: 1,
+                o: [f64::NEG_INFINITY; 16],
+                r: [0.0; 16],
+                s_minus: [0.0; 16],
+                s_plus: [0.0; 16],
+                status: [1; 16],
+            },
+        ],
+        axis_bands: vec![AxisBandRow {
+            x: 2,
+            y: 0,
+            fragment: 1,
+            against: 0,
+            o: std::array::from_fn(|s| 2.0 + s as f64 / 32.0),
+            r: [f64::MIN_POSITIVE; 16],
+            s_minus: std::array::from_fn(|s| if s == 5 { f64::INFINITY } else { 0.125 }),
+            s_plus: [0.375; 16],
+            status: std::array::from_fn(|s| (s % 5) as u8),
+        }],
+        pairs: vec![
+            PairRow {
+                x: 2,
+                y: 0,
+                a: 0,
+                b: 1,
+                sample: 0,
+                edges: 1,
+                label: 5,
+                provenance: 0,
+                offered: 7,
+                plate: 1,
+                offered_provenance: 0,
+            },
+            PairRow {
+                x: 2,
+                y: 0,
+                a: 0,
+                b: 1,
+                sample: 15,
+                edges: 6,
+                label: 6,
+                provenance: 4,
+                offered: 3,
+                plate: 6,
+                offered_provenance: 9,
+            },
+        ],
+        colours: vec![
+            ColourRow {
+                fragment: 0,
+                kind: 1,
+                rgba: [255, 128, 0, 255],
+            },
+            ColourRow {
+                fragment: 1,
+                kind: 2,
+                rgba: [0; 4],
+            },
+        ],
+        pixel_colours: vec![PixelColour {
+            x: 2,
+            y: 0,
+            fragment: 1,
+            lo: [1, 2, 3, 4],
+            hi: [250, 251, 252, 253],
+        }],
+        labels: vec![
+            LabelRow {
+                x: 2,
+                y: 0,
+                label: 2,
+                fragment: 0,
+                sample: 3,
+                role: 1,
+                pair_cause: 0,
+                class_cause: 0,
+            },
+            LabelRow {
+                x: 2,
+                y: 0,
+                label: 2,
+                fragment: 0,
+                sample: 9,
+                role: 2,
+                pair_cause: 5,
+                class_cause: 6,
+            },
+        ],
         refused: vec![
             Refused {
                 reason: 8,
@@ -148,7 +255,12 @@ fn every_section_starts_where_numpy_can_read_it_and_the_pixel_index_counts_rows(
         let off = u64::from_le_bytes(b[at + 8..at + 16].try_into().unwrap());
         assert_eq!(off % 8, 0);
     }
-    assert_eq!(tags, ["FRAG", "COVR", "PIXL", "REFU", "TEXT"]);
+    assert_eq!(
+        tags,
+        [
+            "FRAG", "COVR", "PIXL", "BAND", "AXBD", "PAIR", "COLR", "COLP", "LABL", "REFU", "TEXT"
+        ]
+    );
     // The window is 3 x 3 pixels; pixel (2, 0) holds rows 1 and 2.
     let pixl = 88 + 24 * 2;
     let off = u64::from_le_bytes(b[pixl + 8..pixl + 16].try_into().unwrap()) as usize;
@@ -230,4 +342,62 @@ fn a_refused_frame_writes_its_refusal() {
         text.contains("refused reason=2 kind=66 cause=0 entry=0 slot=3 object=30"),
         "{text}"
     );
+}
+
+/// `read.py --canonical` on `file`: whether it read it, and its error output.
+fn read_py_result(file: &Path) -> (bool, String) {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("read.py");
+    let out = Command::new("python3")
+        .arg("-I")
+        .arg(script)
+        .arg("--canonical")
+        .arg(file)
+        .output()
+        .expect("python3 runs");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn a_section_this_reader_does_not_know_is_refused() {
+    // FORMAT.md: a reader refuses a tag it does not know; a new section comes with a new
+    // version. The sample's `LABL` directory entry renamed `ZZZZ`: both readers refuse the file,
+    // naming the tag, rather than read it without the section.
+    let mut b = write(&sample());
+    let n = u32::from_le_bytes(b[80..84].try_into().unwrap()) as usize;
+    let at = (0..n)
+        .map(|i| 88 + 24 * i)
+        .find(|&at| &b[at..at + 4] == b"LABL")
+        .expect("a LABL section");
+    b[at..at + 4].copy_from_slice(b"ZZZZ");
+    // Both readers are asked before either is judged, so a failure names each one's answer.
+    let rust = read(&b).err();
+    let file = scratch("unknown-tag").join("d.oracle");
+    std::fs::write(&file, &b).unwrap();
+    let (ok, err) = read_py_result(&file);
+    assert!(
+        rust.as_deref().is_some_and(|e| e.contains("ZZZZ")) && !ok && err.contains("ZZZZ"),
+        "the unknown tag ZZZZ: the Rust reader refused {rust:?}; read.py read {ok}, {err}"
+    );
+}
+
+#[test]
+fn a_format_this_reader_does_not_know_is_refused() {
+    // FORMAT.md: a reader refuses a version it does not know. `ORACLE_FORMAT` is 2: a file
+    // stating format 1 (before `AXBD`) or 3 is refused by both readers.
+    for format in [1u16, 3] {
+        let mut b = write(&sample());
+        b[4..6].copy_from_slice(&format.to_le_bytes());
+        // Both readers are asked before either is judged, so a failure names each one's answer.
+        let rust = read(&b).err();
+        let file = scratch(&format!("format-{format}")).join("d.oracle");
+        std::fs::write(&file, &b).unwrap();
+        let (ok, err) = read_py_result(&file);
+        assert!(
+            rust.is_some() && !ok,
+            "format {format}: the Rust reader refused {rust:?}; read.py read {ok}, {err}"
+        );
+    }
 }

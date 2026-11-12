@@ -1,4 +1,4 @@
-"""The reader of the oracle's decisions files (``ORACLE_FORMAT`` 1, ``FORMAT.md`` beside this file).
+"""The reader of the oracle's decisions files (``ORACLE_FORMAT`` 2, ``FORMAT.md`` beside this file).
 
 Dependency-free: the standard library only. ``read(path)`` returns a dictionary::
 
@@ -7,6 +7,12 @@ Dependency-free: the standard library only. ``read(path)`` returns a dictionary:
         "fragments": [...],
         "covers": [...],
         "pixels": [...],
+        "bands": [...],
+        "axis_bands": [...],
+        "pairs": [...],
+        "colours": [...],
+        "pixel_colours": [...],
+        "labels": [...],
         "refused": [...],
     }
 
@@ -23,7 +29,7 @@ from __future__ import annotations
 import struct
 import sys
 
-ORACLE_FORMAT = 1
+ORACLE_FORMAT = 2
 MAGIC = b"AROR"
 HEADER_SIZE = 88
 NONE_U32 = 0xFFFFFFFF
@@ -54,8 +60,62 @@ CAUSE = {
     6: "class_out_of_range",
     7: "slot_not_held",
 }
-#: Fragment flags: unbounded, ``truth_unable`` at every sample of the window (no cover rows).
+#: A band row's status at a sample.
+BAND_STATUS = {
+    0: "absent",
+    1: "bounded",
+    2: "band_unbounded",
+    3: "curve_recut",
+    4: "pivot_unknown",
+}
+#: A pair's label at a sample.
+LABEL = {
+    0: "truth_unable",
+    1: "depth_a",
+    2: "depth_b",
+    3: "tie_band",
+    4: "exact_tie",
+    5: "own_layers@1",
+    6: "one_plane@1",
+    7: "lines@1",
+    8: "near_parallel@1",
+}
+#: A fragment's colour kind (``COLR``): a gradient, not computed; one solid; per pixel (``COLP``).
+COLOUR_KIND = {0: "gradient", 1: "solid", 2: "per_pixel"}
+#: A pair's edge bits.
+EDGE_WEAK, EDGE_A_FRONT, EDGE_B_FRONT = 1, 2, 4
+#: Fragment flags: unbounded, ``truth_unable`` at every sample of the window (no cover rows);
+#: a mesh triangle whose alpha byte is 0, not present under the contract (no rows, no pairs).
 FLAG_UNBOUNDED = 1
+FLAG_ZERO_ALPHA = 2
+#: Written where a field holds nothing.
+NONE_U32 = 0xFFFFFFFF
+#: A label's role toward another fragment at a sample (``LABL``).
+LABEL_ROLE = {
+    0: "front",
+    1: "anchor",
+    2: "open",
+    3: "kind_unknown",
+    4: "alpha_straddle",
+}
+#: An open label pair's cause (``LABL``), and an open class's cause.
+PAIR_CAUSE = {
+    0: None,
+    1: "interval",
+    2: "folded",
+    3: "disconnected",
+    4: "mesh",
+    5: "label",
+}
+CLASS_CAUSE = {
+    0: None,
+    1: "unmapped",
+    2: "generic_only",
+    3: "paths_disagree",
+    4: "no_source",
+    5: "cylinder_grouped",
+    6: "point_cloud",
+}
 
 DTYPES = {
     "FRAG": [
@@ -72,7 +132,7 @@ DTYPES = {
         ("epsilon", "<f8"),
         ("bbox", "<i4", (4,)),
         ("plane", "<u4"),
-        ("reserved", "<u4"),
+        ("label", "<u4"),
     ],
     "COVR": [
         ("x", "<u4"),
@@ -90,6 +150,67 @@ DTYPES = {
         ("band", "<f8", (16,)),
     ],
     "PIXL": [("first", "<u8"), ("count", "<u4")],
+    "BAND": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("fragment", "<u4"),
+        ("which", "u1"),
+        ("pad", "u1", (3,)),
+        ("o", "<f8", (16,)),
+        ("r", "<f8", (16,)),
+        ("s_minus", "<f8", (16,)),
+        ("s_plus", "<f8", (16,)),
+        ("status", "u1", (16,)),
+    ],
+    "AXBD": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("fragment", "<u4"),
+        ("against", "<u4"),
+        ("o", "<f8", (16,)),
+        ("r", "<f8", (16,)),
+        ("s_minus", "<f8", (16,)),
+        ("s_plus", "<f8", (16,)),
+        ("status", "u1", (16,)),
+    ],
+    "COLR": [
+        ("fragment", "<u4"),
+        ("kind", "u1"),
+        ("rgba", "u1", (4,)),
+        ("pad", "u1", (3,)),
+    ],
+    "COLP": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("fragment", "<u4"),
+        ("lo", "u1", (4,)),
+        ("hi", "u1", (4,)),
+        ("reserved", "<u4"),
+    ],
+    "PAIR": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("a", "<u4"),
+        ("b", "<u4"),
+        ("sample", "u1"),
+        ("edges", "u1"),
+        ("label", "u1"),
+        ("provenance", "u1"),
+        ("offered", "u1"),
+        ("plate", "u1"),
+        ("offered_provenance", "u1"),
+        ("pad", "u1", (1,)),
+    ],
+    "LABL": [
+        ("x", "<u4"),
+        ("y", "<u4"),
+        ("label", "<u4"),
+        ("fragment", "<u4"),
+        ("sample", "u1"),
+        ("role", "u1"),
+        ("pair_cause", "u1"),
+        ("class_cause", "u1"),
+    ],
     "REFU": [
         ("reason", "u1"),
         ("kind", "u1"),
@@ -110,7 +231,26 @@ _COVR_HEAD = struct.Struct("<3I16s16s16s2B2x")
 _F16 = struct.Struct("<16d")
 _PIXL = struct.Struct("<QI")
 _REFU = struct.Struct("<3Bx3I2Q2I")
-_SIZES = {"FRAG": 64, "COVR": 456, "PIXL": 12, "REFU": 40}
+_BAND_HEAD = struct.Struct("<3IB3x")
+_AXBD_HEAD = struct.Struct("<4I")
+_PAIR = struct.Struct("<4I7Bx")
+_LABL = struct.Struct("<4I4B")
+_COLR = struct.Struct("<IB4s3x")
+_COLP = struct.Struct("<3I4s4s4x")
+_SIZES = {
+    "FRAG": 64,
+    "COVR": 456,
+    "PIXL": 12,
+    "BAND": 544,
+    "AXBD": 544,
+    "PAIR": 24,
+    "COLR": 12,
+    "COLP": 24,
+    "LABL": 20,
+    "REFU": 40,
+}
+#: Every section tag this reader knows: the fixed-size records and ``TEXT``.
+_TAGS = frozenset(_SIZES) | {"TEXT"}
 
 
 class FormatError(ValueError):
@@ -134,7 +274,10 @@ def _header(b: bytes) -> tuple[dict, list[tuple[str, int, int, int]]]:
     directory = []
     for i in range(count):
         tag, size, off, n = struct.unpack_from("<4sIQQ", b, header_size + 24 * i)
-        directory.append((tag.decode("ascii"), size, off, n))
+        name = tag.decode("latin-1")
+        if name not in _TAGS:
+            raise FormatError(f"section {name} is not one this reader knows")
+        directory.append((name, size, off, n))
     header = {
         "format": fmt,
         "xf": [xf_major, xf_minor],
@@ -167,7 +310,19 @@ def read_bytes(b: bytes) -> dict:
             raise FormatError(
                 f"section {tag} has records of {found[tag][0]} bytes, not {size}"
             )
-    out = {"header": header, "fragments": [], "covers": [], "pixels": [], "refused": []}
+    out = {
+        "header": header,
+        "fragments": [],
+        "covers": [],
+        "pixels": [],
+        "bands": [],
+        "axis_bands": [],
+        "pairs": [],
+        "colours": [],
+        "pixel_colours": [],
+        "labels": [],
+        "refused": [],
+    }
     if "FRAG" in found:
         size, off, n = found["FRAG"]
         for i in range(n):
@@ -187,6 +342,7 @@ def read_bytes(b: bytes) -> dict:
                     "epsilon": v[10],
                     "bbox": list(v[11:15]),
                     "plane": v[15],
+                    "label": v[16],
                 }
             )
     if "COVR" in found:
@@ -214,6 +370,112 @@ def read_bytes(b: bytes) -> dict:
     if "PIXL" in found:
         size, off, n = found["PIXL"]
         out["pixels"] = [list(_PIXL.unpack_from(b, off + i * size)) for i in range(n)]
+    if "BAND" in found:
+        size, off, n = found["BAND"]
+        for i in range(n):
+            at = off + i * size
+            x, y, fragment, which = _BAND_HEAD.unpack_from(b, at)
+            out["bands"].append(
+                {
+                    "x": x,
+                    "y": y,
+                    "fragment": fragment,
+                    "which": which,
+                    "o": list(_F16.unpack_from(b, at + 16)),
+                    "r": list(_F16.unpack_from(b, at + 144)),
+                    "s_minus": list(_F16.unpack_from(b, at + 272)),
+                    "s_plus": list(_F16.unpack_from(b, at + 400)),
+                    "status": list(b[at + 528 : at + 544]),
+                }
+            )
+    if "AXBD" in found:
+        size, off, n = found["AXBD"]
+        for i in range(n):
+            at = off + i * size
+            x, y, fragment, against = _AXBD_HEAD.unpack_from(b, at)
+            out["axis_bands"].append(
+                {
+                    "x": x,
+                    "y": y,
+                    "fragment": fragment,
+                    "against": against,
+                    "o": list(_F16.unpack_from(b, at + 16)),
+                    "r": list(_F16.unpack_from(b, at + 144)),
+                    "s_minus": list(_F16.unpack_from(b, at + 272)),
+                    "s_plus": list(_F16.unpack_from(b, at + 400)),
+                    "status": list(b[at + 528 : at + 544]),
+                }
+            )
+    if "PAIR" in found:
+        size, off, n = found["PAIR"]
+        for i in range(n):
+            (
+                x,
+                y,
+                a,
+                b_,
+                sample,
+                edges,
+                label,
+                provenance,
+                offered,
+                plate,
+                offered_provenance,
+            ) = _PAIR.unpack_from(b, off + i * size)
+            out["pairs"].append(
+                {
+                    "x": x,
+                    "y": y,
+                    "a": a,
+                    "b": b_,
+                    "sample": sample,
+                    "edges": edges,
+                    "label": label,
+                    "label_name": LABEL.get(label, "unknown"),
+                    "provenance": provenance,
+                    "offered": offered,
+                    "plate": plate,
+                    "offered_provenance": offered_provenance,
+                }
+            )
+    if "LABL" in found:
+        size, off, n = found["LABL"]
+        for i in range(n):
+            x, y, label, fragment, sample, role, pc, cc = _LABL.unpack_from(
+                b, off + i * size
+            )
+            out["labels"].append(
+                {
+                    "x": x,
+                    "y": y,
+                    "label": label,
+                    "fragment": fragment,
+                    "sample": sample,
+                    "role": role,
+                    "role_name": LABEL_ROLE.get(role, "unknown"),
+                    "pair_cause": pc,
+                    "class_cause": cc,
+                }
+            )
+    if "COLR" in found:
+        size, off, n = found["COLR"]
+        for i in range(n):
+            fragment, kind, rgba = _COLR.unpack_from(b, off + i * size)
+            out["colours"].append(
+                {
+                    "fragment": fragment,
+                    "kind": kind,
+                    "kind_name": COLOUR_KIND.get(kind, "unknown"),
+                    "rgba": list(rgba),
+                }
+            )
+    if "COLP" in found:
+        size, off, n = found["COLP"]
+        for i in range(n):
+            x, y, fragment, lo, hi = _COLP.unpack_from(b, off + i * size)
+            out["pixel_colours"].append(
+                {"x": x, "y": y, "fragment": fragment, "lo": list(lo), "hi": list(hi)}
+            )
     text = b""
     if "TEXT" in found:
         _, off, n = found["TEXT"]
@@ -267,7 +529,8 @@ def canonical(d: dict) -> str:
     lines.extend(
         f"fragment id={f['id']} entry={f['entry']} slot={f['slot']} object={f['object']} "
         f"part={f['part']} sub={f['sub']} layer={f['layer']} kind={f['kind']} flags={f['flags']} "
-        f"group={f['group']} plane={f['plane']} epsilon={_hex(f['epsilon'])} bbox={_list(f['bbox'])}"
+        f"group={f['group']} plane={f['plane']} label={f['label']} epsilon={_hex(f['epsilon'])} "
+        f"bbox={_list(f['bbox'])}"
         for f in d["fragments"]
     )
     lines.extend(
@@ -277,6 +540,42 @@ def canonical(d: dict) -> str:
         f"cells={_list(_hex(v) for v in c['cell_area'])} depth={_list(_hex(v) for v in c['depth'])} "
         f"band={_list(_hex(v) for v in c['band'])}"
         for c in d["covers"]
+    )
+    lines.extend(
+        f"band x={r['x']} y={r['y']} fragment={r['fragment']} which={r['which']} "
+        f"o={_list(_hex(v) for v in r['o'])} r={_list(_hex(v) for v in r['r'])} "
+        f"s_minus={_list(_hex(v) for v in r['s_minus'])} "
+        f"s_plus={_list(_hex(v) for v in r['s_plus'])} status={_list(r['status'])}"
+        for r in d["bands"]
+    )
+    lines.extend(
+        f"axis_band x={r['x']} y={r['y']} fragment={r['fragment']} against={r['against']} "
+        f"o={_list(_hex(v) for v in r['o'])} r={_list(_hex(v) for v in r['r'])} "
+        f"s_minus={_list(_hex(v) for v in r['s_minus'])} "
+        f"s_plus={_list(_hex(v) for v in r['s_plus'])} status={_list(r['status'])}"
+        for r in d["axis_bands"]
+    )
+    lines.extend(
+        f"pair x={r['x']} y={r['y']} sample={r['sample']} a={r['a']} b={r['b']} "
+        f"edges={r['edges']} label={r['label']} provenance={r['provenance']} "
+        f"offered={r['offered']} plate={r['plate']} "
+        f"offered_provenance={r['offered_provenance']}"
+        for r in d["pairs"]
+    )
+    lines.extend(
+        f"label x={r['x']} y={r['y']} sample={r['sample']} label={r['label']} "
+        f"fragment={r['fragment']} role={r['role']} pair_cause={r['pair_cause']} "
+        f"class_cause={r['class_cause']}"
+        for r in d["labels"]
+    )
+    lines.extend(
+        f"colour fragment={r['fragment']} kind={r['kind']} rgba={_list(r['rgba'])}"
+        for r in d["colours"]
+    )
+    lines.extend(
+        f"pixel_colour x={r['x']} y={r['y']} fragment={r['fragment']} lo={_list(r['lo'])} "
+        f"hi={_list(r['hi'])}"
+        for r in d["pixel_colours"]
     )
     lines.extend(
         f"refused reason={r['reason']} kind={r['kind']} cause={r['cause']} entry={r['entry']} "

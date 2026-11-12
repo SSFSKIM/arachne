@@ -1,0 +1,11 @@
+{
+  "fixture": "shared_scenario_no_row",
+  "kind": "witness",
+  "rule": "shared_plane_read@1",
+  "seq": 1,
+  "pixel": [50, 32],
+  "samples": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  "defect_verdict": null,
+  "twin_verdict": "agreement",
+  "contract": "CONTRACT.md blob f96e2ffce0e9b74239fbd31d9506c0e108b6ecf2"
+}

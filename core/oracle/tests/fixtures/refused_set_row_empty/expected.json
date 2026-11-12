@@ -1,0 +1,10 @@
+{
+  "fixture": "refused_set_row_empty",
+  "kind": "refusal",
+  "frames": [
+    {"seq": 1, "outcome": "judged"},
+    {"seq": 2, "outcome": "stream_refused at_seq 2 cause row_empty"},
+    {"seq": 3, "outcome": "stream_refused at_seq 2 cause row_empty"},
+    {"seq": 4, "outcome": "stream_refused at_seq 2 cause row_empty"}
+  ]
+}
