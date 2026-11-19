@@ -23,6 +23,7 @@ from arachne.timeline.execution import Divergence
 from arachne.timeline.source import SourceLine
 from tests.lint import defect_scenes, query_scenes, shapes
 from tests.lint.report_shape import assert_notes, assert_report
+from tests.quantities import quantity_scenes
 from tests.timeline import probe_scenes
 from tests.timeline import scenes as timeline_scenes
 
@@ -33,6 +34,11 @@ QUERY_SCENES = Path(query_scenes.__file__)
 DEFECT_SCENES = Path(defect_scenes.__file__)
 TIMELINE_SCENES = Path(timeline_scenes.__file__)
 PROBE_SCENES = Path(probe_scenes.__file__)
+QUANTITY_SCENES = Path(quantity_scenes.__file__)
+
+#: What a query measures of the frame on screen: every answer but the
+#: values at points, which are read at the instant itself.
+MEASURES = tuple(name for name in api_json.QUERY_ANSWERS if name != "value_at")
 
 #: A small frame, so executing and drawing cost little.
 SMALL = {"pixel_width": 96, "pixel_height": 54}
@@ -100,6 +106,17 @@ def test_the_schemas_share_their_common_definitions():
                 seen[name] = (form, definition)
 
 
+def test_every_form_is_at_the_one_version():
+    """The forms move together: a field added to one is a minor version of
+    every one.
+    """
+    assert api_json.SCHEMA_VERSION == "1.1"
+    for form in api_json.FORMS:
+        assert api_json.schema(form)["$defs"]["schema_version"] == {
+            "const": api_json.SCHEMA_VERSION
+        }, form
+
+
 def test_an_unknown_form_has_no_schema():
     with pytest.raises(ValueError, match="record"):
         api_json.schema("nothing")
@@ -117,6 +134,9 @@ FORM_SCENES = [
     (QUERY_SCENES, "ReplacesItsProjection"),
     (DEFECT_SCENES, "WordsOnWords"),
     (DEFECT_SCENES, "TinyWord"),
+    (QUANTITY_SCENES, "ChangedBetweenPlays"),
+    (QUANTITY_SCENES, "Unreadables"),
+    (QUANTITY_SCENES, "TwoPointField"),
 ]
 
 
@@ -134,7 +154,7 @@ def test_every_form_validates_against_its_schema(sessions, tmp_path, path, name)
         found = session.query(t)
         out = _valid("state", api_json.state(session.state_at(found.t), session))
         ids = [node["id"] for node in out["nodes"]]
-        _valid("query", api_json.query(found, api_json.QUERY_ANSWERS, ids=ids))
+        _valid("query", api_json.query(found, MEASURES, ids=ids))
     _valid("key_frames", api_json.key_frames(session.key_frames(tmp_path)))
     _valid("lint_result", api_json.lint(lint(session, rules=(sweep, text_small))))
 
@@ -400,7 +420,7 @@ def test_a_replaced_camera_s_measures_are_its_replacement(sessions):
     session = sessions(QUERY_SCENES, "ReplacesItsProjection")
     found = session.query(Fraction(1, 4))
     node_id = session.state_at(Fraction(1, 4)).nodes[0].id
-    out = _valid("query", api_json.query(found, api_json.QUERY_ANSWERS, ids=[node_id]))
+    out = _valid("query", api_json.query(found, MEASURES, ids=[node_id]))
     for answer in ("bbox", "overlaps", "occlusions", "offscreen", "text_heights"):
         replaced = out[answer]
         assert replaced["code"] == "query.camera_replaced"
@@ -431,3 +451,92 @@ def test_the_lint_form_s_report_and_notes_keep_their_shape(sessions):
     out = _valid("lint_result", api_json.lint(tiny))
     assert_notes(out["notes"])
     assert [n["code"] for n in out["notes"]] == ["text.small"]
+
+
+#: What a state form held before declared quantities: the section is the
+#: one field added.
+STATE_FIELDS_BEFORE = {
+    "schema_version",
+    "t",
+    "t_exact",
+    "as_of",
+    "as_of_exact",
+    "play",
+    "route",
+    "answer",
+    "target_resolution",
+    "roots",
+    "nodes",
+}
+
+
+def test_a_scene_with_no_quantity_and_no_bake_adds_empty_entries(sessions):
+    session = sessions(SCENES, "Zoomed")
+    state = _valid("state", api_json.state(session.state_at(0), session))
+    assert set(state) == STATE_FIELDS_BEFORE | {"quantities"}
+    assert state["quantities"] == {}
+    record = _valid("record", api_json.inspect(session))
+    assert record["bakes"] == {"contents": [], "occurrences": []}
+
+
+def test_the_state_form_s_quantities(sessions):
+    session = sessions(QUANTITY_SCENES, "ChangedBetweenPlays")
+    found = session.state_at(Fraction(3, 2))
+    out = _valid("state", api_json.state(found, session))
+    probe, square = found.named("probe").id, found.named("square").id
+    assert out["quantities"] == {
+        probe: [
+            {"name": "probe.amount", "value": 2.5, "unit": "1", "tolerance": 0.01},
+            {"name": "probe.setting", "value": "on", "unit": "name"},
+        ],
+        square: [
+            {"name": "probe.count", "value": 3, "unit": "1", "tolerance": 0.5},
+            {"name": "probe.size", "value": 2.0, "unit": "1"},
+        ],
+    }
+    unreadable = sessions(QUANTITY_SCENES, "Unreadables")
+    found = unreadable.state_at(0)
+    out = _valid("state", api_json.state(found, unreadable))
+    assert out["quantities"][found.named("prefix").id] == [
+        {
+            "name": "nothing.x",
+            "value": None,
+            "unit": "1",
+            "unreadable": "the prefix 'nothing.' is not registered",
+        }
+    ]
+
+
+def test_the_record_form_s_bakes_hold_no_values(sessions):
+    session = sessions(QUANTITY_SCENES, "TwoPointField")
+    out = _valid("record", api_json.inspect(session))
+    field, arrows = session.record.bakes.occurrences
+    contents = {each["key"]: each for each in out["bakes"]["contents"]}
+    assert len(contents) == 2
+    assert out["bakes"]["occurrences"][0] == {
+        "ordinal": 0,
+        "content": field.content.hex(),
+        "first_tick": 0,
+        "last_tick": 120,
+        "closed": True,
+        "declaration": field.declaration.hex(),
+        "bindings": [],
+        "findings": [],
+    }
+    assert contents[field.content.hex()] == {
+        "key": field.content.hex(),
+        "identity": {
+            "producer": "arachne.utils.testing",
+            "producer_version": "1",
+            "solver": "rows given",
+            "solver_version": "1",
+            "integrator": "none",
+            "build": "python",
+            "features": [],
+        },
+        "ticks": 121,
+        "channels": [
+            {"name": "temperature", "dtype": "f64", "shape": [2, 1, 1], "unit": "K"}
+        ],
+        "events": [],
+    }

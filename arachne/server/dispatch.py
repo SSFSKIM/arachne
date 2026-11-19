@@ -240,6 +240,44 @@ def _ids(name: str, value: Any) -> list[str]:
     return value
 
 
+#: What a probe of a query's ``value_at`` may name.
+_PROBE_FIELDS = frozenset({"id", "channel", "position", "space"})
+
+
+def _probes(name: str, value: Any) -> list[Any]:
+    """Points to read: each ``{id, channel, position, space}``, ``position``
+    one to three numbers in ``space``, ``"scene"`` (the default) or ``"grid"``.
+    """
+    from ..quantities import PointProbe
+
+    shape = (
+        f"{name} is a list of {{id, channel, position, space}}: a stable id, a"
+        " channel's name, one to three numbers, and 'scene' or 'grid'."
+    )
+    if not isinstance(value, list):
+        raise _invalid(shape)
+    found = []
+    for each in value:
+        if not isinstance(each, dict) or not set(each) <= _PROBE_FIELDS:
+            raise _invalid(shape)
+        node_id, channel = each.get("id"), each.get("channel")
+        position, space = each.get("position"), each.get("space", "scene")
+        if (
+            not isinstance(node_id, str)
+            or not isinstance(channel, str)
+            or not isinstance(position, list)
+            or not 1 <= len(position) <= 3
+            or space not in ("scene", "grid")
+        ):
+            raise _invalid(shape)
+        found.append(
+            PointProbe(
+                node_id, channel, tuple(number(name, v) for v in position), space
+            )
+        )
+    return found
+
+
 @dataclass(frozen=True)
 class Method:
     """A method: ``run(dispatcher, params)`` answers it. ``session``: it
@@ -790,14 +828,22 @@ def _query(server: Dispatcher, params: Params) -> dict[str, Any]:
     t = params.get("t", instant)
     what = params.get("what", _answers)
     ids = params.get("ids", _ids, [])
+    probes = params.get("probes", _probes, [])
     if "bbox" in what and not ids:
         raise _invalid("A query's bbox needs ids, the mobjects to box.")
+    if "value_at" in what and not probes:
+        raise _invalid("A query's value_at needs probes, the points to read.")
     params.done()
-    return server.kept(
-        "query",
-        params.given,
-        lambda session: {"query": api_json.query(session.query(t), what, ids=ids)},
-    )
+
+    def answer(session: Session) -> dict[str, Any]:
+        from ..quantities import point_answers
+
+        measured = any(name != "value_at" for name in what)
+        found = session.query(t) if measured else None
+        points = point_answers(session, t, probes) if "value_at" in what else None
+        return {"query": api_json.query(found, what, ids=ids, points=points)}
+
+    return server.kept("query", params.given, answer)
 
 
 def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
