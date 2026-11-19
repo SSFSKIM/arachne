@@ -1,8 +1,9 @@
 """Nothing in the crate's tree picks its arithmetic from the CPU it runs on.
 
 ``census.py``
-    Searches the sources of every package in the locked tree (every target, every kind) for
-    run-time CPU feature detection, and fails unless each hit is on the reviewed list,
+    Searches the sources of every package in the locked tree (every target, every kind; not a
+    dependency's tests, benches or examples, which are never built here) for run-time CPU
+    feature detection, and fails unless each hit is on the reviewed list,
     ``ci/census.txt``, with the reason it cannot reach a result, and every entry of the list is
     still a hit. A changed lock file moves the lines, so the list is reviewed again. Prints
     ``census: <n> hits, all listed``.
@@ -40,6 +41,11 @@ class Hit:
     @property
     def key(self) -> str:
         return f"{self.package} {self.path}:{self.line}"
+
+
+def built(path: str) -> bool:
+    """Whether a dependency's source file is built for us: its tests, benches and examples are not."""
+    return path.split("/", 1)[0] not in ("tests", "benches", "examples")
 
 
 def detects(line: str) -> bool:
@@ -87,6 +93,9 @@ def packages() -> list[tuple[str, Path]]:
 def search(package: str, root: Path) -> list[Hit]:
     hits = []
     for source in sorted(root.rglob("*.rs")):
+        path = source.relative_to(root).as_posix()
+        if not built(path):
+            continue
         for number, line in enumerate(
             source.read_text(errors="replace").splitlines(), 1
         ):

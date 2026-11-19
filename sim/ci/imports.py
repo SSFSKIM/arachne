@@ -128,29 +128,31 @@ def got_slots(relocations: str) -> dict[int, str]:
     return slots
 
 
-def platform_math_calls(
+def platform_math_references(
     disassembly: str, slots: dict[int, str]
 ) -> list[tuple[int, str]]:
-    """Each call or jump to platform maths in ``objdump -d`` output: (address, function).
+    """Each instruction of ``objdump -d`` output that reaches platform maths: (address, function).
 
     A call goes through the PLT (``call 1a000 <sinf@plt>``) or straight through the GOT
-    (``call *0x2fe2(%rip)  # 43fe8 <...>``), whose slot is resolved through the relocations.
+    (``call *0x2fe2(%rip)  # 43fe8 <...>``); a call through a register loads the GOT slot
+    first (``mov 0x2fe2(%rip),%rbx  # 43ff0 <...>``). A slot is resolved through the
+    relocations.
     """
-    calls = []
+    references = []
     for line in disassembly.splitlines():
-        head = re.match(r"^\s*([0-9a-f]+):\s+(?:call|jmp)\s+(.*)$", line)
+        head = re.match(r"^\s*([0-9a-f]+):\s+\S+\s+(.*)$", line)
         if not head:
             continue
         address, operand = int(head.group(1), 16), head.group(2)
         plt = re.search(r"<([^>]+)@plt>", operand)
-        got = re.search(r"#\s*([0-9a-f]+)\b", operand)
+        got = re.search(r"\(%rip\).*#\s*([0-9a-f]+)\b", operand)
         symbol = (
             plt.group(1) if plt else slots.get(int(got.group(1), 16)) if got else None
         )
         function = platform_math(symbol) if symbol else None
         if function:
-            calls.append((address, function))
-    return calls
+            references.append((address, function))
+    return references
 
 
 def short_path(path: str) -> str:
@@ -183,7 +185,7 @@ def addr2line_frames(lines: list[str]) -> dict[int, list[str]]:
 
 def where(binary: str) -> None:
     slots = got_slots(run(["objdump", "-R", binary]))
-    calls = platform_math_calls(
+    calls = platform_math_references(
         run(["objdump", "-d", "--no-show-raw-insn", binary]), slots
     )
     if not calls:

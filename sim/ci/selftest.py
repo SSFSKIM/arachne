@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import census  # noqa: E402
 import imports  # noqa: E402
+import tree_check  # noqa: E402
 
 
 def test_each_listed_function_and_its_single_precision_form() -> None:
@@ -92,14 +93,17 @@ def test_plt_and_got_calls() -> None:
         "   1a2d0:\tcall   1a000 <cosf@plt>\n"
         "   1a2e0:\tjmp    *0x2fe2(%rip)        # 43fe8 <x>\n"
         "   1a2f0:\tcall   1a000 <memcpy@plt>\n"
+        "   1a300:\tmov    0x2fe2(%rip),%rbx        # 43ff0 <_GLOBAL_OFFSET_TABLE_+0x30>\n"
+        "   1a307:\tcall   *%rbx\n"
     )
     slots = imports.got_slots(relocations)
     assert slots == {0x43FE8: "sinf@GLIBC_2.2.5", 0x43FF0: "cosf@GLIBC_2.2.5"}
-    assert imports.platform_math_calls(disassembly, slots) == [
+    assert imports.platform_math_references(disassembly, slots) == [
         (0x1A2B3, "sinf"),
         (0x1A2C0, "cosf"),
         (0x1A2D0, "cosf"),
         (0x1A2E0, "sinf"),
+        (0x1A300, "cosf"),
     ]
 
 
@@ -153,12 +157,36 @@ def test_census_entry_needs_a_reason() -> None:
     raise AssertionError("an entry without its reason was accepted")
 
 
+def test_census_reads_only_what_a_dependency_builds() -> None:
+    assert census.built("src/x86.rs")
+    assert census.built("build.rs")
+    assert not census.built("tests/x86.rs")
+    assert not census.built("benches/a.rs")
+    assert not census.built("examples/a/main.rs")
+
+
 def test_census_patterns() -> None:
     assert census.detects('    if is_x86_feature_detected!("avx2") {')
     assert census.detects('cpufeatures::new!(cpuid_avx2, "avx2");')
     assert census.detects("let r = __cpuid(1);")
     assert census.detects("unsafe { getauxval(AT_HWCAP) }")
     assert not census.detects('#[cfg(target_feature = "avx2")]')
+
+
+def test_tree_features_by_package() -> None:
+    listing = (
+        "arachne-sim v0.1.0 (/w/sim)|\n"
+        "simba v0.10.2|libm,libm_force,wide\n"
+        "glam v0.33.12|libm,nostd-libm,scalar-math\n"
+        "glam v0.30.10|std (*)\n"
+        "simba v0.10.2|libm,libm_force,wide (*)\n"
+    )
+    assert tree_check.features_by_package(listing) == {
+        "arachne-sim v0.1.0": set(),
+        "simba v0.10.2": {"libm", "libm_force", "wide"},
+        "glam v0.33.12": {"libm", "nostd-libm", "scalar-math"},
+        "glam v0.30.10": {"std"},
+    }
 
 
 if __name__ == "__main__":

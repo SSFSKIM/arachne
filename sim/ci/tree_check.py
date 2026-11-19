@@ -5,8 +5,8 @@ determinism feature on.
     Fails if the crate's dependency tree (every kind, every target) holds a GPU crate (the
     pattern is the core's, read from ``core/ci/tree_check.py``), if ``arachne-core`` is in it,
     or if ``simba`` (the solver's scalar maths) is built without ``libm_force``, which routes
-    its transcendental functions to the pure-Rust ``libm``. Prints which of the solver's
-    crates are built with their ``std`` feature.
+    its transcendental functions to the pure-Rust ``libm``. Prints which crates are built with
+    their ``std`` feature.
 
 Run from ``sim/``.
 """
@@ -20,16 +20,6 @@ import sys
 from pathlib import Path
 
 CORE_CHECK = Path(__file__).resolve().parents[2] / "core" / "ci" / "tree_check.py"
-SOLVER_CRATES = (
-    "rapier2d",
-    "rapier3d",
-    "parry2d",
-    "parry3d",
-    "glamx",
-    "glam",
-    "simba",
-    "nalgebra",
-)
 
 
 def core_gpu_pattern() -> re.Pattern[str]:
@@ -42,64 +32,65 @@ def core_gpu_pattern() -> re.Pattern[str]:
     return pattern
 
 
-def cargo(*args: str) -> str:
-    out = subprocess.run(["cargo", *args], capture_output=True, text=True, check=False)
-    if out.returncode != 0:
-        sys.exit(f"cargo {' '.join(args)} failed:\n{out.stderr}")
-    return out.stdout
+def features_by_package(listing: str) -> dict[str, set[str]]:
+    """``cargo tree --format '{p}|{f}'`` output: each package (name and version) and its
+    enabled features.
+    """
+    packages: dict[str, set[str]] = {}
+    for line in listing.splitlines():
+        if "|" not in line:
+            continue
+        package, features = line.split("|", 1)
+        name, version = package.split()[:2]
+        enabled = features.removesuffix(" (*)").strip()
+        packages.setdefault(f"{name} {version}", set()).update(
+            f for f in enabled.split(",") if f
+        )
+    return packages
 
 
-def features_of(crate: str) -> str | None:
-    """``cargo tree -e features -i <crate>`` output, or None when the crate is not in the tree."""
+def check_deps() -> list[str]:
     out = subprocess.run(
-        ["cargo", "tree", "--locked", "--target", "all", "-e", "features", "-i", crate],
+        [
+            "cargo",
+            "tree",
+            "--locked",
+            "--target",
+            "all",
+            "-e",
+            "all",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}|{f}",
+        ],
         capture_output=True,
         text=True,
         check=False,
     )
     if out.returncode != 0:
-        if "did not match any packages" in out.stderr:
-            return None
-        sys.exit(f"cargo tree -i {crate} failed:\n{out.stderr}")
-    if not out.stdout.startswith(f"{crate} v"):
-        sys.exit(
-            f"cargo tree -i {crate} printed what this check does not read:\n{out.stdout}"
-        )
-    return out.stdout
-
-
-def check_deps() -> list[str]:
-    tree = cargo(
-        "tree",
-        "--locked",
-        "--target",
-        "all",
-        "-e",
-        "all",
-        "--prefix",
-        "none",
-        "--format",
-        "{p}",
-    )
-    crates = sorted({line.split()[0] for line in tree.splitlines() if line})
-    print(f"deps: {len(crates)} crates: {' '.join(crates)}")
+        sys.exit(f"cargo tree failed:\n{out.stderr}")
+    packages = features_by_package(out.stdout)
+    names = sorted({p.split()[0] for p in packages})
+    print(f"deps: {len(names)} crates: {' '.join(names)}")
     gpu = core_gpu_pattern()
-    problems = [f"a GPU crate in the tree: {c}" for c in crates if gpu.match(c)]
-    if "arachne-core" in crates:
+    problems = [f"a GPU crate in the tree: {n}" for n in names if gpu.match(n)]
+    if "arachne-core" in names:
         problems.append("arachne-core is in the tree")
 
-    simba = features_of("simba")
-    if simba is None:
+    simba = {p: f for p, f in packages.items() if p.split()[0] == "simba"}
+    if not simba:
         problems.append("simba is not in the tree")
-    elif 'simba feature "libm_force"' not in simba:
-        problems.append("simba is built without libm_force (the platform's maths)")
-    else:
-        print("deps: simba is built with libm_force")
+    for package, features in sorted(simba.items()):
+        if "libm_force" in features:
+            print(f"deps: {package} is built with libm_force")
+        else:
+            problems.append(
+                f"{package} is built without libm_force (the platform's maths)"
+            )
 
-    with_std = [
-        c for c in SOLVER_CRATES if f'{c} feature "std"' in (features_of(c) or "")
-    ]
-    print(f"deps: built with std: {' '.join(with_std) or 'none'}")
+    with_std = sorted(p for p, f in packages.items() if "std" in f)
+    print(f"deps: built with std: {', '.join(with_std) or 'none'}")
     return problems
 
 
