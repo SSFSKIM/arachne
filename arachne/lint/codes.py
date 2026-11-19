@@ -215,6 +215,27 @@ _TABLE = (
         " value of its kind, and read it only where its source holds a value.",
         ("name", "unit", "reason"),
     ),
+    Code(
+        "render.gpu_required",
+        "error",
+        "GpuRequired",
+        "a scene holding a GPU-only capability was asked to draw on a host with"
+        " no GPU; nothing is drawn or written. Raised by drawing calls only,"
+        " never listed by the lint, whose findings are the same on every host",
+        "Render on a GPU host; lint and state_at answer here.",
+        ("capabilities", "play", "object"),
+    ),
+    Code(
+        "render.gpu_live",
+        "error",
+        "GpuLive",
+        "a scene holding a GPU-only capability has its frames drawn before its"
+        " record is complete, which only Cairo does; nothing is written. Listed"
+        " by the lint on every host",
+        "Remove what makes the scene draw as it runs (the cause names it), or"
+        " the GPU-only capability.",
+        ("capabilities", "play", "object", "cause"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.
