@@ -10,8 +10,10 @@ use pyo3::types::{PyBytes, PyDict};
 
 use crate::compositor::{Compositor, DrawError, OpenError};
 use crate::device::{AdapterSummary, NoGpu, Pin};
-use crate::frame::{Frame, Layer, Source};
+use crate::frame::{Blur, Focus, Frame, Layer, SoftMask, Source};
 use crate::keys::{self, Key};
+use crate::object_map::Footprint;
+use crate::plan::MAX_NESTING;
 
 // ---------------------------------------------------------------------------------------------
 // Errors: the classes live in `arachne_gpu/_errors.py`.
@@ -104,44 +106,124 @@ fn rgba_of(rgba: &PyReadonlyArray3<'_, u8>) -> PyResult<(u32, u32, Vec<u8>)> {
     Ok((size(width)?, size(height)?, bytes))
 }
 
-/// A `Frame` of `arachne_gpu._frame`, read by its fields.
-fn frame_of(frame: &Bound<'_, PyAny>) -> PyResult<Frame> {
+/// Four corners in pixels.
+fn corners_of(source: &Bound<'_, PyAny>, what: &str) -> PyResult<[[f64; 2]; 4]> {
+    let corners: Vec<(f64, f64)> = source.getattr("corners")?.extract()?;
+    let corners: [(f64, f64); 4] = corners
+        .try_into()
+        .map_err(|_| PyValueError::new_err(format!("{what} has four corners")))?;
+    Ok(corners.map(|(x, y)| [x, y]))
+}
+
+/// An optional attribute: `None` when absent or None.
+fn optional<'py>(value: &Bound<'py, PyAny>, name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let attribute = value.getattr(name)?;
+    Ok((!attribute.is_none()).then_some(attribute))
+}
+
+/// A `Frame` of `arachne_gpu._frame`, read by its fields, `nesting` windows deep.
+fn frame_of(frame: &Bound<'_, PyAny>, nesting: usize) -> PyResult<Frame> {
     let py = frame.py();
     let classes = py.import("arachne_gpu._frame")?;
     let picture = classes.getattr("Picture")?;
     let quad = classes.getattr("Quad")?;
+    let window = classes.getattr("Window")?;
     let background: Vec<u8> = frame.getattr("background")?.extract()?;
     let background: [u8; 4] = background
         .try_into()
         .map_err(|_| PyValueError::new_err("a frame's background is 4 bytes, painted RGBA"))?;
+    let focus = match optional(frame, "focus")? {
+        Some(focus) => Some(Focus {
+            depth: focus.getattr("depth")?.extract()?,
+            aperture: focus.getattr("aperture")?.extract()?,
+        }),
+        None => None,
+    };
     let mut layers = Vec::new();
     for layer in frame.getattr("layers")?.try_iter()? {
         let layer = layer?;
         let source = layer.getattr("source")?;
-        let key = key_of(&source.getattr("key")?)?;
         let source = if source.is_instance(&quad)? {
-            let corners: Vec<(f64, f64)> = source.getattr("corners")?.extract()?;
-            let corners: [(f64, f64); 4] = corners
-                .try_into()
-                .map_err(|_| PyValueError::new_err("a quad has four corners"))?;
             Source::Quad {
-                key,
-                corners: corners.map(|(x, y)| [x, y]),
+                key: key_of(&source.getattr("key")?)?,
+                corners: corners_of(&source, "a quad")?,
                 resampling: source.getattr("resampling")?.extract()?,
             }
         } else if source.is_instance(&picture)? {
-            Source::Picture { key }
+            Source::Picture {
+                key: key_of(&source.getattr("key")?)?,
+            }
+        } else if source.is_instance(&window)? {
+            // Read no deeper than a frame may nest, so a frame that holds itself ends here.
+            if nesting >= MAX_NESTING {
+                return Err(python_error(
+                    py,
+                    "Unsupported",
+                    (format!("windows nested deeper than {MAX_NESTING}"),),
+                ));
+            }
+            Source::Window {
+                frame: Box::new(frame_of(&source.getattr("frame")?, nesting + 1)?),
+                corners: corners_of(&source, "a window")?,
+                resampling: source.getattr("resampling")?.extract()?,
+            }
         } else {
             return Err(PyTypeError::new_err(
-                "a layer's source is a Picture or a Quad",
+                "a layer's source is a Picture, a Quad or a Window",
             ));
+        };
+        let blur = match optional(&layer, "blur")? {
+            Some(blur) => Some(Blur {
+                sigma_px: blur.getattr("sigma_px")?.extract()?,
+            }),
+            None => None,
+        };
+        let mask = match optional(&layer, "mask")? {
+            Some(mask) => Some(SoftMask {
+                key: key_of(&mask.getattr("key")?)?,
+                feather_px: mask.getattr("feather_px")?.extract()?,
+                invert: mask.getattr("invert")?.extract()?,
+            }),
+            None => None,
+        };
+        let depth: Option<f64> = match optional(&layer, "depth")? {
+            Some(depth) => Some(depth.extract()?),
+            None => None,
+        };
+        let object_id: Option<String> = match optional(&layer, "object_id")? {
+            Some(id) => Some(id.extract()?),
+            None => None,
         };
         layers.push(Layer {
             source,
             opacity: layer.getattr("opacity")?.extract()?,
+            depth,
+            blur,
+            mask,
+            object_id,
         });
     }
-    Ok(Frame { background, layers })
+    Ok(Frame {
+        background,
+        layers,
+        focus,
+    })
+}
+
+/// A `Footprint` of `arachne_gpu._frame`: its mask a bool array (box height, box width).
+fn footprint_object<'py>(py: Python<'py>, footprint: Footprint) -> PyResult<Bound<'py, PyAny>> {
+    let [x0, y0, x1, y1] = footprint.r#box;
+    let mask =
+        PyArray1::from_vec(py, footprint.mask).reshape([(y1 - y0) as usize, (x1 - x0) as usize])?;
+    py.import("arachne_gpu._frame")?
+        .getattr("Footprint")?
+        .call1((
+            footprint.object_id,
+            footprint.layer,
+            (x0, y0, x1, y1),
+            mask,
+            footprint.grow_px,
+        ))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -267,11 +349,27 @@ impl PyCompositor {
     /// array. Raises Unsupported (render.unsupported) for what this build does not draw; a
     /// refused frame draws nothing.
     fn draw<'py>(&self, py: Python<'py>, frame: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-        let frame = frame_of(frame)?;
+        let frame = frame_of(frame, 0)?;
         let rgba = self.with(py, |c| c.draw(&frame))?;
         Ok(PyArray1::from_vec(py, rgba)
             .reshape([self.height as usize, self.width as usize, 4])?
             .into_any())
+    }
+
+    /// One Footprint per layer that names an object (``object_id``), in the frame's order: the
+    /// pixels the layer covers drawn with no effect (a bool mask over a half-open box, y down) and
+    /// ``grow_px``, how far its effects spread it. Raises as ``draw`` does for a refused frame.
+    fn object_map<'py>(
+        &self,
+        py: Python<'py>,
+        frame: &Bound<'py, PyAny>,
+    ) -> PyResult<Vec<Bound<'py, PyAny>>> {
+        let frame = frame_of(frame, 0)?;
+        let footprints = self.with(py, |c| c.object_map(&frame))?;
+        footprints
+            .into_iter()
+            .map(|f| footprint_object(py, f))
+            .collect()
     }
 }
 

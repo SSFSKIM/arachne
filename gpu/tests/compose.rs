@@ -12,7 +12,7 @@ const H: u32 = 270;
 const CLEAR: [u8; 4] = [0, 0, 0, 0];
 
 fn frame(background: [u8; 4], layers: Vec<Layer>) -> Frame {
-    Frame { background, layers }
+    Frame::new(background, layers)
 }
 
 /// Painted "over" in real arithmetic, rounded: the closed form a stack is held to.

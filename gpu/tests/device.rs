@@ -125,11 +125,8 @@ fn a_frame_size_the_device_cannot_draw_is_refused_as_invalid() {
 fn a_compositor_moves_to_another_thread() {
     let mut c = compositor(16, 16);
     let drawn = std::thread::spawn(move || {
-        c.draw(&arachne_gpu::Frame {
-            background: [1, 2, 3, 4],
-            layers: vec![],
-        })
-        .unwrap()
+        c.draw(&arachne_gpu::Frame::new([1, 2, 3, 4], vec![]))
+            .unwrap()
     })
     .join()
     .unwrap();

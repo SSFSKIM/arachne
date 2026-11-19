@@ -34,6 +34,75 @@ image.
 A compositor is shared safely between threads: one draw holds it from its first pass to its
 read-back.
 
+## Effects
+
+A `Layer` may carry effects, applied in this order: the layer is placed alone (its picture, quad or
+window, at the frame's size), blurred, multiplied by its soft mask, then scaled by its opacity and
+stacked as above.
+
+- **Blur** (`Blur(sigma_px)`): a Gaussian of standard deviation `sigma_px` pixels, separable (a
+  pass along rows, then one along columns), its kernel reaching `ceil(3 * sigma)` pixels each way.
+  At the frame's border the picture's own edge value continues outward. A blurred step edge is
+  2.563 sigma wide from its 10% to its 90% level. A blur keeps a constant picture exactly; it does
+  not keep every picture's mean, since the continued border counts more than once (a bright border
+  row raises the mean of a dark picture).
+- **Depth under a focus** (`Layer(..., depth=d)` in `Frame(..., focus=Focus(depth, aperture))`): a
+  blur of `aperture * |d - depth|` pixels, combined with the layer's own blur as the root of the sum
+  of their squares; it is resolved here and nowhere else. A layer at the focus depth, or with a
+  depth and no focus, is not defocused; its own blur, if it has one, still applies.
+- **Soft mask** (`SoftMask(key, feather_px, invert=False)`): a picture of the frame's size, of
+  either kind, whose alpha (and only its alpha) multiplies the layer. Its alpha is feathered by a
+  Gaussian of sigma `feather_px / 3`, run along rows then columns, whose taps reach the whole
+  pixels within `feather_px` along each axis. So the mask turns half way at its own edge, and the
+  feather's cutoff is per axis: a pixel whose centre is farther than `feather_px` from every pixel
+  across the edge, along both axes, is kept or removed whole. Near an edge at an angle to the axes,
+  a pixel may be partly kept though it is farther than `feather_px` from the edge in a straight
+  line: the feather reaches a square, as the comparator's grown footprint does. `invert` keeps
+  what it would remove.
+- **Window** (`Window(frame, corners, resampling)`): another stack, composed at the frame's size and
+  placed at four corners as a quad is. Windows nest at most four deep.
+
+**Arithmetic.** Three parts, and what each promises across adapters:
+
+- *Kernel set-up*, on the CPU: each kernel's weights are computed in 64-bit floating point and
+  rounded once to fixed point with 16 fractional bits, summing to exactly 1 (so a constant picture
+  stays exactly constant). Every adapter is handed the same integer weights.
+- *Pixel filtering and the final rounding*, on the device, in integers: identical on every
+  adapter.
+- *Placement* of a quad or a window, on the device, in floating point: which already-rounded texel
+  a pixel copies may differ at a texel's or the outline's edge between adapters, and is not
+  promised identical. It rounds no value.
+
+The row pass reads the 8-bit placed layer and keeps 8 fractional bits; the column pass reads those
+32-bit values and keeps 8 fractional bits again, so the second pass reads no 8-bit rounding of the
+first. The mask's alpha is feathered the same way, into its own 32-bit values. The one rounding
+back to 8 bits, half up, comes last, after the mask has multiplied the blurred layer; opacity then
+scales the 8-bit result as it scales any layer. A layer whose effects do nothing (a blur of 0, a
+depth at the focus with no blur of its own) is stacked as a plain layer, its bytes untouched.
+
+A frame is refused whole for an effect out of range: a negative or non-finite sigma, feather or
+aperture, a non-finite depth, a mask of another size (`ValueError`); a blur or feather that reaches
+past the frame's longer side, or windows nested deeper than four (`Unsupported`).
+
+## The object map
+
+`object_map(frame)` returns one `Footprint` per layer that names an object (`object_id`), in the
+frame's order: `object_id`; `layer`, its index; `box`, `(x0, y0, x1, y1)` in pixels, half-open,
+y down; `mask`, a bool array of the box's size, true where the layer drawn with no effect puts any
+alpha (its texels scaled by its opacity, as it would be stacked); and `grow_px`, how far its
+effects spread it: three sigma of its blur, or its mask's feather, whichever is larger. Drawing the
+frame without the layer changes pixels only inside its footprint grown by `grow_px` (to the next
+whole pixel, as a square). Objects overlap and each keeps its whole footprint. A window is one
+object to the frame that holds it: the objects inside it are not listed. The coverage is drawn on
+the device, a bit per layer, 32 layers to a read-back, so the map is for sampled frames.
+
+## A proposed Frame IR record
+
+`arachne_gpu::composite::read_composite` reads the body of a proposed Frame IR record kind,
+`composite`: the entries drawn into a picture of their own, with a blur, a depth, a focus, a window
+and a soft mask. Its layout is stated in `src/composite.rs`; it is not yet part of `core/XF.md`,
+and its kind code is not yet allocated. `tests/composite.rs` pins its fixtures' bytes.
+
 ## Which device draws
 
 `Compositor(...)` draws on a GPU only: a discrete, integrated or virtual adapter on Vulkan. With
