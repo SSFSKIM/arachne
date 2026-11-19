@@ -30,6 +30,7 @@ pub fn all() -> Vec<(&'static str, String)> {
             hex(&three::inertia(crate::three::hull())),
         ),
         ("hull-at-rest-3d", hex(&three::hull_at_rest())),
+        ("ball-on-hull-3d", hex(&three::ball_on_hull())),
     ]
 }
 
@@ -133,6 +134,30 @@ mod three {
             .to_bits()]
     }
 
+    /// The 3D form of the published angular motor: a motor driving to an angle, on a body
+    /// jointed to a multibody link, goes through the generic joint builder, which takes the sine
+    /// of half the target angle.
+    pub fn angular_motor() -> [u32; 4] {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::ZERO;
+        let fixed = world.insert_body(RigidBodyBuilder::fixed());
+        let body = world.insert_body(RigidBodyBuilder::dynamic().can_sleep(false));
+        world.insert_collider(ColliderBuilder::ball(1.0), Some(body));
+        world
+            .multibody_joints
+            .insert(fixed, body, RevoluteJointBuilder::new(Vector::X), true)
+            .expect("a multibody joint");
+        let actuator = GenericJointBuilder::new(JointAxesMask::empty()).motor_position(
+            JointAxis::AngX,
+            0.364_942_55,
+            10.0,
+            1.0,
+        );
+        world.insert_impulse_joint(fixed, body, actuator);
+        world.step();
+        world.bodies[body].rotation().to_array().map(f32::to_bits)
+    }
+
     /// The 3D form of the angular limit: the sine and cosine of half the limits' centre.
     pub fn angular_limits() -> [u32; 4] {
         let mut world = PhysicsWorld::new();
@@ -175,6 +200,25 @@ mod three {
             .insert_body(crate::three::dynamic(0.0, 1.5, 0.0).rotation(Vector::new(0.3, 0.1, 0.2)));
         world.insert_collider(crate::three::hull(), Some(body));
         for _ in 0..120 {
+            world.step();
+        }
+        let body = &world.bodies[body];
+        let (t, r) = (body.translation().to_array(), body.rotation().to_array());
+        [t[0], t[1], t[2], r[0], r[1], r[2], r[3]].map(f32::to_bits)
+    }
+
+    /// A ball dropped on a fixed convex hull: a ball against a convex polyhedron is the contact
+    /// that asks the polyhedron for the feature nearest a point, which takes the sine and cosine
+    /// of its angular tolerance.
+    pub fn ball_on_hull() -> [u32; 7] {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::new(0.0, -9.8, 0.0);
+        crate::three::settings(&mut world.integration_parameters);
+        let hull = world.insert_body(RigidBodyBuilder::fixed());
+        world.insert_collider(crate::three::hull(), Some(hull));
+        let body = world.insert_body(crate::three::dynamic(0.05, 1.2, -0.03));
+        world.insert_collider(ColliderBuilder::ball(0.2).restitution(0.3), Some(body));
+        for _ in 0..90 {
             world.step();
         }
         let body = &world.bodies[body];

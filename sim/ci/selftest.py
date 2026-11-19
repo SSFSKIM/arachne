@@ -134,33 +134,61 @@ def test_addr2line_frames_with_rust_paths_in_names() -> None:
     }
 
 
+CPU = "cpufeatures 0.2.17 sha256:aa"
+MM = "matrixmultiply 0.3.10 sha256:bb"
+LIBM = "libm 0.2.16 sha256:b6d2"
+
+
 def test_census_hits_compare_with_the_reviewed_list() -> None:
     hits = [
-        census.Hit("cpufeatures 0.2.17", "src/x86.rs", 40, "is_x86_feature_detected!"),
-        census.Hit("matrixmultiply 0.3.10", "src/x86/macros.rs", 12, "detected"),
+        census.Hit(CPU, "src/x86.rs", 40, "is_x86_feature_detected!"),
+        census.Hit(MM, "src/x86/macros.rs", 12, "detected"),
     ]
     reviewed = census.parse_reviewed(
         "# comment\n"
-        "cpufeatures 0.2.17 src/x86.rs:40  the detector itself\n"
-        "wide 1.0.3 src/lib.rs:7  gone from the tree\n"
+        f"{CPU} src/x86.rs:40  the detector itself\n"
+        "wide 1.0.3 sha256:cc src/lib.rs:7  gone from the tree\n"
     )
     unlisted, stale = census.compare(hits, reviewed)
-    assert [h.key for h in unlisted] == ["matrixmultiply 0.3.10 src/x86/macros.rs:12"]
-    assert stale == ["wide 1.0.3 src/lib.rs:7"]
+    assert [h.key for h in unlisted] == [f"{MM} src/x86/macros.rs:12"]
+    assert stale == ["wide 1.0.3 sha256:cc src/lib.rs:7"]
 
 
-def test_census_entry_for_every_hit_of_a_file() -> None:
+def test_census_entry_for_every_hit_of_a_file_of_one_locked_source() -> None:
     hits = [
-        census.Hit("libm 0.2.16", "src/math/arch/x86/detect.rs", 63, "__cpuid(0)"),
-        census.Hit("libm 0.2.16", "src/math/arch/x86/detect.rs", 77, "__cpuid(1)"),
-        census.Hit("libm 0.2.17", "src/math/arch/x86/detect.rs", 63, "__cpuid(0)"),
+        census.Hit(LIBM, "src/math/arch/x86/detect.rs", 63, "__cpuid(0)"),
+        census.Hit(LIBM, "src/math/arch/x86/detect.rs", 77, "__cpuid(1)"),
+        census.Hit("libm 0.2.16 sha256:ffff", "src/math/arch/x86/detect.rs", 63, "x"),
     ]
     reviewed = census.parse_reviewed(
-        "libm 0.2.16 src/math/arch/x86/detect.rs:*  selects the fused multiply-add\n"
+        f"{LIBM} src/math/arch/x86/detect.rs:*  selects the fused multiply-add\n"
     )
     unlisted, stale = census.compare(hits, reviewed)
-    assert [h.key for h in unlisted] == ["libm 0.2.17 src/math/arch/x86/detect.rs:63"]
+    assert [h.key for h in unlisted] == [
+        "libm 0.2.16 sha256:ffff src/math/arch/x86/detect.rs:63"
+    ]
     assert stale == []
+
+
+def test_census_names_the_locked_source() -> None:
+    lock = (
+        "version = 4\n\n"
+        "[[package]]\n"
+        'name = "libm"\nversion = "0.2.16"\n'
+        'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+        'checksum = "b6d2"\n\n'
+        "[[package]]\n"
+        'name = "rapier2d"\nversion = "0.36.1"\n'
+        'source = "git+https://github.com/dimforge/rapier?rev=b303#b303bc13"\n\n'
+        "[[package]]\n"
+        'name = "arachne-sim"\nversion = "0.1.0"\n'
+    )
+    index = census.lock_index(lock)
+    registry = "registry+https://github.com/rust-lang/crates.io-index"
+    assert census.source_id(index, "libm", "0.2.16", registry) == "sha256:b6d2"
+    git = "git+https://github.com/dimforge/rapier?rev=b303#b303bc13"
+    assert census.source_id(index, "rapier2d", "0.36.1", git) == "git:b303bc13"
+    assert census.source_id(index, "arachne-sim", "0.1.0", None) == "local"
 
 
 def test_census_reads_the_shipped_tree_only() -> None:
@@ -198,18 +226,38 @@ def test_census_reads_the_shipped_tree_only() -> None:
 
 def test_census_entry_needs_a_reason() -> None:
     try:
-        census.parse_reviewed("cpufeatures 0.2.17 src/x86.rs:40\n")
+        census.parse_reviewed(f"{CPU} src/x86.rs:40\n")
     except ValueError:
         return
     raise AssertionError("an entry without its reason was accepted")
 
 
-def test_census_reads_only_what_a_dependency_builds() -> None:
-    assert census.built("src/x86.rs")
-    assert census.built("build.rs")
-    assert not census.built("tests/x86.rs")
-    assert not census.built("benches/a.rs")
-    assert not census.built("examples/a/main.rs")
+def test_census_walks_a_library_outside_its_manifest_directory() -> None:
+    package = {
+        "manifest_path": "/co/crates/rapier2d/Cargo.toml",
+        "targets": [
+            {"kind": ["lib"], "src_path": "/co/crates/rapier2d/../../src/lib.rs"},
+            {"kind": ["custom-build"], "src_path": "/co/crates/rapier2d/build.rs"},
+            {"kind": ["test"], "src_path": "/co/crates/rapier2d/tests/a.rs"},
+            {"kind": ["example"], "src_path": "/co/examples/b.rs"},
+        ],
+    }
+    base, roots = census.compiled_roots(package)
+    assert base == Path("/co")
+    assert roots == [Path("/co/src"), Path("/co/crates/rapier2d/build.rs")]
+
+
+def test_census_walks_a_build_script_directory_of_its_own() -> None:
+    package = {
+        "manifest_path": "/r/libm-0.2.16/Cargo.toml",
+        "targets": [
+            {"kind": ["lib"], "src_path": "/r/libm-0.2.16/src/lib.rs"},
+            {"kind": ["custom-build"], "src_path": "/r/libm-0.2.16/build/main.rs"},
+        ],
+    }
+    base, roots = census.compiled_roots(package)
+    assert base == Path("/r/libm-0.2.16")
+    assert roots == [Path("/r/libm-0.2.16/src"), Path("/r/libm-0.2.16/build")]
 
 
 def test_census_patterns() -> None:

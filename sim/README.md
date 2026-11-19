@@ -39,10 +39,10 @@ Read on 2026-11-19, when rapier 0.36.1 (2026-10-10) was the newest release.
 
 | Crate | Version | Source | Features |
 | --- | --- | --- | --- |
-| `rapier2d` | 0.36.1 | [dimforge/rapier@b303bc13](https://github.com/dimforge/rapier/commit/b303bc13e7e69abcec31c595f095de71edf2d3d3) | `dim2`, `f32`, `alloc`, `block-solver`, `enhanced-determinism` |
+| `rapier2d` | 0.36.1 | [dimforge/rapier@b303bc13](https://github.com/dimforge/rapier/commit/b303bc13e7e69abcec31c595f095de71edf2d3d3): the v0.36.1 tag, two commits to `bevy_rapier` only, then the fix | `dim2`, `f32`, `alloc`, `block-solver`, `enhanced-determinism` |
 | `rapier3d` | 0.36.1 | the same commit | `dim3`, `f32`, `alloc`, `enhanced-determinism` |
-| `parry2d`, `parry3d` | 0.31.1 | [dimforge/parry@dbcce409](https://github.com/dimforge/parry/commit/dbcce4095c5c65277de1d3363d59c9a75cc02a87) | as rapier asks: `required-features`, `alloc`, `enhanced-determinism` |
-| `glamx` | 0.3.1 | [dimforge/glamx@78c97db7](https://github.com/dimforge/glamx/commit/78c97db71c2724b096cf751d2024c405c65d8612) | as parry asks |
+| `parry2d`, `parry3d` | 0.31.1 | [dimforge/parry@dbcce409](https://github.com/dimforge/parry/commit/dbcce4095c5c65277de1d3363d59c9a75cc02a87): the v0.31.1 tag, one commit to restoring deserialized contact workspaces (built only with `serde-serialize`, which is off), then the fix | as rapier asks: `required-features`, `alloc`, `enhanced-determinism` |
+| `glamx` | 0.3.1 | [dimforge/glamx@78c97db7](https://github.com/dimforge/glamx/commit/78c97db71c2724b096cf751d2024c405c65d8612): the v0.3.1 tag, then the fix | as parry asks |
 | `simba` | 0.10.2 | crates.io | `libm_force` (from `enhanced-determinism`) |
 | `nalgebra` | 0.35.0 | crates.io | `macros`, no `std` |
 | `libm` | 0.2.16 | crates.io | the pure-Rust maths every transcendental function goes to |
@@ -54,10 +54,11 @@ The three commits are upstream's own fix for the calls described below, open as 
 the day of the pin: [rapier#1074](https://github.com/dimforge/rapier/pull/1074),
 [parry#468](https://github.com/dimforge/parry/pull/468) and
 [glamx#10](https://github.com/dimforge/glamx/pull/10) (issue
-[rapier#1054](https://github.com/dimforge/rapier/issues/1054)). Each is the release plus one
-commit; the source changes are the call sites in the table of paths, each rewritten from a method
-call (`x.sin()`) to the trait's function (`<Real as ComplexField>::sin(x)`), plus tests and
-changelog lines. The pin moves to the first release that carries them.
+[rapier#1054](https://github.com/dimforge/rapier/issues/1054)). The fix commits' source changes
+are the call sites in the table of paths, each rewritten from a method call (`x.sin()`) to the
+trait's function (`<Real as ComplexField>::sin(x)`), plus tests and changelog lines; the other
+commits between each release tag and its pin are named in the table above. The pin moves to the
+first release that carries the fixes.
 
 ### Why the calls needed a correction
 
@@ -81,7 +82,7 @@ log2f powf sincosf sinf` on Linux, as the build with it did, and gave the same b
 | P2 | Same declaration, solver and compiler: the same trace on two machines | The determinism page promises it, under "the same initial conditions" and IEEE 754 platforms | Holds once P8 is corrected; the probe's worlds and cases agree on three systems |
 | P3 | The feature excludes only the 8-lane vector path | One `compile_error!` each in rapier's and parry's `src/lib.rs`, under `all(feature = "simd8", feature = "enhanced-determinism")` | Holds |
 | P4 | Results do not depend on the number of solver threads | The changelog: "bitwise identical for any thread-pool size" with `parallel` | Not relied on: `parallel` is off and `rayon` is not in the tree |
-| P5 | Nothing in the built tree picks its arithmetic from the CPU it runs on | `ci/census.py` over the shipped tree: one file, `libm`'s detection, used only to choose the processor's fused multiply-add or libm's software one, which IEEE 754 defines to give the same bits. Without `std`, `nalgebra` drops `matrixmultiply`, whose kernels are chosen at run time | Holds (`ci/census.txt`) |
+| P5 | Nothing in the built tree picks its arithmetic from the CPU it runs on | `ci/census.py` over what Cargo compiles of the shipped tree (each library target's source directory, wherever it is, and each build script; this crate's own included): one file, `libm`'s detection, used only to choose the processor's fused multiply-add or libm's software one, which IEEE 754 defines to give the same bits. Without `std`, `nalgebra` drops `matrixmultiply`, whose kernels are chosen at run time | Holds (`ci/census.txt`) |
 | P6 | The result does not depend on the vector instructions the compiler was allowed | The probe built for `x86-64` and for `x86-64-v3` | Holds: byte-identical (`sim-identity`) |
 | P7 | Stepping in one call or in pieces, in a fresh process or a second world of one process, gives the same bytes | The probe run twice; `tests/stepping.rs` | Holds. Not covered and not done: restoring a cloned joint set into a live pipeline ([rapier#1053](https://github.com/dimforge/rapier/issues/1053)) |
 | P8 | The shipped artifact calls no transcendental function of the platform's maths library and no fused multiply-add | `ci/imports.py` on the probe | False at the release; holds at the pinned commits (`imports: no platform maths` on Linux, macOS and Windows) |
@@ -91,13 +92,15 @@ The solver defaults read at the pin, each of which the crate sets explicitly:
 
 - **Sleeping**: an island sleeps after 0.5 s below 0.05 units/s and 0.5 rad/s
   (`RigidBodyActivation`). Every body is built with `can_sleep(false)`.
-- **Speed caps**: linear speed is capped at `normalized_max_linear_velocity` (400) times
-  `length_unit` (1) per substep, and rotation at 45 degrees per step (`MAX_ROTATION`, about 47
-  rad/s at 60 Hz) unless a body allows fast rotation.
+- **Speed caps**: after each substep a body's linear speed is clamped to
+  `normalized_max_linear_velocity` (400) times `length_unit` (1), in units per second, and its
+  angular speed to 45 degrees per step (`MAX_ROTATION` times the step rate, about 47 rad/s at
+  60 Hz) unless the body allows fast rotation.
 - **Continuous collision detection** runs for fast bodies against fixed colliders whenever
   `max_ccd_substeps` is above 0 (default 1); `ccd_enabled` extends it to moving bodies.
-- **Contact recycling** (default on): a pair that moved less than 0.05 keeps its previous contact
-  points, so contact data can be stale by up to that distance.
+- **Contact recycling** (default on): a pair that moved less than
+  `normalized_contact_recycle_distance` (0.05, set explicitly) keeps its previous contact points,
+  so contact data can be stale by up to that distance.
 - **Contact clustering** (3D, default on), **joint warm-starting** (off), **friction in the bias
   pass** (off), 4 solver iterations, 1 internal and 1 stabilization iteration, a step of 1/60 s.
 - **`block-solver`** is a compile-time feature, on by default in 2D only; **precision** is the
@@ -115,6 +118,10 @@ expose.
 At the release, the probe imported `acosf asinf atan2f cosf expf log2f powf sincosf sinf` on Linux.
 At the pinned commits it imports none, on Linux, macOS and Windows.
 
+In the table, † marks a call site `ci/imports.py --where` resolved in the build at the release;
+‡ one read in the source only (that run resolved no site for `cosf` and `log2f`, and the constant
+`sin_cos` may have been folded at compile time, which no import list can see).
+
 A **path** is one solver feature a scene can ask for. Each is in one of three states:
 **corrected** (a pinned change after which its calls are gone from the list and its probe case
 gives the same bits on Linux x86-64, Windows x86-64 and macOS arm64), **excluded** (refused by the
@@ -122,14 +129,15 @@ crate when a scene declares it) or **not linked** (not in the built artifact). N
 
 | Path | Call at the release | State |
 | --- | --- | --- |
-| Angular limit of a pin joint, 2D and 3D (and of a ball joint's axis) | `sin_cos`, rapier `joint_constraint_helper.rs:62,64` | Corrected: `angular-limits-2d-published`, `angular-limits-3d` |
-| Motor driving a joint to an angle, on a body jointed to a multibody link | `sin` ×2, rapier `generic_joint_constraint_builder.rs:766,769` | Corrected: `angular-motor-2d-published` |
-| Angle of a 3D pin joint (`RevoluteJoint::angle`) | `asin`, rapier `revolute_joint.rs` | Corrected: `revolute-angle-3d-published` |
-| Inertia of a 3D shape whose tensor is not diagonal (convex hulls, compounds, rotated parts) | `acos`, `cos`, glamx `eigen3.rs:101,105,106` | Corrected: `inertia-hull-3d`, `inertia-compound-3d` |
-| Broad phase (its tree's optimisation budget) | `log2`, parry `bvh_optimize.rs` | Corrected: every world |
-| Contacts of a 3D convex polyhedron | `sin_cos`, parry `convex_polyhedron.rs` | Corrected: `hull-at-rest-3d` |
-| Triangle-mesh pseudo-normals | `acos`, parry `vector_ext.rs:60` | Corrected (calls); no case: the crate exposes no triangle mesh |
-| Soft bodies (elasticity, plasticity, damping, tearing, shape matching, dihedral angles, builders) | `exp`, `powf`, `atan2`, `acos`, `sin`, `cos`, rapier `soft_*` | Corrected (calls); no case: the step reaches this code with no soft body declared, and the crate exposes none |
+| Angular limit of a pin joint, 2D and 3D (and of a ball joint's axis) | `sincosf`, rapier `joint_constraint_helper.rs:62` (2D), `:64` (3D), from `joint_constraint_builder.rs:53,302` and `generic_joint_constraint_builder.rs:690` † | Corrected: `angular-limits-2d-published`, `angular-limits-3d` |
+| 2D motor driving a joint to an angle, on a body jointed to a multibody link | `sinf` ×2, rapier `generic_joint_constraint_builder.rs:766` † | Corrected: `angular-motor-2d-published` |
+| 3D motor driving a joint to an angle, on a body jointed to a multibody link | `sinf`, rapier `generic_joint_constraint_builder.rs:769` † | Corrected: `angular-motor-3d` |
+| Angle of a 3D pin joint (`RevoluteJoint::angle`) | `asinf`, rapier `revolute_joint.rs` † | Corrected: `revolute-angle-3d-published` |
+| Inertia of a 3D shape whose tensor is not diagonal (convex hulls, compounds, rotated parts) | `acosf`, glamx `eigen3.rs:101` †; `cosf`, `eigen3.rs:105,106` ‡ | Corrected: `inertia-hull-3d`, `inertia-compound-3d` |
+| Broad phase (its tree's optimisation budget) | `log2f`, parry `bvh_optimize.rs` ‡ | Corrected: every world |
+| A ball against a 3D convex polyhedron (the contact asks the polyhedron for the feature nearest a point, `support_feature_id_toward`, whose tolerance is an angle) | `sin_cos` of a constant, parry `convex_polyhedron.rs` ‡ | Corrected: `ball-on-hull-3d`. Contacts between two polyhedra choose features by a dot-product scan (`local_support_feature_toward`) and take no transcendental function |
+| Triangle-mesh pseudo-normals | `acosf`, parry `vector_ext.rs:60`, from `trimesh.rs:1451-1453` † | Corrected (calls). No declared input reaches it: there is no triangle mesh in the authoring API; its calls are gone from the import list |
+| Soft bodies (elasticity, plasticity, damping, tearing, shape matching, dihedral angles, builders) | `expf`, `powf`, `atan2f`, `acosf`, rapier `soft_*`, reached from the step with no soft body declared † | Corrected (calls). No declared input reaches it: there is no soft body in the authoring API; its calls are gone from the import list |
 | Soft-body Delaunay refinement | spade's `sin`, `log2`, `exp2` | Not linked: `spade` is not in the tree without `std` |
 | 2D singular value decomposition | `atan2`, `sin`, `cos`, glamx `svd2.rs` | Not linked: no call in the artifact |
 | Multibody inverse kinematics | none (a matrix kernel that differs between native code and WebAssembly) | Not linked: the crate exposes no inverse kinematics |
@@ -140,8 +148,10 @@ crate when a scene declares it) or **not linked** (not in the built artifact). N
 
 `examples/probe/` builds a 2D and a 3D world from literal numbers only (bodies of every shape kind
 in contact, with friction and restitution; chains of pin and ball joints with and without limits
-and motors; slide, weld, rope and spring joints; uniform gravity, attraction by the inverse
-square, linear and quadratic drag, a constant force and torque), steps each for 600 ticks, and
+and motors; slide, weld, rope and spring joints; uniform gravity; and, applied as forces computed
+at each tick (`add_force`, `add_force_at_point`), attraction by the inverse square, linear drag
+`-k v`, quadratic drag `-c |v| v`, a damped spring between anchors on two bodies, and a constant
+force and torque; rapier's own linear and angular damping too), steps each for 600 ticks, and
 prints the SHA-256 of its trace: every body's position, rotation and velocities, and the pairs in
 contact, at every tick. Then each case, as the bits of its result. The cases named `published`
 rebuild, with the same literal inputs, cases from a

@@ -1,4 +1,5 @@
-# Run-time CPU feature detection in the shipped tree (ci/census.py), each with the reason it
-# cannot reach a result of the solver. One entry per line or per file (":*"), with the package's
-# version: <name> <version> <path>:<line or *>  <reason>
-libm 0.2.16 src/math/arch/x86/detect.rs:*  libm's own detection, read only by src/math/arch/x86/fma.rs to choose between the processor's fused multiply-add and libm's software one; IEEE 754 defines a fused multiply-add's result exactly (one correct rounding), so both give the same bits
+# Run-time CPU feature detection in the shipped tree's compiled sources (ci/census.py), each with
+# the reason it cannot reach a result of the solver. One entry per line or per file (":*"), keyed
+# to the locked source it was reviewed in:
+#   <name> <version> <sha256:checksum | git:commit | local> <path>:<line or *>  <reason>
+libm 0.2.16 sha256:b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981 src/math/arch/x86/detect.rs:*  libm's own detection, read only by src/math/arch/x86/fma.rs to choose between the processor's fused multiply-add and libm's software one; IEEE 754 defines a fused multiply-add's result exactly (one correct rounding), so both give the same bits

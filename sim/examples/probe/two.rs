@@ -1,7 +1,9 @@
 //! The probe's 2D world, from literal numbers only: bodies of every shape kind in contact, with
 //! friction and restitution; a chain of pin joints with and without limits and motors; slide,
-//! weld, rope and spring joints; and every force law (uniform gravity, attraction by the inverse
-//! square, linear and quadratic drag, a constant force and torque).
+//! weld, rope and spring joints; and every force law, each applied as the crate will apply it
+//! (uniform gravity; attraction by the inverse square, linear and quadratic drag, and a damped
+//! spring between anchors on two bodies, as forces computed here at each tick; a constant force and
+//! torque).
 
 use rapier2d::prelude::*;
 
@@ -9,12 +11,18 @@ use crate::trace::{Trace, contact_rows};
 
 const ATTRACTION: f32 = 2.0;
 const QUADRATIC_DRAG: f32 = 0.05;
+const LINEAR_DRAG: f32 = 0.3;
+const SPRING_STIFFNESS: f32 = 20.0;
+const SPRING_DAMPING: f32 = 0.6;
+const SPRING_REST: f32 = 1.0;
 
 pub struct World {
     world: PhysicsWorld,
     bodies: Vec<RigidBodyHandle>,
     attracting: (RigidBodyHandle, RigidBodyHandle),
     dragged: RigidBodyHandle,
+    slowed: RigidBodyHandle,
+    spring: [(RigidBodyHandle, Vector); 2],
     pushed: RigidBodyHandle,
     pub trace: Trace,
 }
@@ -29,6 +37,7 @@ pub fn settings(p: &mut IntegrationParameters) {
     p.max_ccd_substeps = 1;
     p.normalized_max_linear_velocity = 400.0;
     p.contact_recycling = true;
+    p.normalized_contact_recycle_distance = 0.05;
     p.warmstart_joints = false;
     p.friction_in_bias_pass = false;
 }
@@ -214,6 +223,26 @@ impl World {
                 .angular_damping(0.1),
             vec![ColliderBuilder::ball(0.2)],
         );
+        let slowed = add(
+            w,
+            b,
+            dynamic(6.5, 4.0).linvel(Vector::new(-2.0, 3.0)),
+            vec![ColliderBuilder::ball(0.15)],
+        );
+        let box_ = || vec![ColliderBuilder::cuboid(0.15, 0.1)];
+        let first = add(
+            w,
+            b,
+            dynamic(2.5, 5.0)
+                .gravity_scale(0.0)
+                .linvel(Vector::new(0.0, 0.5)),
+            box_(),
+        );
+        let second = add(w, b, dynamic(3.7, 5.2).gravity_scale(0.0), box_());
+        let spring = [
+            (first, Vector::new(0.1, 0.05)),
+            (second, Vector::new(-0.1, 0.0)),
+        ];
         let pushed = add(
             w,
             b,
@@ -227,6 +256,8 @@ impl World {
             bodies,
             attracting: (one, two),
             dragged,
+            slowed,
+            spring,
             pushed,
             trace: Trace::default(),
         };
@@ -265,6 +296,25 @@ impl World {
         let v = dragged.linvel();
         dragged.reset_forces(true);
         dragged.add_force(v * (-QUADRATIC_DRAG * v.dot(v).sqrt()), true);
+        let slowed = &mut bodies[self.slowed];
+        let v = slowed.linvel();
+        slowed.reset_forces(true);
+        slowed.add_force(v * -LINEAR_DRAG, true);
+        // A damped spring between an anchor on each body: along the line between the anchors,
+        // proportional to the stretch and to the speed at which the anchors separate.
+        let [(a, local_a), (b, local_b)] = self.spring;
+        let pa = bodies[a].position().transform_point(local_a);
+        let pb = bodies[b].position().transform_point(local_b);
+        let d = pb - pa;
+        let length = d.dot(d).sqrt();
+        let n = d / length;
+        let separating = (bodies[b].velocity_at_point(pb) - bodies[a].velocity_at_point(pa)).dot(n);
+        let f = n * (SPRING_STIFFNESS * (length - SPRING_REST) + SPRING_DAMPING * separating);
+        for (h, force, at) in [(a, f, pa), (b, -f, pb)] {
+            bodies[h].reset_forces(true);
+            bodies[h].reset_torques(true);
+            bodies[h].add_force_at_point(force, at, true);
+        }
         let pushed = &mut bodies[self.pushed];
         pushed.reset_forces(true);
         pushed.reset_torques(true);

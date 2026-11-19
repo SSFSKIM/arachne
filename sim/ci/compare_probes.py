@@ -2,9 +2,9 @@
 
 ``compare_probes.py <dir>``
     Reads ``probe-<system>.txt`` for linux-x86_64, windows-x86_64 and macos-arm64, prints each
-    world's digest and each case's bits for the three, and fails unless the two x86-64 systems
-    agree on every line. Whether macOS on arm64 agrees is printed and binds nothing: identity
-    across architectures is not required.
+    world's digest and each case's bits for the three, and fails unless the two x86-64 files are
+    byte-identical. Whether macOS on arm64 agrees is printed and binds nothing: identity across
+    architectures is not required.
 """
 
 from __future__ import annotations
@@ -15,21 +15,25 @@ from pathlib import Path
 SYSTEMS = ("linux-x86_64", "windows-x86_64", "macos-arm64")
 
 
-def read(path: Path) -> dict[str, str]:
+def read(text: str) -> dict[str, str]:
     """``world <dim> <digest>`` and ``case <name> <bits>`` lines, by their first two words."""
-    entries = {}
-    for line in path.read_text().splitlines():
+    entries: dict[str, str] = {}
+    for line in text.splitlines():
         fields = line.split()
         if len(fields) == 3 and fields[0] in ("world", "case"):
-            entries[f"{fields[0]} {fields[1]}"] = fields[2]
+            name = f"{fields[0]} {fields[1]}"
+            if name in entries:
+                sys.exit(f"compare: {name} appears twice")
+            entries[name] = fields[2]
     return entries
 
 
 def main() -> None:
     if len(sys.argv) != 2:
         sys.exit(__doc__)
-    outputs = {s: read(Path(sys.argv[1]) / f"probe-{s}.txt") for s in SYSTEMS}
-    names = list(outputs["linux-x86_64"])
+    texts = {s: (Path(sys.argv[1]) / f"probe-{s}.txt").read_bytes() for s in SYSTEMS}
+    outputs = {s: read(t.decode()) for s, t in texts.items()}
+    names = list(dict.fromkeys(n for s in SYSTEMS for n in outputs[s]))
     width = max(len(n) for n in names)
     print(f"{'':{width}}  " + "  ".join(SYSTEMS))
     for name in names:
@@ -37,11 +41,17 @@ def main() -> None:
         marks = "" if values[0] == values[1] else "  x86-64 DISAGREE"
         arm = "" if values[2] == values[0] else "  (arm64 differs)"
         print(f"{name:{width}}  " + "  ".join(v[:16] for v in values) + marks + arm)
+    linux, windows = texts["linux-x86_64"], texts["windows-x86_64"]
     agree = sum(
-        outputs["linux-x86_64"][n] == outputs["windows-x86_64"].get(n) for n in names
+        outputs["linux-x86_64"].get(n) == outputs["windows-x86_64"].get(n)
+        for n in names
     )
     print(f"probe: linux-x86_64 and windows-x86_64 agree on {agree}/{len(names)} cases")
-    sys.exit(0 if agree == len(names) else 1)
+    if linux == windows:
+        print("probe: the linux-x86_64 and windows-x86_64 outputs are byte-identical")
+    else:
+        print("probe: the linux-x86_64 and windows-x86_64 outputs differ")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
