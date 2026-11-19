@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import subprocess
 import sys
 import textwrap
@@ -20,6 +21,7 @@ import pytest
 import arachne
 from arachne import VMobject, load_asset, tempconfig
 from arachne.assets import Asset, Rig
+from arachne.assets.manifest import digest, thawed
 from arachne.assets.reader import FIXTURES
 from arachne.timeline.frozen import engine_class
 
@@ -207,7 +209,7 @@ def _second_digest(directory: Path) -> str:
         if isinstance(value, dict):
             for key, item in value.items():
                 if key == "file":
-                    files.add(item)
+                    files.add(posixpath.normpath(item))
                 walk(item)
         elif isinstance(value, list):
             for item in value:
@@ -274,3 +276,96 @@ def test_a_version_feature_or_kind_the_reader_does_not_know_is_refused(
     directory = edited(copied(tmp_path, "dial"), edit)
     found = refused("asset.manifest_invalid", lambda: load_asset(directory))
     assert found.detail["member"] == member
+
+
+#: A small asset whose manifest exercises path normalisation, strings that
+#: are not ASCII, and numbers of every JSON form: a rod, one line long.
+ROD_SVG = """\
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 100">
+  <path d="M 0 50 L 100 50" fill="none" stroke="#3b4a5c" stroke-width="3"/>
+</svg>
+"""
+ROD_MANIFEST = """\
+{
+  "manifest_version": "1.0",
+  "name": "rod",
+  "version": 1,
+  "kind": "parts",
+  "size": {"scene_units_per_unit": 0.01, "origin": [50, 50], "width": 1.0, "height": 0},
+  "parts": [
+    {"name": "rod", "file": "./pieces//rod.svg", "parent": null, "pivot": [0, 50], "order": 0}
+  ],
+  "slots": [
+    {"name": "end", "parent": "rod", "pivot": [100, 50], "order": 1, "default": "plain",
+     "drawings": [{"name": "plain", "file": "pieces/rod.svg"}]}
+  ],
+  "parameters": [
+    {"name": "slide", "min": 0, "max": 2.50, "default": 1e-7, "unit": "u/s",
+     "drives": [{"part": "rod", "kind": "translate",
+                 "keys": [{"at": 0, "value": [0, 0]}, {"at": 2.5, "value": [0.1, 12345678901]}]}]},
+    {"name": "tilt", "min": -0.0, "max": 1, "default": 0,
+     "drives": [{"part": "rod", "kind": "rotate", "unit": "rad",
+                 "keys": [{"at": 0, "value": 0}, {"at": 1, "value": 3.14159}]}]}
+  ],
+  "provenance": {"source_url": null, "author": "Zo\u00eb, \u753b\u5bb6", "license": "none",
+                 "credit_line": "\u00a9 \u2014 a test", "retrieved_at": null}
+}
+"""
+#: Its digest, as the second implementation above computed it.
+ROD_DIGEST = "sha256:7d98ab27d051165499a7d7e9b0e3037f97a70f6d1a17b57e6d3dbe4bcb87dfcd"
+
+
+def _rod(tmp_path: Path) -> Path:
+    directory = tmp_path / "rod"
+    (directory / "pieces").mkdir(parents=True)
+    (directory / "pieces" / "rod.svg").write_text(ROD_SVG)
+    (directory / "manifest.json").write_text(ROD_MANIFEST)
+    return directory
+
+
+def test_the_digest_of_a_fixed_asset_is_pinned(tmp_path):
+    directory = _rod(tmp_path)
+    assert _second_digest(directory) == ROD_DIGEST
+    assert load_asset(directory).digest == ROD_DIGEST
+
+
+def test_an_asset_may_be_a_line_with_one_extent_zero(tmp_path):
+    rig = Rig(_rod(tmp_path))
+    assert rig.width == pytest.approx(1.0)
+    assert rig.height == 0
+
+
+def test_a_parameter_with_no_unit_is_a_plain_number(tmp_path):
+    asset = load_asset(_rod(tmp_path))
+    assert asset.parameters["slide"].unit == "u/s"
+    assert asset.parameters["tilt"].unit == "1"
+
+
+def test_an_asset_shared_by_its_rigs_cannot_be_written(tmp_path):
+    rig = Rig(_rod(tmp_path))
+    asset = rig.copy().asset
+    assert asset is rig.asset
+    with pytest.raises(AttributeError):
+        asset.digest = "sha256:0"
+    with pytest.raises(AttributeError):
+        asset.manifest.name = "other"
+    document = asset.manifest.document
+    with pytest.raises(TypeError):
+        document["name"] = "other"
+    with pytest.raises(TypeError):
+        document["size"]["width"] = 2
+    assert isinstance(document["parts"], tuple)
+    with pytest.raises(TypeError):
+        asset.manifest.provenance["license"] = "any"
+    with pytest.raises(TypeError):
+        asset.parameters["slide"] = None
+    with pytest.raises(AttributeError):
+        asset.parameters["slide"].drives[0].keys[1].value.append(0)
+    asset.rest("rod")[0].shift([1, 0, 0])
+    assert asset.rest("rod")[0].get_start()[0] == 0
+    # A detached copy of the manifest is plain JSON, its digest unchanged.
+    plain = thawed(document)
+    plain["name"] = "other"
+    assert asset.manifest.document["name"] == "rod"
+    files = {"pieces/rod.svg": (asset.directory / "pieces" / "rod.svg").read_bytes()}
+    assert digest(asset.manifest.document, files) == asset.digest

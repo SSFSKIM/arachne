@@ -6,22 +6,28 @@ or to its ``manifest.json``, resolved as the engine's image and SVG
 constructors resolve a file name (as given, then under the configuration's
 ``assets_dir``), or ``fixture:<name>`` for one of the engine's own fixture
 assets. Nothing else is searched and nothing is fetched: an address, or a
-file the manifest names by an address, an absolute path or a path out of the
-asset's directory, is ``asset.remote``. Every way an asset can be unusable
-is a finding raised with its code: no manifest (``asset.manifest_missing``),
-a manifest that is not valid (``asset.manifest_invalid``), a file not there
-(``asset.file_missing``), one that cannot be drawn exactly
+file the manifest names by anything but a plain relative path inside the
+asset's directory (an address, an absolute path, a ``..``, a link), is
+``asset.remote``. Every way an asset can be unusable is a finding raised
+with its code: no manifest (``asset.manifest_missing``), a manifest that is
+not valid (``asset.manifest_invalid``), a file not there
+(``asset.file_missing``), one that cannot be read or drawn exactly
 (``asset.unreadable``). Nothing is cached between loads.
+
+A ``shape`` driver's stored outlines are the rest outline moved: a supplier
+keeps, shape for shape, the contours in the same order, each with as many
+points, open or closed alike, and each point the same landmark of the
+drawing, since the rig interpolates point to point and an anchor on the
+outline is a place along one contour.
 """
 
 from __future__ import annotations
 
 __all__ = ["FIXTURES", "Asset", "load_asset"]
 
-import json
 import os
-import posixpath
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any, NoReturn
@@ -39,9 +45,10 @@ from .manifest import (
     digest,
     normalised,
     parse_manifest,
+    read_json,
     refuse,
 )
-from .svg_parts import SvgFile, Unreadable, read_svg
+from .svg_parts import SvgFile, Unreadable, read_svg, structure
 
 #: The engine's own fixture assets, each a directory named as it is asked
 #: for: ``fixture:<name>``.
@@ -49,28 +56,22 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 _FIXTURE = "fixture:"
 
 
+@dataclass(frozen=True, eq=False)
 class Asset:
     """An asset, loaded: its manifest, its digest, and the shapes of its
     parts, drawings and stored outlines at rest, in canvas coordinates.
 
-    It is a value: nothing of it changes once loaded, and a copy of it is
-    itself. The shapes it gives are fresh copies.
+    It is a value: nothing of it can be written once loaded (its fields are
+    frozen and its manifest deep-immutable), and a copy of it is itself. The
+    shapes it gives are fresh copies.
     """
 
-    def __init__(
-        self,
-        directory: Path,
-        manifest: Manifest,
-        digest: str,
-        canvas: tuple[float, ...] | None,
-        shapes: Mapping[tuple[str, ...], tuple[VMobject, ...]],
-    ) -> None:
-        self.directory = directory
-        self.manifest = manifest
-        self.digest = digest
-        #: The part files' shared ``viewBox``, ``None`` when they have none.
-        self.canvas = canvas
-        self._shapes = shapes
+    directory: Path
+    manifest: Manifest
+    digest: str
+    #: The part files' shared ``viewBox``, ``None`` when they have none.
+    canvas: tuple[float, ...] | None
+    _shapes: Mapping[tuple[str, ...], tuple[VMobject, ...]]
 
     @property
     def name(self) -> str:
@@ -132,16 +133,14 @@ def load_asset(ref: str | os.PathLike[str] | Asset) -> Asset:
         return ref
     label = os.fspath(ref)
     directory = _directory(label)
-    data = (directory / MANIFEST).read_bytes()
-    document = _document(data, label)
+    document = _document(_bytes(directory, MANIFEST, label), label)
     manifest = parse_manifest(document, label)
-    named = manifest.files()
-    for file in named:
-        _local(file, directory, label)
     contents: dict[str, bytes] = {}
-    for file in named:
-        path = directory / file
-        if not path.is_file():
+    for file in manifest.files():
+        _local(file, directory, label)
+    for file in manifest.files():
+        key = normalised(file)
+        if not (directory / key).exists():
             refuse(
                 "asset.file_missing",
                 f"the asset {label} names the file {file}, which is not in its"
@@ -149,13 +148,27 @@ def load_asset(ref: str | os.PathLike[str] | Asset) -> Asset:
                 asset=label,
                 file=file,
             )
-        contents[normalised(file)] = path.read_bytes()
+        contents[key] = _bytes(directory, key, label)
     files = {file: _read(contents[file], file, label) for file in contents}
     canvas = _canvas(files, label)
     shapes = _shapes(manifest, files, label)
     return Asset(
-        directory, manifest, digest(manifest.document, contents), canvas, shapes
+        directory,
+        manifest,
+        digest(manifest.document, contents),
+        canvas,
+        MappingProxyType(shapes),
     )
+
+
+def _bytes(directory: Path, file: str, label: str) -> bytes:
+    """The bytes of the asset's file ``file``; one that cannot be read (a
+    directory, one the process may not read) is ``asset.unreadable``.
+    """
+    try:
+        return (directory / file).read_bytes()
+    except OSError as error:
+        _unreadable(label, file, f"it cannot be read ({error.strerror or error})")
 
 
 def _copies(shapes: tuple[VMobject, ...]) -> tuple[VMobject, ...]:
@@ -222,54 +235,44 @@ def _addressed(reference: str) -> bool:
 
 
 def _local(file: str, directory: Path, label: str) -> None:
-    """Refuse the file ``file`` a manifest names unless it is a path in the
-    asset's directory ``directory``.
+    """Refuse the file ``file`` a manifest names unless it is a plain path in
+    the asset's directory ``directory``: relative, with no ``..`` and through
+    no link, so that the path the manifest writes, the one opened and the
+    one the digest names are one file.
     """
+    parts = PurePosixPath(file).parts
     outside = (
         _addressed(file)
         or PurePosixPath(file).is_absolute()
         or PureWindowsPath(file).is_absolute()
         or PureWindowsPath(file).drive != ""
-        or posixpath.normpath(file).split("/")[0] == ".."
+        or ".." in parts
     )
     if not outside:
-        root = os.path.realpath(directory)
-        found = os.path.realpath(directory / file)
-        outside = os.path.commonpath([root, found]) != root
+        place = directory
+        for part in PurePosixPath(normalised(file)).parts:
+            place = place / part
+            if place.is_symlink():
+                outside = True
+                break
     if outside:
         refuse(
             "asset.remote",
-            f"the asset {label} names the file {file}, which is not a path inside"
-            " its directory",
+            f"the asset {label} names the file {file}, which is not a plain path"
+            " inside its directory (relative, with no .. and through no link)",
             asset=label,
             file=file,
         )
 
 
 def _document(data: bytes, label: str) -> Any:
-    """The manifest's JSON; a document that is not JSON, or that repeats a
-    member, is ``asset.manifest_invalid``.
+    """The manifest's JSON, in the domain :func:`~.manifest.read_json`
+    reads; anything else is ``asset.manifest_invalid``.
     """
-
-    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        found: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in found:
-                raise ValueError(f"the member {key!r} is given twice")
-            found[key] = value
-        return found
-
-    def no_constant(name: str) -> Any:
-        raise ValueError(f"{name} is not a JSON number")
-
     try:
-        return json.loads(
-            data.decode("utf-8"),
-            object_pairs_hook=unique,
-            parse_constant=no_constant,
-        )
+        return read_json(data)
     except ValueError as error:
-        reason = f"it is not valid JSON ({error})"
+        reason = f"it is not valid JSON in the manifest's domain ({error})"
         refuse(
             "asset.manifest_invalid",
             f"the manifest of the asset {label} cannot be read: {reason}",
@@ -378,15 +381,15 @@ def _same_structure(
     file: str,
     label: str,
 ) -> None:
-    """Refuse a stored outline whose shapes and points do not match the
-    rest outline's one for one.
+    """Refuse a stored outline unlike the rest outline: shape for shape, the
+    same subpaths in the same order, each with as many points and open or
+    closed alike (:func:`~.svg_parts.structure`).
     """
-    if [len(shape.points) for shape in outline] != [
-        len(shape.points) for shape in rest
-    ]:
+    if structure(outline) != structure(rest):
         reason = (
-            f"the outline in {file} has not the rest outline's structure (the"
-            " same shapes, with as many points each)"
+            f"the outline in {file} has not the rest outline's structure (shape"
+            " for shape, the same subpaths in order, each with as many points and"
+            " open or closed alike)"
         )
         refuse(
             "asset.manifest_invalid",

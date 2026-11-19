@@ -140,3 +140,34 @@ def test_an_asset_named_by_an_address_is_refused_and_never_fetched(
 ):
     data, line = _refusal(tmp_path, "https://example.com/assets/dial")
     _assert_refused(data, "asset.remote", line)
+
+
+@pytest.mark.parametrize(
+    "text", ['"newer": 1e400,', '"newer": 9007199254740993,', '"newer": "\\ud800",']
+)
+def test_a_manifest_outside_the_json_domain_is_refused(tmp_path, text):
+    directory = copied(tmp_path, "dial")
+    manifest = directory / "manifest.json"
+    manifest.write_text(
+        manifest.read_text().replace('"version": 1,', f'"version": 1, {text}')
+    )
+    data, line = _refusal(tmp_path, str(directory))
+    detail = _assert_refused(data, "asset.manifest_invalid", line)
+    assert detail["member"] == "manifest.json"
+
+
+def test_a_part_file_that_cannot_be_read_is_refused(tmp_path):
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "face.svg").unlink()
+    (directory / "pieces" / "face.svg").mkdir()
+    data, line = _refusal(tmp_path, str(directory))
+    detail = _assert_refused(data, "asset.unreadable", line)
+    assert detail["file"] == "pieces/face.svg"
+
+
+def test_a_dashed_stroke_is_refused(tmp_path):
+    directory = copied(tmp_path, "dial")
+    shutil.copy(BROKEN / "dashed.svg", directory / "pieces" / "face.svg")
+    data, line = _refusal(tmp_path, str(directory))
+    detail = _assert_refused(data, "asset.unreadable", line)
+    assert "stroke-dasharray" in detail["reason"]
