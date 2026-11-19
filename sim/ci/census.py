@@ -153,11 +153,12 @@ ATTRIBUTE = re.compile(r"^\s*#\[")
 
 def declared_modules(
     source: Path, owns_directory: bool
-) -> list[tuple[str, list[Path]]]:
-    """The files of the modules a source file declares (``mod x;``), each as its name and the
-    places Rust looks for it: ``#[path]`` relative to the file's directory, else ``x.rs`` or
-    ``x/mod.rs`` beside a crate root or ``mod.rs`` and under ``<stem>/`` beside any other file.
-    Every declaration counts, whatever ``#[cfg]`` it carries.
+) -> list[tuple[str, list[Path], bool]]:
+    """The files of the modules a source file declares (``mod x;``), each as its name, the
+    places Rust looks for it, and whether ``#[path]`` named it: ``#[path]`` relative to the
+    file's directory, else ``x.rs`` or ``x/mod.rs`` beside a file that owns its directory (a
+    crate root, a ``mod.rs``, a file loaded through ``#[path]``) and under ``<stem>/`` beside
+    any other file. Every declaration counts, whatever ``#[cfg]`` it carries.
     """
     directory = source.parent if owns_directory else source.parent / source.stem
     found = []
@@ -173,7 +174,7 @@ def declared_modules(
                 if path
                 else [directory / f"{name}.rs", directory / name / "mod.rs"]
             )
-            found.append((name, places))
+            found.append((name, places, path is not None))
         if not ATTRIBUTE.match(line):
             path = None
     return found
@@ -188,7 +189,7 @@ def module_files(entry: Path, walked: list[Path]) -> list[Path]:
     queue = [(entry, True)]
     while queue:
         source, owns_directory = queue.pop()
-        for name, places in declared_modules(source, owns_directory):
+        for name, places, explicit in declared_modules(source, owns_directory):
             place = next((p for p in places if p.is_file()), None)
             if place is None:
                 if any(source.is_relative_to(d) for d in walked):
@@ -197,7 +198,7 @@ def module_files(entry: Path, walked: list[Path]) -> list[Path]:
             place = Path(os.path.normpath(place))
             if place not in files:
                 files.append(place)
-                queue.append((place, place.name == "mod.rs"))
+                queue.append((place, explicit or place.name == "mod.rs"))
     return files
 
 

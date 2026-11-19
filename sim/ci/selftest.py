@@ -304,13 +304,17 @@ def test_census_follows_a_module_path_outside_the_library_directory() -> None:
         {
             "src/lib.rs": '#[cfg(unix)]\n#[path = "../shared/x.rs"]\npub(crate) mod x;\nmod inline {}\n',
             "shared/x.rs": "mod inner;\n",
+            "shared/inner.rs": "let r = __cpuid(1);\n",
             "shared/x/inner.rs": "let r = __cpuid(1);\n",
         }
     )
+    # A file loaded through #[path] owns its directory, as mod.rs does: its `mod inner;` is
+    # shared/inner.rs, and shared/x/inner.rs is not compiled.
     base, files = census.compiled_sources(package_at(root, ("lib", "src/lib.rs")))
-    assert root / "shared/x/inner.rs" in files
+    assert root / "shared/inner.rs" in files
+    assert root / "shared/x/inner.rs" not in files
     assert [h.key for h in census.search(CPU, base, files)] == [
-        f"{CPU} shared/x/inner.rs:1"
+        f"{CPU} shared/inner.rs:1"
     ]
 
 
