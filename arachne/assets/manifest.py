@@ -6,7 +6,9 @@ An asset is a directory holding ``manifest.json`` and the files it names.
 refusing (``asset.manifest_invalid``, naming the member and why) a document
 of a major version or a kind this reader does not know, one that requires a
 feature it does not know, and one that misses a required member or
-contradicts itself. A member it does not know, in a document whose
+contradicts itself. Every name it declares (the asset's, and each part's,
+slot's, drawing's, parameter's and anchor's) is made of ASCII letters,
+digits, ``_`` and ``-``. A member it does not know, in a document whose
 ``requires`` it satisfies, is kept and ignored. Geometry is in canvas units
 (the part files' user units), y down.
 
@@ -28,6 +30,7 @@ __all__ = [
     "KINDS",
     "MAJOR",
     "MANIFEST",
+    "NAME",
     "PROVENANCE",
     "AnchorKey",
     "AnchorSpec",
@@ -292,6 +295,9 @@ def parse_manifest(document: Any, asset: str) -> Manifest:
 
 
 _VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+#: What a declared name may be: it is a segment of the names an asset's
+#: values are read by (``rig.param.<parameter>``, ``rig.slot.<slot>``).
+NAME = re.compile(r"[A-Za-z0-9_-]+")
 
 
 class _Reader:
@@ -300,14 +306,26 @@ class _Reader:
     def __init__(self, asset: str) -> None:
         self.asset = asset
 
-    def invalid(self, member: str, reason: str) -> NoReturn:
+    def invalid(self, member: str, reason: str, **name: str) -> NoReturn:
         refuse(
             "asset.manifest_invalid",
             f"the manifest of the asset {self.asset} is invalid at {member}: {reason}",
             asset=self.asset,
             member=member,
             reason=reason,
+            **name,
         )
+
+    def name(self, value: Any, member: str) -> str:
+        """A declared name: ASCII letters, digits, ``_`` and ``-``."""
+        name = self.text(value, member)
+        if NAME.fullmatch(name) is None:
+            self.invalid(
+                member,
+                f"the name {name!r} is not made of ASCII letters, digits, _ and -",
+                name=name,
+            )
+        return name
 
     # Values
 
@@ -390,7 +408,7 @@ class _Reader:
         kind = self.text(self.member(top, "kind", ""), "kind")
         if kind not in KINDS:
             self.invalid("kind", f"{kind!r} is not a kind this reader knows")
-        name = self.text(self.member(top, "name", ""), "name")
+        name = self.name(self.member(top, "name", ""), "name")
         number = self.integer(self.member(top, "version", ""), "version", 0)
         size = self.size(self.member(top, "size", ""))
         parts = tuple(
@@ -455,7 +473,7 @@ class _Reader:
         entry = self.object(value, at)
         lattice = entry.get("lattice")
         return PartSpec(
-            name=self.text(self.member(entry, "name", at), f"{at}.name"),
+            name=self.name(self.member(entry, "name", at), f"{at}.name"),
             file=self.text(self.member(entry, "file", at), f"{at}.file"),
             element=self.optional_text(entry.get("element"), f"{at}.element"),
             parent=self.optional_text(self.member(entry, "parent", at), f"{at}.parent"),
@@ -493,7 +511,7 @@ class _Reader:
         if default not in {d.name for d in drawings}:
             self.invalid(f"{at}.default", f"the slot has no drawing {default!r}")
         return SlotSpec(
-            name=self.text(self.member(entry, "name", at), f"{at}.name"),
+            name=self.name(self.member(entry, "name", at), f"{at}.name"),
             parent=self.optional_text(self.member(entry, "parent", at), f"{at}.parent"),
             pivot=self.point(self.member(entry, "pivot", at), f"{at}.pivot"),
             order=self.integer(self.member(entry, "order", at), f"{at}.order"),
@@ -504,7 +522,7 @@ class _Reader:
     def drawing(self, value: Any, at: str) -> DrawingSpec:
         entry = self.object(value, at)
         return DrawingSpec(
-            name=self.text(self.member(entry, "name", at), f"{at}.name"),
+            name=self.name(self.member(entry, "name", at), f"{at}.name"),
             file=self.text(self.member(entry, "file", at), f"{at}.file"),
             element=self.optional_text(entry.get("element"), f"{at}.element"),
         )
@@ -571,7 +589,7 @@ class _Reader:
             )
         )
         return ParameterSpec(
-            name=self.text(self.member(entry, "name", at), f"{at}.name"),
+            name=self.name(self.member(entry, "name", at), f"{at}.name"),
             min=low,
             max=high,
             default=default,
@@ -717,7 +735,7 @@ class _Reader:
                 "only an interior anchor on a reshaped part gives keyed points",
             )
         return AnchorSpec(
-            name=self.text(self.member(entry, "name", at), f"{at}.name"),
+            name=self.name(self.member(entry, "name", at), f"{at}.name"),
             part=part,
             attach=attach,
             at=self.point(self.member(entry, "at", at), f"{at}.at"),

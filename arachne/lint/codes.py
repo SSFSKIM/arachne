@@ -257,7 +257,7 @@ _TABLE = (
         " or contradicts a required member",
         "Correct the member the finding names, as the asset manifest's rules"
         " state it, or have the asset's maker export it again.",
-        ("asset", "member", "reason"),
+        ("asset", "member", "reason", "name"),
     ),
     Code(
         "asset.file_missing",
