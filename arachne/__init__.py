@@ -48,6 +48,7 @@ from .camera.multi_camera import *
 from .camera.three_d_camera import *
 from .constants import *
 from .manager import *
+from .mobject.diagram import *
 from .mobject.frame import *
 from .mobject.geometry.arc import *
 from .mobject.geometry.boolean_ops import *
@@ -63,6 +64,7 @@ from .mobject.graphing.number_line import *
 from .mobject.graphing.probability import *
 from .mobject.graphing.scale import *
 from .mobject.logo import *
+from .mobject.marks import *
 from .mobject.matrix import *
 from .mobject.mobject import *
 from .mobject.svg.brace import *
