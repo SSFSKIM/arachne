@@ -239,8 +239,9 @@ def test_a_scene_without_a_flow_has_no_flow_driver():
         admission.DEMOTED.clear()
 
 
-def test_a_flow_made_before_the_scene_was_made_outside_a_recording():
-    assert diagram_scenes.EARLY_IN_A_SCENE is False
+def test_a_flow_made_before_the_scene_was_made_outside_a_recording(moving):
+    session = moving(15, "FlowMadeBeforeTheScene")
+    assert session.record._scene.early_in_a_scene is False
 
 
 def test_a_closed_session_s_scene_is_let_go_after_it_made_a_flow():

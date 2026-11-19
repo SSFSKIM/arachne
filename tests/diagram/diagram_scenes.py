@@ -4,6 +4,8 @@ block whose inside is legible and whose inside is not.
 
 from __future__ import annotations
 
+from typing import Any
+
 from arachne import (
     DOWN,
     LEFT,
@@ -134,12 +136,6 @@ def moving_flow() -> tuple[Diagram, VMobject, Flow]:
     return diagram, edge, flow
 
 
-#: A diagram and its flow made when this file is read, before any scene runs.
-EARLY = moving_flow()
-#: Whether a scene was running when it was made.
-EARLY_IN_A_SCENE = running() is not None
-
-
 class FlowOnAMovingEdge(Scene):
     """A flow inside its diagram: the diagram moves over 0.5-1.5 s, then
     the connector alone shrinks to half its length over 1.5-2.5 s; 3 s in
@@ -189,10 +185,19 @@ class FlowsThatLeaveAndStop(Scene):
 
 
 class FlowMadeBeforeTheScene(Scene):
-    """:class:`FlowOnAMovingEdge` with a flow made before the scene ran."""
+    """:class:`FlowOnAMovingEdge` with a flow made before the scene ran:
+    when the scene was made.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        #: The diagram, its edge and its flow.
+        self.early = moving_flow()
+        #: Whether a scene was running when they were made.
+        self.early_in_a_scene = running() is not None
 
     def construct(self):
-        diagram, edge, flow = EARLY
+        diagram, edge, flow = self.early
         self.add(diagram)
         self.wait(0.5)
         self.play(diagram.animate.shift(UP), run_time=1)
