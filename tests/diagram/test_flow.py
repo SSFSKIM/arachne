@@ -16,7 +16,13 @@ from arachne.session import Session
 from arachne.timeline import admission
 
 from . import diagram_scenes
-from .diagram_scenes import ELBOW_SPEED, STRAIGHT_SPEED, flowing_diagram
+from .diagram_scenes import (
+    ELBOW_SPEED,
+    MOVING_SPEED,
+    MOVING_TOKENS,
+    STRAIGHT_SPEED,
+    flowing_diagram,
+)
 
 SCENES = Path(diagram_scenes.__file__)
 SMALL = {"pixel_width": 96, "pixel_height": 54}
@@ -130,13 +136,62 @@ def test_a_flow_wraps_and_spaces_its_tokens_by_arc_length():
     edge = diagram.connect((a, "right"), (b, "left"), route="straight", tip=False)
     flow = Flow(edge, speed=2.0, tokens=4, offset=0.5)
     length = 4 - 2 * a.disc.radius
-    assert flow.spacing == pytest.approx(length / 4)
     start = edge.points[0]
-    flow.update(dt=1.0)
+    flow.show_at(1.0)
     expected = [(0.5 + 2.0 + i * length / 4) % length for i in range(4)]
     got = [float(np.linalg.norm(token.get_center() - start)) for token in flow]
     assert got == pytest.approx(expected, abs=1e-3)
     assert flow.travelled() == pytest.approx(2.5)
-    flow.stop()
-    flow.update(dt=1.0)
-    assert flow.travelled() == pytest.approx(2.5)
+    # A shorter wire spaces the tokens by its own length.
+    edge.scale(0.5, about_point=start)
+    flow.show_at(1.0)
+    half = length / 2
+    got = sorted(float(np.linalg.norm(t.get_center() - start)) for t in flow)
+    assert got == pytest.approx(
+        sorted((2.5 + i * half / 4) % half for i in range(4)), abs=1e-3
+    )
+
+
+@pytest.fixture
+def moving():
+    admission.DEMOTED.clear()
+    opened: list[Session] = []
+
+    def open_at(fps: int) -> Session:
+        session = Session.open(
+            SCENES, "FlowOnAMovingEdge", config={**SMALL, "frame_rate": fps}
+        )
+        opened.append(session)
+        return session
+
+    yield open_at
+    for session in opened:
+        session.close()
+    admission.DEMOTED.clear()
+
+
+@pytest.mark.parametrize("fps", [15, 30, 60])
+def test_a_flow_holds_speed_and_spacing_whatever_animates_it(moving, fps):
+    """The diagram holding the flow moves, then the wire shrinks: at every
+    frame each token is where the declared speed and the wire's length then
+    put it.
+    """
+    session = moving(fps)
+    for k in range(3 * fps):
+        t = Fraction(k, fps)
+        state = session.state_at(t)
+        assert state.as_of == t
+        x0, y0, x1, _ = state.named("edge").scene_box
+        length = x1 - x0
+        flow = state.named("flow")
+        travelled = 0.2 + MOVING_SPEED * float(t)
+        expected = sorted(
+            (travelled + i * length / MOVING_TOKENS) % length
+            for i in range(MOVING_TOKENS)
+        )
+        found = []
+        for child in flow.children:
+            bx0, by0, bx1, by1 = state.node(child).scene_box
+            assert (by0 + by1) / 2 == pytest.approx(y0, abs=1e-6)
+            found.append((bx0 + bx1) / 2 - x0)
+        assert sorted(found) == pytest.approx(expected, abs=1e-6), float(t)

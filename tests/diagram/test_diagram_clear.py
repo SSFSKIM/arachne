@@ -14,7 +14,7 @@ from arachne.session import Session
 from arachne.timeline import admission
 
 from ..lint import defect_scenes, lint_scenes
-from . import clear_scenes
+from . import clear_scenes, own_diagram_scenes
 
 SCENES = Path(clear_scenes.__file__)
 SMALL = {"pixel_width": 96, "pixel_height": 54}
@@ -47,10 +47,24 @@ def _codes(session: Session, rule=diagram_clear) -> list[str]:
         ("LabelsOnLabels", ["overlap.text"]),
         ("PillPastTheEdge", ["clip.frame_edge"]),
         ("TinyLabel", ["text.small"]),
+        ("LabelsNearlyTouching", ["gap.text"]),
     ],
 )
 def test_a_diagram_label_s_clearance(opened, scene, codes):
     assert _codes(opened(scene)) == codes
+
+
+def test_labels_keep_the_gap_a_scene_declares(opened):
+    session = opened("LabelsApart")
+    wide = diagram_clear.where(text_gap=3.0)
+    findings = lint(session, rules=(wide,)).findings
+    assert {f.code for f in findings} == {"gap.text"}
+    assert all(f.detail["required"] == 3.0 for f in findings)
+
+
+def test_a_scene_s_own_class_named_diagram_is_not_a_diagram(opened):
+    session = opened("OwnClassNamedDiagram", Path(own_diagram_scenes.__file__))
+    assert _codes(session) == []
 
 
 def test_the_sweep_does_not_see_two_labels_of_one_diagram(opened):

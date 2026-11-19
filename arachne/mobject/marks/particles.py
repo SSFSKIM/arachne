@@ -18,6 +18,7 @@ from arachne.typing import Point3DLike, Vector3DLike
 from arachne.utils.color import BLUE, GREY, RED, WHITE, ParsableManimColor
 
 from ._paths import arc, as_point, line
+from ._style import apply_style, take_style
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
@@ -27,7 +28,8 @@ class ChargedParticle(VGroup):
     """A disc of ``radius`` bearing a plus (``charge > 0``), a minus
     (``charge < 0``) or nothing: point charges, ions in solution, ions at a
     membrane. ``charge`` is kept as given; its sign picks the sign drawn and,
-    unless ``color`` is given, the colour.
+    unless ``color`` is given, the colour. Style keywords go to the disc;
+    the sign keeps its own.
     """
 
     def __init__(
@@ -39,6 +41,7 @@ class ChargedParticle(VGroup):
         sign_color: ParsableManimColor = WHITE,
         **kwargs: Any,
     ) -> None:
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         self.charge = charge
         shade = (
@@ -51,6 +54,7 @@ class ChargedParticle(VGroup):
             else GREY
         )
         self.disc = Circle(radius=radius, color=shade, fill_opacity=fill_opacity)
+        apply_style([self.disc], style)
         self.sign = VMobject(color=sign_color, stroke_width=max(2.0, 12 * radius))
         bar = radius * 0.55
         strokes = []
@@ -68,7 +72,8 @@ class Particles(VGroup):
     ``height`` region about the origin, by a random draw seeded with
     ``seed``, no two nearer than ``min_distance`` (twice their diameter by
     default) where the region has room: a gas, a concentration, a
-    population. The same arguments give the same scatter.
+    population. The same arguments give the same scatter. Style keywords
+    go to every particle.
     """
 
     #: Draws tried for each particle before one is placed regardless.
@@ -87,6 +92,7 @@ class Particles(VGroup):
     ) -> None:
         if count < 0:
             raise ValueError("a scatter has no fewer than no particles")
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         self.count = int(count)
         self.seed = seed
@@ -107,6 +113,7 @@ class Particles(VGroup):
             placed = np.vstack([placed, choice])
         for x, y in placed:
             self.add(Dot(np.array([x, y, 0.0]), radius=radius, color=color))
+        apply_style(self.submobjects, style)
 
 
 class Burst(VMobject):
@@ -188,9 +195,12 @@ class DottedTrail(VMobject):
     for as long as the trail is in the scene and running. A trajectory, a
     migration path, a packet's trace.
 
-    It keeps time on the tick: its updater adds the ``dt`` it is handed, so
-    a dot falls at the same scene time at any frame rate. :meth:`stop`
-    leaves the dots as they are.
+    It keeps time on the tick: its updater adds the ``dt`` it is handed, and
+    a dot due between two readings of the centre falls where the centre was
+    at its due time, read along the straight course between them. So a dot
+    falls at the same scene time, in the same place, at any frame rate and
+    any interval, on the tick's grid or off it. :meth:`stop` leaves the
+    dots as they are.
     """
 
     def __init__(
@@ -213,20 +223,29 @@ class DottedTrail(VMobject):
         self.elapsed = 0.0
         #: Where each dot fell, in order.
         self.dots: tuple[tuple[float, float, float], ...] = ()
-        self._drop(mobject.get_center())
+        start = mobject.get_center()
+        #: Where the centre was when the trail last read it.
+        self._seen = _point(start)
+        self._drop(self._seen)
 
         def keep_time(trail: Mobject, dt: float) -> None:
             assert isinstance(trail, DottedTrail)
-            trail.elapsed += dt
-            # A dot falls at every whole interval passed (to a rounding).
-            while trail.elapsed >= len(trail.dots) * trail.interval - 1e-9:
-                trail._drop(mobject.get_center())
+            before, now = trail.elapsed, trail.elapsed + dt
+            was, here = np.array(trail._seen), mobject.get_center()
+            # Every dot due by now (to a rounding), where the centre was then.
+            while len(trail.dots) * trail.interval <= now + 1e-9:
+                due = len(trail.dots) * trail.interval
+                share = 1.0 if now <= before else (due - before) / (now - before)
+                share = min(max(share, 0.0), 1.0)
+                trail._drop(_point(was + (here - was) * share))
+            trail.elapsed = now
+            trail._seen = _point(here)
 
         self._keeper = keep_time
         self.add_updater(keep_time)
 
-    def _drop(self, where: np.ndarray) -> None:
-        self.dots = (*self.dots, (float(where[0]), float(where[1]), float(where[2])))
+    def _drop(self, where: tuple[float, float, float]) -> None:
+        self.dots = (*self.dots, where)
         self.set_points(
             np.concatenate(
                 [arc(np.array(p), self.dot_radius, 0.0, TAU) for p in self.dots]
@@ -237,3 +256,7 @@ class DottedTrail(VMobject):
         """Stop dropping dots; those dropped stay."""
         self.remove_updater(self._keeper)
         return self
+
+
+def _point(where: np.ndarray) -> tuple[float, float, float]:
+    return (float(where[0]), float(where[1]), float(where[2]))

@@ -125,6 +125,35 @@ def test_a_vessel_holds_fluid_to_its_level():
         vessel.set_level(2.5)
 
 
+def test_a_shallow_fill_follows_the_bottom_corners():
+    vessel = Vessel(width=1.6, height=2.0, level=0.05, corner_radius=0.2)
+    r, depth = 0.2, 0.05
+    # The surface meets each corner's arc, short of the walls.
+    reach = 0.8 - r + math.sqrt(r**2 - (r - depth) ** 2)
+    assert vessel.fluid.width == pytest.approx(2 * reach, abs=1e-3)
+    assert vessel.fluid.height == pytest.approx(depth, abs=1e-6)
+    # Every anchor of the fill lies inside the walls' rounded bottom.
+    centres = np.array([[-0.6, -0.8], [0.6, -0.8]])
+    points = np.asarray(vessel.fluid.points)
+    anchors = np.vstack([points[::4], points[3::4]])
+    for x, y, _ in anchors:
+        if abs(x) > 0.6:
+            corner = centres[0] if x < 0 else centres[1]
+            assert np.hypot(x - corner[0], y - corner[1]) <= r + 1e-6
+
+
+def test_a_turned_vessel_fills_in_its_own_frame():
+    upright = Vessel(width=1.6, height=2.0, level=0.4)
+    turned = Vessel(width=1.6, height=2.0, level=1.0)
+    turned.rotate(PI / 2, about_point=ORIGIN).scale(1.5, about_point=ORIGIN)
+    turned.shift(RIGHT * 2)
+    turned.set_level(0.4)
+    expected = upright.fluid.copy()
+    expected.rotate(PI / 2, about_point=ORIGIN).scale(1.5, about_point=ORIGIN)
+    expected.shift(RIGHT * 2)
+    assert np.allclose(turned.fluid.points, expected.points, atol=1e-9)
+
+
 def test_a_wavy_line_has_its_wavelengths():
     wave = WavyLine(LEFT * 2, RIGHT * 2, wavelengths=3, amplitude=0.2)
     t = np.linspace(0, 1, 2001)
@@ -239,6 +268,22 @@ def test_cells_layers_and_charges_are_addressed():
     assert len(ChargedParticle(0).sign.points) == 0
 
 
+def test_a_trail_drops_each_dot_where_its_object_was_when_it_was_due():
+    """Dots due between two ticks, several to a tick, fall along the course
+    between the readings, at their own times.
+    """
+    dot = Dot(LEFT)
+    trail = DottedTrail(dot, interval=0.004)
+    for _ in range(6):
+        dot.shift(RIGHT * 0.05)
+        trail.update(dt=1 / 60)
+    # 0.1 s at 3 units a second: a dot every 0.004 s, every 0.012 units.
+    assert len(trail.dots) == 26
+    assert [d[0] for d in trail.dots] == pytest.approx(
+        [-1.0 + 0.012 * k for k in range(26)], abs=1e-9
+    )
+
+
 def test_a_trail_drops_a_dot_every_interval():
     dot = Dot(LEFT)
     trail = DottedTrail(dot, interval=0.5)
@@ -279,11 +324,133 @@ def test_a_trail_keeps_time_at_any_frame_rate(opened, fps):
     session = opened(fps)
     record = session.record
     trail = record._scene.trail
-    # Instants every rate's grid holds, in the play and in the wait after it.
+    assert Fraction(INTERVAL).limit_denominator(100) == Fraction(3, 25)
+    # Instants every rate's grid holds, in the play and in the wait after it;
+    # the interval is on no rate's grid.
     for seconds in (Fraction(1, 3), Fraction(1), Fraction(2), Fraction(43, 15)):
         _, capture = record.capture_at(seconds)
         dots = record.node_state(trail, capture).get("dots")
-        assert len(dots) == math.floor(seconds / Fraction(INTERVAL)) + 1
+        assert len(dots) == math.floor(seconds / Fraction(3, 25)) + 1
         # Where the dot was at each drop: moving for 2 s, then at rest.
         expected = [START + SPEED * min(k * INTERVAL, 2.0) for k in range(len(dots))]
         assert [d[0] for d in dots] == pytest.approx(expected, abs=1e-6)
+
+
+#: Each mark made of several parts, and the parts that keep a style of their
+#: own whatever style the mark is given.
+GROUPED = {
+    "Vessel": lambda m: [m.fluid],
+    "Drum": lambda m: [],
+    "LayerStack": lambda m: list(m.labels),
+    "Block": lambda m: [m.strip, m.title],
+    "CellGrid": lambda m: list(m.entries),
+    "Node": lambda m: [m.label],
+    "ChargedParticle": lambda m: [m.sign],
+    "Particles": lambda m: [],
+    "Magnifier": lambda m: [],
+    "Switch": lambda m: [],
+    "LogicGate": lambda m: [],
+}
+MADE = {
+    "Block": lambda **k: Block("title", **k),
+    "Node": lambda **k: Node("n", **k),
+    "LayerStack": lambda **k: LayerStack(**k),
+    "CellGrid": lambda **k: CellGrid(values=[["a"]], **k),
+    "LogicGate": lambda **k: LogicGate("nand", **k),
+}
+
+
+def _drawn(mark: Mobject, own: list[Mobject]) -> list[VMobject]:
+    """The members of ``mark`` that draw, but those with a style of their
+    own (whole families) and the texts.
+    """
+    kept = {id(m) for part in own for m in part.get_family()}
+    return [
+        m
+        for m in mark.get_family()
+        if isinstance(m, VMobject)
+        and len(m.points) > 1
+        and id(m) not in kept
+        and not isinstance(m, arachne.Text)
+    ]
+
+
+@pytest.mark.parametrize("name", sorted(GROUPED))
+def test_a_grouped_mark_hands_its_style_to_the_parts_that_draw(name):
+    make = MADE.get(name, getattr(marks, name))
+    assert all(isinstance(m, arachne.VGroup) for m in [make()])
+    mark = make(stroke_width=7)
+    drawn = _drawn(mark, GROUPED[name](mark))
+    assert drawn
+    for member in drawn:
+        assert float(member.get_stroke_width()) == 7
+    # The parts with a style of their own keep it.
+    plain = make()
+    for kept, before in zip(GROUPED[name](mark), GROUPED[name](plain), strict=True):
+        assert [m.get_stroke_width() for m in kept.get_family()] == [
+            b.get_stroke_width() for b in before.get_family()
+        ]
+
+
+def test_a_keyword_a_mark_cannot_take_is_refused():
+    with pytest.raises(TypeError):
+        Block("b", not_a_style=1)
+
+
+def _inside(points: np.ndarray, box: Mobject) -> bool:
+    x0, y0 = box.get_corner(DOWN + LEFT)[:2]
+    x1, y1 = box.get_corner(UP + RIGHT)[:2]
+    return bool(
+        np.any(
+            (points[:, 0] > x0 + 1e-6)
+            & (points[:, 0] < x1 - 1e-6)
+            & (points[:, 1] > y0 + 1e-6)
+            & (points[:, 1] < y1 - 1e-6)
+        )
+    )
+
+
+def _samples(edge: VMobject) -> np.ndarray:
+    curves = _curves(edge)
+    t = np.linspace(0, 1, 50)[:, None]
+    return np.vstack(
+        [
+            (1 - t) ** 3 * c[0]
+            + 3 * (1 - t) ** 2 * t * c[1]
+            + 3 * (1 - t) * t**2 * c[2]
+            + t**3 * c[3]
+            for c in curves
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("first_port", "second_port", "rise"),
+    [
+        ("right", "right", 0.0),  # one way, on one row
+        ("left", "left", 0.0),
+        ("left", "right", 0.0),  # facing away, on one row
+        ("right", "right", 0.4),  # one way, nearly on one row
+        ("top", "top", 0.0),  # one way, in one column
+    ],
+)
+def test_side_by_side_ports_are_joined_round_both_pieces(first_port, second_port, rise):
+    a = Block("a", width=2.2, height=1.4)
+    b = Block("b", width=2.2, height=1.4)
+    if first_port == "top":
+        a.shift(DOWN * 2)
+        b.shift(UP * 1)
+    else:
+        a.shift(LEFT * 3)
+        b.shift(RIGHT * 3 + UP * rise)
+    diagram = arachne.Diagram(a, b)
+    edge = diagram.connect((a, first_port), (b, second_port))
+    path = _samples(edge)
+    assert np.allclose(path[0], a.port(first_port))
+    assert not _inside(path, a.body)
+    assert not _inside(path, b.body)
+    # Every run is straight along one axis or a corner's arc.
+    for curve in _curves(edge):
+        run = curve[3] - curve[0]
+        straight = np.allclose(np.cross(curve[1] - curve[0], run), 0)
+        assert not straight or min(abs(run[0]), abs(run[1])) < 1e-9

@@ -6,18 +6,20 @@ from __future__ import annotations
 
 __all__ = ["Capsule", "CellGrid", "DoubleBoundary", "Drum", "LayerStack", "Vessel"]
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 
-from arachne.constants import DL, ORIGIN, TAU
+from arachne.constants import ORIGIN, TAU
 from arachne.mobject.geometry.polygram import Rectangle, Square
 from arachne.mobject.text.text_mobject import Text
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.color import BLUE, WHITE, ManimColor, ParsableManimColor
 
 from ._paths import arc, ellipse_arc, line, rounded_rect
+from ._style import apply_style, take_style
 
 
 def _fit_text(text: Text, width: float, height: float) -> Text:
@@ -76,9 +78,12 @@ class DoubleBoundary(VMobject):
 
 class Vessel(VGroup):
     """An open-topped container ``width`` by ``height`` with fluid standing
-    ``level`` scene units deep in it: a solution, a column of fluid, a
-    buffer filling. ``walls`` is the container, ``fluid`` the fluid drawn
-    behind it; :meth:`set_level` changes the depth.
+    ``level`` deep in it, in the vessel's own units as built: a solution, a
+    column of fluid, a buffer filling. ``walls`` is the container, ``fluid``
+    the fluid drawn behind it, following the walls' inside to its bottom
+    corners; :meth:`set_level` changes the depth wherever the vessel stands,
+    moved, turned or scaled. Style keywords go to the walls; the fluid keeps
+    ``fluid_color`` and ``fluid_opacity``.
     """
 
     def __init__(
@@ -92,6 +97,7 @@ class Vessel(VGroup):
         fluid_opacity: float = 0.6,
         **kwargs: Any,
     ) -> None:
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         self.vessel_width = float(width)
         self.vessel_height = float(height)
@@ -111,6 +117,9 @@ class Vessel(VGroup):
                 ]
             )
         )
+        apply_style([walls], style)
+        #: The walls' points as built: the frame the fluid is drawn in.
+        self._wall_rest = walls.points
         self.fluid = VMobject(
             color=ManimColor(fluid_color), fill_opacity=fluid_opacity, stroke_width=0
         )
@@ -120,8 +129,8 @@ class Vessel(VGroup):
         self.set_level(level)
 
     def set_level(self, level: float) -> Vessel:
-        """Fill the vessel to ``level`` scene units above its inside bottom
-        (between 0 and its height), where it stands now.
+        """Fill the vessel to ``level`` above its inside bottom, in its own
+        units (0 to its height as built), wherever it stands now.
         """
         if not 0 <= level <= self.vessel_height:
             raise ValueError(
@@ -129,43 +138,61 @@ class Vessel(VGroup):
                 f" {self.vessel_height} deep, not {level}"
             )
         self.level = float(level)
-        # Where the walls stand now: their box, whatever moved them.
-        left, bottom = self.walls.get_corner(DL)[:2]
-        right = self.walls.get_right()[0]
-        scale = (right - left) / self.vessel_width
         if self.level == 0:
             self.fluid.clear_points()
             return self
-        depth = self.level * scale
-        r = min(self.corner_radius * scale, depth)
-        top = bottom + depth
-        corner_y = bottom + r
-        self.fluid.set_points(
-            np.concatenate(
-                [
-                    line(np.array([left, top, 0.0]), np.array([left, corner_y, 0.0])),
-                    arc(np.array([left + r, corner_y, 0.0]), r, TAU / 2, TAU / 4)
-                    if r > 0
-                    else np.empty((0, 3)),
-                    line(
-                        np.array([left + r, bottom, 0.0]),
-                        np.array([right - r, bottom, 0.0]),
-                    ),
-                    arc(np.array([right - r, corner_y, 0.0]), r, 3 * TAU / 4, TAU / 4)
-                    if r > 0
-                    else np.empty((0, 3)),
-                    line(np.array([right, corner_y, 0.0]), np.array([right, top, 0.0])),
-                    line(np.array([right, top, 0.0]), np.array([left, top, 0.0])),
-                ]
-            )
-        )
+        outline = self._fluid_outline(self.level)
+        self.fluid.set_points(_posed(outline, self._wall_rest, self.walls.points))
         return self
+
+    def _fluid_outline(self, depth: float) -> np.ndarray:
+        """The fluid's closed outline ``depth`` deep, in the vessel's frame as
+        built: up the walls' inside from its bottom, its corners included.
+        """
+        r = self.corner_radius
+        w, h = self.vessel_width / 2, self.vessel_height / 2
+        surface = -h + depth
+        left_centre = np.array([-w + r, -h + r, 0.0])
+        right_centre = np.array([w - r, -h + r, 0.0])
+        pieces: list[np.ndarray] = []
+        if depth >= r:
+            pieces.append(
+                line(np.array([-w, surface, 0.0]), np.array([-w, -h + r, 0.0]))
+            )
+            lean = 0.0
+        else:
+            # The surface meets the bottom corners' arcs.
+            lean = math.asin((r - depth) / r)
+        if r > 0:
+            pieces.append(arc(left_centre, r, TAU / 2 + lean, TAU / 4 - lean))
+        pieces.append(line(np.array([-w + r, -h, 0.0]), np.array([w - r, -h, 0.0])))
+        if r > 0:
+            pieces.append(arc(right_centre, r, 3 * TAU / 4, TAU / 4 - lean))
+        if depth >= r:
+            pieces.append(line(np.array([w, -h + r, 0.0]), np.array([w, surface, 0.0])))
+        right_end = pieces[-1][-1]
+        left_end = pieces[0][0]
+        pieces.append(line(right_end, left_end))
+        return np.concatenate(pieces)
+
+
+def _posed(points: np.ndarray, rest: np.ndarray, now: np.ndarray) -> np.ndarray:
+    """``points`` drawn in the frame of ``rest`` carried into the frame
+    ``now`` is in: the affine map taking three points of ``rest`` (its
+    first, a bottom one and its last) to the same points of ``now``.
+    """
+    picks = [0, 8, len(rest) - 1]
+    source = np.hstack([np.asarray(rest)[picks, :2], np.ones((3, 1))])
+    target = np.asarray(now)[picks]
+    affine = np.linalg.solve(source, target)
+    return np.hstack([points[:, :2], np.ones((len(points), 1))]) @ affine
 
 
 class Drum(VGroup):
     """A flat-drawn cylinder ``width`` across and ``height`` tall, its ends
     ellipses ``depth`` deep: a gas cylinder, a data store, a barrel.
-    ``body`` is its side and front, ``top`` its top face.
+    ``body`` is its side and front, ``top`` its top face; style keywords
+    go to both.
     """
 
     def __init__(
@@ -177,6 +204,7 @@ class Drum(VGroup):
         fill_opacity: float = 0.0,
         **kwargs: Any,
     ) -> None:
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         w, h, ry = width / 2, height / 2, depth / 2
         top_centre = np.array([0.0, h - ry, 0.0])
@@ -194,6 +222,7 @@ class Drum(VGroup):
         )
         self.top = VMobject(color=color, fill_opacity=fill_opacity)
         self.top.set_points(ellipse_arc(top_centre, w, ry, 0.0, TAU))
+        apply_style([self.body, self.top], style)
         self.add(self.body, self.top)
 
 
@@ -201,6 +230,7 @@ class LayerStack(VGroup):
     """Labelled slabs one on another, the first of ``labels`` on top: the
     layers of an atmosphere or a film, of a tissue, of a model.
     ``thickness`` is one slab's, or one per slab; ``colors`` one per slab.
+    Style keywords go to the slabs; the labels keep their own.
     """
 
     def __init__(
@@ -216,6 +246,7 @@ class LayerStack(VGroup):
     ) -> None:
         if not labels:
             raise ValueError("a layer stack has at least one layer")
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         count = len(labels)
         heights = (
@@ -247,6 +278,7 @@ class LayerStack(VGroup):
             self.slabs.add(slab)
             self.labels.add(text)
             top -= tall
+        apply_style(self.slabs, style)
         self.add(self.slabs, self.labels)
 
     def layer(self, index: int) -> Rectangle:
@@ -260,7 +292,8 @@ class CellGrid(VGroup):
     """``rows`` by ``cols`` square cells ``cell_size`` across, addressed by
     row (from the top) and column (from the left): memory or an array, a
     crystal's lattice seen flat, a sheet of cells. ``values``, row by row,
-    writes a text in each cell it names (``None`` leaves one empty).
+    writes a text in each cell it names (``None`` leaves one empty). Style
+    keywords go to the cells; the texts keep their own.
     """
 
     def __init__(
@@ -275,6 +308,7 @@ class CellGrid(VGroup):
     ) -> None:
         if rows < 1 or cols < 1:
             raise ValueError("a cell grid has at least one row and one column")
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         self.rows, self.cols = int(rows), int(cols)
         self.cells = VGroup()
@@ -289,6 +323,7 @@ class CellGrid(VGroup):
                     np.array([left + col * cell_size, top - row * cell_size, 0])
                 )
                 self.cells.add(square)
+        apply_style(self.cells, style)
         if values is not None:
             if len(values) > rows or any(len(r) > cols for r in values):
                 raise ValueError("a cell grid's values fit its rows and columns")

@@ -16,6 +16,7 @@ from arachne.typing import Point3DLike
 from arachne.utils.color import WHITE, ParsableManimColor
 
 from ._paths import as_point, line
+from ._style import apply_style, take_style
 
 
 class Magnifier(VGroup):
@@ -24,6 +25,7 @@ class Magnifier(VGroup):
     cell's detail, the molecular view of a sample, a component inside a
     chip. ``small`` and ``large`` are the two circles, ``lines`` the
     tangents; what the large circle shows is the caller's to put in it.
+    Style keywords go to all three.
     """
 
     def __init__(
@@ -35,6 +37,7 @@ class Magnifier(VGroup):
         color: ParsableManimColor = WHITE,
         **kwargs: Any,
     ) -> None:
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         near = as_point(point)
         far = near + 2.5 * UR if center is None else as_point(center)
@@ -53,4 +56,5 @@ class Magnifier(VGroup):
             unit = np.array([math.cos(angle), math.sin(angle), 0.0])
             pieces.append(line(near + unit * radius, far + unit * large_radius))
         self.lines.set_points(np.concatenate(pieces))
+        apply_style([self.lines, self.small, self.large], style)
         self.add(self.lines, self.small, self.large)

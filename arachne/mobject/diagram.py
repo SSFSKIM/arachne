@@ -32,12 +32,21 @@ from arachne.animation.animation import Animation
 from arachne.constants import DOWN, LEFT, ORIGIN, RIGHT, UP
 from arachne.mobject.geometry.arc import Dot
 from arachne.mobject.marks._paths import ArcLength, as_point, direction, head, line
+from arachne.mobject.marks._style import (
+    Opacities,
+    apply_style,
+    opacities_of,
+    scaled,
+    set_opacities,
+    take_style,
+)
 from arachne.mobject.marks.arrows import ElbowConnector
-from arachne.mobject.marks.blocks import SIDES, Block, _opacities, _set_opacities
+from arachne.mobject.marks.blocks import SIDES, Block
 from arachne.mobject.marks.ports import Ported
 from arachne.mobject.text.text_mobject import Text
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.color import WHITE, YELLOW, ParsableManimColor
+from arachne.utils.family import extract_mobject_family_members
 from arachne.utils.rate_functions import smooth
 
 if TYPE_CHECKING:
@@ -118,6 +127,7 @@ class Diagram(VGroup):
                 b,
                 start_direction=leaving,
                 end_direction=arriving_from,
+                detour=_detour(_piece(start), _piece(end), a, b, leaving),
                 corner_radius=corner_radius,
                 tip=tip,
                 color=color,
@@ -169,6 +179,29 @@ class _StraightConnector(VMobject):
         self.set_points(line(start, stop))
 
 
+def _piece(spec: Any) -> VMobject:
+    piece: VMobject = spec[0] if isinstance(spec, tuple) else spec
+    return piece
+
+
+#: How far past a piece a connector going round it runs.
+_ROUND = 0.3
+
+
+def _detour(
+    first: VMobject, second: VMobject, a: np.ndarray, b: np.ndarray, leaving: np.ndarray
+) -> float:
+    """How far past the further of the ports ``a`` and ``b`` a connector
+    going round two side-by-side pieces runs: clear of both pieces, above
+    them for ports on left and right sides, right of them for ports on top
+    and bottom.
+    """
+    other = 1 if abs(leaving[0]) >= abs(leaving[1]) else 0
+    toward = UP if other == 1 else RIGHT
+    beyond = max(p.get_critical_point(toward)[other] for p in (first, second))
+    return float(beyond - max(a[other], b[other]) + _ROUND)
+
+
 def _end(spec: Any, other: Any) -> tuple[np.ndarray, np.ndarray]:
     """Where a connector meets the piece ``spec`` names, and the direction
     it leaves in there.
@@ -195,15 +228,21 @@ def _end(spec: Any, other: Any) -> tuple[np.ndarray, np.ndarray]:
 
 class Flow(VGroup):
     """``tokens`` dots running along ``edge`` at ``speed`` scene units per
-    second, by arc length, evenly spaced, the first ``offset`` along it at
-    the start; each wraps from the edge's end to its start.
+    second, by arc length, the first ``offset`` along it at the start, the
+    others behind it at equal shares of the edge's length; each wraps from
+    the edge's end to its start.
 
-    A token is at ``(offset + speed * elapsed + i * spacing) mod length``
-    along the edge, ``elapsed`` the seconds of scene time the flow has run:
-    its updater adds the ``dt`` it is handed, so the flow keeps its speed
-    at any frame rate, through plays and waits, until :meth:`stop`. It
-    reads the edge's own points (a connector's wire, not its head) where
-    they are at each tick, so it follows an edge that moves.
+    At every instant a token is at ``(offset + speed * elapsed + i * L / n)
+    mod L`` along the edge, ``L`` the edge's length then and ``elapsed`` the
+    scene time since the flow was made, read from the scene's own clock
+    (:attr:`~.Scene.time`), never summed from steps. Two engine updaters
+    keep it there: its own, which a play's end runs, and one the scene runs
+    after every animation and mobject updater at every instant, which no
+    animation suspends. So the speed and the spacing hold at any frame
+    rate, through plays and waits, whatever animates the edge, the diagram
+    the flow is in or the flow itself, until :meth:`stop`. It reads the
+    edge's own points (a connector's wire, not its head) as they are.
+    Style keywords go to the tokens.
     """
 
     def __init__(
@@ -218,23 +257,38 @@ class Flow(VGroup):
     ) -> None:
         if tokens < 1:
             raise ValueError("a flow has at least one token")
+        style = take_style(kwargs)
         super().__init__(**kwargs)
-        path = ArcLength(edge.points)
         self.speed = float(speed)
         self.offset = float(offset)
-        self.spacing = path.length / tokens
-        #: Seconds of scene time the flow has run.
+        scene = _running_scene()
+        #: The scene time the flow was made at, from which it runs.
+        self.start = float(scene.time) if scene is not None else 0.0
+        #: Seconds of scene time the flow has run, as last shown.
         self.elapsed = 0.0
+        self.stopped = False
         self.add(*(Dot(radius=radius, color=color) for _ in range(tokens)))
-        self._follow(edge)
+        apply_style(self.submobjects, style)
 
-        def keep_time(flow: Mobject, dt: float) -> None:
+        def place(flow: Flow, seconds: float) -> None:
+            flow.elapsed = seconds
+            path = ArcLength(edge.points)
+            share = path.length / len(flow.submobjects)
+            for index, token in enumerate(flow.submobjects):
+                along = (flow.travelled() + index * share) % path.length
+                token.move_to(path.point(along))
+
+        def follow(flow: Mobject) -> None:
             assert isinstance(flow, Flow)
-            flow.elapsed += dt
-            flow._follow(edge)
+            if scene is not None and not flow.stopped:
+                place(flow, float(scene.time) - flow.start)
 
-        self._keeper = keep_time
-        self.add_updater(keep_time)
+        self._show = place
+        self._follow = follow
+        place(self, 0.0)
+        self.add_updater(follow)
+        if scene is not None:
+            _drive_flows(scene)
 
     def travelled(self) -> float:
         """How far the first token has gone along the edge from its start,
@@ -242,16 +296,40 @@ class Flow(VGroup):
         """
         return self.offset + self.speed * self.elapsed
 
-    def _follow(self, edge: VMobject) -> None:
-        path = ArcLength(edge.points)
-        for index, token in enumerate(self.submobjects):
-            along = (self.travelled() + index * self.spacing) % path.length
-            token.move_to(path.point(along))
+    def show_at(self, seconds: float) -> Flow:
+        """Put the tokens where they are ``seconds`` after the flow started."""
+        self._show(self, float(seconds))
+        return self
 
     def stop(self) -> Flow:
         """Stop the tokens where they are."""
-        self.remove_updater(self._keeper)
+        self.stopped = True
         return self
+
+
+def _running_scene() -> Scene | None:
+    """The scene whose script is running now, if any."""
+    from arachne.timeline.recorder import running
+
+    recorder = running()
+    return recorder.scene if recorder is not None else None
+
+
+def _drive_flows(scene: Scene) -> None:
+    """Give ``scene``, once, the engine updater that keeps its flows on its
+    clock: last in every instant, after the animations and the mobjects'
+    updaters, unsuspended by any animation.
+    """
+    if any(getattr(u, "drives_flows", False) for u in scene.updaters):
+        return
+
+    def drive_flows(dt: float) -> None:
+        for member in extract_mobject_family_members(scene.mobjects):
+            if isinstance(member, Flow):
+                member._follow(member)
+
+    drive_flows.drives_flows = True  # type: ignore[attr-defined]
+    scene.add_updater(drive_flows)
 
 
 #: The share of a zoom over which a piece fades in or out.
@@ -278,7 +356,8 @@ class ZoomInto(Animation):
     fades out over the :data:`FADE` before it is cut and stays hidden.
 
     The frame is the scene's camera's, which only a moving camera has (a
-    :class:`~.MovingCameraScene`), or ``frame``.
+    :class:`~.MovingCameraScene`); a ``frame`` passed must be that one.
+    ``rate_func`` eases the zoom once, for the frame and every fade alike.
     """
 
     def __init__(
@@ -302,6 +381,15 @@ class ZoomInto(Animation):
         self._scene_mobjects: tuple[Mobject, ...] = ()
 
     def _setup_scene(self, scene: Scene) -> None:
+        from arachne.camera.moving_camera import MovingCamera
+
+        camera = scene.camera
+        if not isinstance(camera, MovingCamera) or camera.frame is not self.mobject:
+            raise ValueError(
+                "ZoomInto moves the scene's camera's frame, and only a moving"
+                " camera has one: make the scene a MovingCameraScene, and pass"
+                " no frame or that camera's"
+            )
         self._scene_mobjects = tuple(scene.mobjects)
         super()._setup_scene(scene)
 
@@ -324,7 +412,7 @@ class ZoomInto(Animation):
         #: Each piece the frame's edge cuts: its family, how each member
         #: shows now, and the share of the zoom it fades out over.
         self._fading: list[
-            tuple[list[Mobject], list[tuple[float, float, float]], tuple[float, float]]
+            tuple[list[Mobject], list[Opacities], tuple[float, float]]
         ] = []
         for piece in _pieces(self._scene_mobjects, block, frame):
             cut = self._cut_at(piece)
@@ -332,7 +420,7 @@ class ZoomInto(Animation):
                 continue
             family = list(piece.get_family())
             self._fading.append(
-                (family, [_opacities(m) for m in family], (max(0.0, cut - FADE), cut))
+                (family, [opacities_of(m) for m in family], (max(0.0, cut - FADE), cut))
             )
         super().begin()
 
@@ -353,7 +441,8 @@ class ZoomInto(Animation):
         from arachne.lint.codes import THRESHOLD_HEIGHT
         from arachne.lint.rules.text_small import SMALL_PIXELS
 
-        heights = [float(m.height) for m in inside.get_family() if _is_text(m)]
+        heights = [_glyph_height(text) for text in _revealed_texts(inside)]
+        heights = [h for h in heights if h > 0]
         if not heights:
             return 0.0
         width, tall = int(config.pixel_width), int(config.pixel_height)
@@ -393,6 +482,8 @@ class ZoomInto(Animation):
         return None
 
     def interpolate_mobject(self, alpha: float) -> None:
+        # Eased once, for the frame and every fade alike.
+        alpha = self.get_sub_alpha(alpha, 0, 1)
         frame = self.mobject
         frame.scale_to_fit_height(self._height(alpha))
         frame.move_to(self._center(alpha))
@@ -402,18 +493,11 @@ class ZoomInto(Animation):
             for member, shown in zip(
                 inside.get_family(), self.block.inside_shown, strict=True
             ):
-                _set_opacities(member, _scaled(shown, share))
+                set_opacities(member, scaled(shown, share))
         for family, faded, window in self._fading:
             keep = 1.0 - _ramp(alpha, window)
             for member, opacities in zip(family, faded, strict=True):
-                _set_opacities(member, _scaled(opacities, keep))
-
-
-def _scaled(
-    opacities: tuple[float, float, float], share: float
-) -> tuple[float, float, float]:
-    fill, stroke, background = opacities
-    return (fill * share, stroke * share, background * share)
+                set_opacities(member, scaled(opacities, keep))
 
 
 def _window(start: float) -> tuple[float, float]:
@@ -457,6 +541,42 @@ def _pieces(
     return found
 
 
+def _revealed_texts(inside: Mobject) -> list[Mobject]:
+    """The texts opening a block shows: those in its inside, but for the
+    hidden insides of the blocks within it.
+    """
+    found: list[Mobject] = []
+
+    def walk(mob: Mobject) -> None:
+        if _is_text(mob):
+            found.append(mob)
+            return
+        for sub in mob.submobjects:
+            if isinstance(mob, Block) and sub is mob.inside:
+                continue
+            walk(sub)
+
+    walk(inside)
+    return found
+
+
+def _glyph_height(text: Mobject) -> float:
+    """The height of a text's glyphs, its plate (a pill) left out, as the
+    lint measures a text's ink.
+    """
+    plate = getattr(text, "background_rectangle", None)
+    skip = {id(m) for m in plate.get_family()} if plate is not None else set()
+    points = [
+        np.asarray(m.points)
+        for m in text.get_family()
+        if id(m) not in skip and len(m.points)
+    ]
+    if not points:
+        return 0.0
+    ys = np.concatenate(points)[:, 1]
+    return float(ys.max() - ys.min())
+
+
 def _is_text(mob: Mobject) -> bool:
     from arachne.mobject.text.numbers import DecimalNumber
     from arachne.mobject.text.tex_mobject import SingleStringMathTex
@@ -478,7 +598,7 @@ def _camera_frame() -> Mobject:
     if not isinstance(camera, MovingCamera):
         raise ValueError(
             "ZoomInto moves the camera's frame, and only a moving camera has one:"
-            " make the scene a MovingCameraScene, or pass the frame to move"
+            " make the scene a MovingCameraScene"
         )
     frame: Mobject = camera.frame
     return frame

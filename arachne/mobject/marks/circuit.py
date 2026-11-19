@@ -19,6 +19,7 @@ from arachne.typing import Point3DLike
 from arachne.utils.color import WHITE, ParsableManimColor
 
 from ._paths import arc, as_point, direction, hermite, line, normal, polyline
+from ._style import apply_style, take_style
 from .ports import Ported
 
 
@@ -60,7 +61,8 @@ class PlatePair(VMobject):
 class Switch(VGroup):
     """A contact from ``start`` to ``end``, drawn open (its blade lifted by
     ``open_angle``) or closed: a circuit switch, a relay or a bit, a gated
-    channel. :meth:`set_closed` changes it in place.
+    channel. :meth:`set_closed` changes it in place. Style keywords go to
+    the contacts and the blade.
     """
 
     def __init__(
@@ -73,6 +75,7 @@ class Switch(VGroup):
         color: ParsableManimColor = WHITE,
         **kwargs: Any,
     ) -> None:
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         self._start, self._end = as_point(start), as_point(end)
         self.open_angle = float(open_angle)
@@ -81,6 +84,7 @@ class Switch(VGroup):
             Circle(radius=contact_radius, color=color).move_to(self._end),
         )
         self.blade = VMobject(color=color)
+        apply_style([*self.contacts, self.blade], style)
         self.add(self.contacts, self.blade)
         self.closed = bool(closed)
         self.set_closed(self.closed)
@@ -146,6 +150,7 @@ class LogicGate(Ported):
     bottom) on short leads at its back and an output port ``out`` on a lead
     at its front: digital logic, Boolean algebra, threshold or regulatory
     logic. A buffer and a not take one input; the others two or more.
+    Style keywords go to the outline, the leads and the bubble.
     """
 
     def __init__(
@@ -166,6 +171,7 @@ class LogicGate(Ported):
             raise ValueError(f"a {kind} gate has one input")
         if not single and count < 2:
             raise ValueError(f"a {kind} gate has two or more inputs")
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         self.kind = kind
         self.inputs = count
@@ -236,6 +242,7 @@ class LogicGate(Ported):
                 hermite(lambda t: back_edge(t) + offset, back_slope, 0.0, 1.0, 4)
             )
         out = np.array([front, 0.0, 0.0])
+        self.bubble: Circle | None = None
         if GATES[kind]:
             radius = 0.08 * size
             self.bubble = Circle(radius=radius, color=color).move_to(
@@ -260,4 +267,8 @@ class LogicGate(Ported):
         self.leads = VMobject(color=color)
         self.leads.set_points(np.concatenate(strokes))
         self.add(self.leads)
+        apply_style(
+            [m for m in (self.body, self.leads, self.bubble) if m is not None],
+            style,
+        )
         self._set_ports(ports)

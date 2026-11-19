@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from arachne import RIGHT, Dot, DottedTrail, Scene, linear
 
-#: Seconds between two dots of the trail.
-INTERVAL = 0.25
+#: Seconds between two dots of the trail: off the 60 Hz tick's grid.
+INTERVAL = 0.12
 #: Where the dot starts, and its speed in scene units per second.
 START = -3.0
 SPEED = 2.0

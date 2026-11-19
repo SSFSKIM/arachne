@@ -17,15 +17,21 @@ every instant it is asked, and reports them under the clearance codes:
 - ``text.small``: a label shorter than the legible height, a note, as the
   text-height rule measures it.
 
-A scene with no diagram has no finding here, whatever else it draws.
+A diagram is an engine :class:`~arachne.mobject.diagram.Diagram` (or a
+class made from it), known by the mobject the record holds, never by a
+class's name: a scene's own class called ``Diagram`` is not one. A scene
+with no diagram has no finding here, whatever else it draws.
 """
 
 from __future__ import annotations
 
-__all__ = ["diagram_clear", "diagram_findings"]
+__all__ = ["DiagramRule", "diagram_clear", "diagram_findings", "diagram_ids"]
 
 import itertools
+from contextvars import ContextVar
+from dataclasses import dataclass
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 from ..findings import Finding, Holder
 from ..parts import Parts
@@ -36,15 +42,25 @@ from ._units import Measured, measured_units
 from .frame_edge import EDGE_SLACK
 from .text_small import SMALL_PIXELS, small_findings, text_heights
 
+if TYPE_CHECKING:
+    from arachne.timeline.record import Record
+
+    from ..core import LintContext
+
 #: A shortfall under this is noise: under a pixel at any size.
 NOISE = 0.005
+
+#: The stable ids of the diagrams of the record a lint is reading, for the
+#: length of the rule's call.
+_DIAGRAMS: ContextVar[frozenset[str]] = ContextVar("diagrams", default=frozenset())
 
 
 def diagram_findings(parts: Parts, terms: Terms) -> list[Finding]:
     """The labels of the diagrams drawn at ``parts``' instant that crowd
-    each other, run past the frame's edge or are too small to read.
+    each other, run past the frame's edge or are too small to read: the
+    diagrams of the record the rule is reading (:func:`diagram_ids`).
     """
-    kinds = _diagram_types()
+    kinds = _DIAGRAMS.get()
     if not any(_held(part.within, kinds) for part in parts.texts):
         return []
     labels = [
@@ -140,22 +156,32 @@ def _edge_findings(parts: Parts, labels: list[Measured]) -> list[Finding]:
     return found
 
 
-def _held(within: tuple[Holder, ...], kinds: frozenset[str]) -> bool:
-    return any(holder.type in kinds for holder in within)
+def _held(within: tuple[Holder, ...], diagrams: frozenset[str]) -> bool:
+    return any(holder.id in diagrams for holder in within)
 
 
-def _diagram_types() -> frozenset[str]:
-    """The names of the diagram class and every class made from it."""
+def diagram_ids(record: Record) -> frozenset[str]:
+    """The stable ids of the engine diagrams ``record`` holds."""
     from arachne.mobject.diagram import Diagram
 
-    names = set()
-    stack: list[type] = [Diagram]
-    while stack:
-        cls = stack.pop()
-        names.add(cls.__name__)
-        stack.extend(cls.__subclasses__())
-    return frozenset(names)
+    return frozenset(
+        record.origin(mob).id for mob in record.mobjects() if isinstance(mob, Diagram)
+    )
+
+
+@dataclass(frozen=True)
+class DiagramRule(InstantRule):
+    """An instant rule that knows, for its call, which mobjects of the
+    record it reads are diagrams.
+    """
+
+    def __call__(self, context: LintContext) -> list[Finding]:
+        held = _DIAGRAMS.set(diagram_ids(context.record))
+        try:
+            return super().__call__(context)
+        finally:
+            _DIAGRAMS.reset(held)
 
 
 #: The rule: the clearance of the labels inside every diagram drawn.
-diagram_clear = InstantRule(diagram_findings)
+diagram_clear = DiagramRule(diagram_findings)

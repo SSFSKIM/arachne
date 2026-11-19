@@ -59,3 +59,18 @@ class TinyLabel(Scene):
         diagram.add(Node("plain", radius=0.6).shift(RIGHT * 2))
         self.add(diagram)
         self.wait(0.5)
+
+
+class LabelsNearlyTouching(Scene):
+    """Two node labels 0.03 units apart: apart, but closer than labels
+    keep.
+    """
+
+    def construct(self):
+        diagram = Diagram()
+        a = Node("alpha", radius=0.3).move_to(LEFT)
+        b = Node("beta", radius=0.3)
+        b.shift(RIGHT * (a.label.get_right()[0] + 0.03 - b.label.get_left()[0]))
+        diagram.add(a, b)
+        self.add(diagram)
+        self.wait(0.5)

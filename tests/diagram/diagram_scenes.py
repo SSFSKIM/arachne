@@ -15,6 +15,7 @@ from arachne import (
     Flow,
     MovingCameraScene,
     Node,
+    Rectangle,
     Scene,
     ZoomInto,
 )
@@ -88,6 +89,8 @@ class LegibleZoom(MovingCameraScene):
 
     def construct(self):
         diagram, middle = zoomed_diagram(self.inside_size, self.colliding)
+        #: The block left of the one zoomed into, which the zoom cuts.
+        self.neighbour = diagram[0]
         self.add(diagram)
         self.play(ZoomInto(middle), run_time=2)
         self.wait(0.5)
@@ -109,3 +112,37 @@ class ZoomWithoutMovingCamera(Scene):
         diagram, middle = zoomed_diagram(36, False)
         self.add(diagram)
         self.play(ZoomInto(middle))
+
+
+#: The moving flow's speed and token count.
+MOVING_SPEED = 1.2
+MOVING_TOKENS = 4
+
+
+class FlowOnAMovingEdge(Scene):
+    """A flow inside its diagram: the diagram moves over 0.5-1.5 s, then
+    the connector alone shrinks to half its length over 1.5-2.5 s; 3 s in
+    all.
+    """
+
+    def construct(self):
+        a = Node("A").move_to(LEFT * 3 + DOWN)
+        b = Node("B").move_to(RIGHT * 3 + DOWN)
+        diagram = Diagram(a, b)
+        edge = diagram.connect((a, "right"), (b, "left"), route="straight", tip=False)
+        flow = Flow(edge, speed=MOVING_SPEED, tokens=MOVING_TOKENS, offset=0.2)
+        diagram.add(flow)
+        self.add(diagram)
+        self.wait(0.5)
+        self.play(diagram.animate.shift(UP), run_time=1)
+        self.play(edge.animate.scale(0.5), run_time=1)
+        self.wait(0.5)
+
+
+class ZoomWithAFrameOfItsOwn(Scene):
+    """A zoom handed a frame no camera of the scene views through."""
+
+    def construct(self):
+        diagram, middle = zoomed_diagram(36, False)
+        self.add(diagram)
+        self.play(ZoomInto(middle, frame=Rectangle(width=16, height=9)))

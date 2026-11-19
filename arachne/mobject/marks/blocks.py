@@ -17,11 +17,12 @@ from arachne.typing import Vector3DLike
 from arachne.utils.color import WHITE, ParsableManimColor
 
 from ._paths import as_point, line, rounded_rect
+from ._style import apply_style, opacities_of, scaled, set_opacities, take_style
 from .ports import Ported
 from .shapes import _fit_text
 
 if TYPE_CHECKING:
-    from arachne.mobject.mobject import Mobject
+    pass
 
 #: The ports a block or a node has unless told others.
 SIDES = {"left": LEFT, "right": RIGHT, "top": UP, "bottom": DOWN}
@@ -57,7 +58,8 @@ class Block(Ported):
     end); by default the four sides' middles, named ``left``, ``right``,
     ``top`` and ``bottom``. ``inside`` is a diagram of what the block holds,
     fitted into its body and hidden until
-    :class:`~arachne.mobject.diagram.ZoomInto` opens it.
+    :class:`~arachne.mobject.diagram.ZoomInto` opens it. Style keywords go
+    to the body; the header strip, the title and the inside keep theirs.
     """
 
     def __init__(
@@ -74,9 +76,11 @@ class Block(Ported):
         fill_opacity: float = 0.15,
         **kwargs: Any,
     ) -> None:
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         self.body = VMobject(color=color, fill_opacity=fill_opacity)
         self.body.set_points(rounded_rect(ORIGIN, width, height, corner_radius))
+        apply_style([self.body], style)
         self.add(self.body)
         self.title: Text | None = None
         self.header = 0.0
@@ -131,11 +135,10 @@ class Block(Ported):
         scale = min(room_w / inside.width, room_h / inside.height)
         inside.scale(scale)
         inside.move_to(np.array([0.0, -self.header / 2, 0.0]))
-        # How it shows once opened: each member's fill, stroke and
-        # background stroke opacity, in family order.
-        self.inside_shown = tuple(_opacities(m) for m in inside.get_family())
-        for member in inside.get_family():
-            _set_opacities(member, (0.0, 0.0, 0.0))
+        # How it shows once opened: each member's opacities, in family order.
+        self.inside_shown = tuple(opacities_of(m) for m in inside.get_family())
+        for member, shown in zip(inside.get_family(), self.inside_shown, strict=True):
+            set_opacities(member, scaled(shown, 0.0))
         self.inside = inside
         self.add(inside)
 
@@ -145,7 +148,8 @@ class Node(Ported):
     structure, a vertex or a host, a junction or a meter (by its label).
 
     ``ports`` maps a name to the direction from the centre it sits in; by
-    default ``left``, ``right``, ``top`` and ``bottom``.
+    default ``left``, ``right``, ``top`` and ``bottom``. Style keywords go
+    to the disc; the label keeps its own.
     """
 
     def __init__(
@@ -158,8 +162,10 @@ class Node(Ported):
         fill_opacity: float = 0.15,
         **kwargs: Any,
     ) -> None:
+        style = take_style(kwargs)
         super().__init__(**kwargs)
         self.disc = Circle(radius=radius, color=color, fill_opacity=fill_opacity)
+        apply_style([self.disc], style)
         self.add(self.disc)
         self.label: Text | None = None
         if label is not None:
@@ -176,28 +182,3 @@ class Node(Ported):
             unit = unit / np.linalg.norm(unit)
             placed[name] = (unit * radius, unit)
         self._set_ports(placed)
-
-
-def _opacities(member: Mobject) -> tuple[float, float, float]:
-    """A vector member's largest fill, stroke and background stroke
-    opacity; nothing for any other.
-    """
-    if not isinstance(member, VMobject):
-        return (0.0, 0.0, 0.0)
-    return (
-        float(np.max(member.get_fill_opacities(), initial=0.0)),
-        float(np.max(member.get_stroke_opacities(), initial=0.0)),
-        float(np.max(member.get_stroke_opacities(background=True), initial=0.0)),
-    )
-
-
-def _set_opacities(member: Mobject, opacities: tuple[float, float, float]) -> None:
-    """Give a vector member its fill, stroke and background stroke
-    opacity, itself alone.
-    """
-    if not isinstance(member, VMobject):
-        return
-    fill, stroke, background = opacities
-    member.set_fill(opacity=fill, family=False)
-    member.set_stroke(opacity=stroke, family=False)
-    member.set_stroke(opacity=background, background=True, family=False)
