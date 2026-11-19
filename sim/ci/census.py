@@ -7,9 +7,11 @@
     ``ci/census.txt``, with the reason it cannot reach a result, and every entry of the list is
     still a hit. The sources searched are those Cargo compiles: the directory of each library
     target's root file, wherever it is (rapier's and parry's are outside their manifests'
-    directories), and each build script. An entry names a line, or every hit of a file
-    (``:*``), and the locked source it was reviewed in (``sha256:<checksum>`` from the lock
-    file, ``git:<commit>``, or ``local``), so a changed source is reviewed again. Prints
+    directories), and every file a target's root file reaches by module declarations
+    (``mod x;``, ``#[path]``), a build script's own modules among them. An entry names a line,
+    or every hit of a file (``:*``), and the locked source it was reviewed in
+    (``sha256:<checksum>`` from the lock file, ``git:<commit>``, or ``local``), so a changed
+    source is reviewed again. Prints
     ``census: <n> hits in <m> files of <k> packages, all listed``.
 
 Choices made when the crate is compiled (``cfg(target_feature)``) are not run-time detection:
@@ -144,6 +146,77 @@ def compiled_roots(package: dict[str, Any]) -> tuple[Path, list[Path]]:
     return base, roots
 
 
+MODULE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?(\w+)\s*;")
+PATH_ATTRIBUTE = re.compile(r'^\s*#\[path\s*=\s*"([^"]+)"\]')
+ATTRIBUTE = re.compile(r"^\s*#\[")
+
+
+def declared_modules(
+    source: Path, owns_directory: bool
+) -> list[tuple[str, list[Path]]]:
+    """The files of the modules a source file declares (``mod x;``), each as its name and the
+    places Rust looks for it: ``#[path]`` relative to the file's directory, else ``x.rs`` or
+    ``x/mod.rs`` beside a crate root or ``mod.rs`` and under ``<stem>/`` beside any other file.
+    Every declaration counts, whatever ``#[cfg]`` it carries.
+    """
+    directory = source.parent if owns_directory else source.parent / source.stem
+    found = []
+    path = None
+    for line in source.read_text(errors="replace").splitlines():
+        if attribute := PATH_ATTRIBUTE.match(line):
+            path = attribute.group(1)
+            continue
+        if module := MODULE.match(line):
+            name = module.group(1)
+            places = (
+                [source.parent / path]
+                if path
+                else [directory / f"{name}.rs", directory / name / "mod.rs"]
+            )
+            found.append((name, places))
+        if not ATTRIBUTE.match(line):
+            path = None
+    return found
+
+
+def module_files(entry: Path, walked: list[Path]) -> list[Path]:
+    """Every file reached from a target's root file by module declarations. A module whose
+    file is not found stops the census, unless it is declared in a directory already walked
+    (a module inside an inline block lives deeper there, and is searched with the rest).
+    """
+    files = [entry]
+    queue = [(entry, True)]
+    while queue:
+        source, owns_directory = queue.pop()
+        for name, places in declared_modules(source, owns_directory):
+            place = next((p for p in places if p.is_file()), None)
+            if place is None:
+                if any(source.is_relative_to(d) for d in walked):
+                    continue
+                sys.exit(f"census: module {name} declared in {source} has no file")
+            place = Path(os.path.normpath(place))
+            if place not in files:
+                files.append(place)
+                queue.append((place, place.name == "mod.rs"))
+    return files
+
+
+def compiled_sources(package: dict[str, Any]) -> tuple[Path, list[Path]]:
+    """The files Cargo compiles of a package: everything under each library target's
+    directory, and every file reached by module declarations from each target's root file
+    (a build script's own modules among them). Returned with their common ancestor.
+    """
+    base, roots = compiled_roots(package)
+    walked = [root for root in roots if root.is_dir()]
+    files = {f for root in walked for f in root.rglob("*.rs")}
+    for target in package["targets"]:
+        if COMPILED & set(target["kind"]):
+            entry = Path(os.path.normpath(target["src_path"]))
+            files.update(module_files(entry, walked))
+    base = Path(os.path.commonpath([base, *files])) if files else base
+    return base, sorted(files)
+
+
 def packages() -> list[tuple[str, Path, list[Path]]]:
     out = subprocess.run(
         ["cargo", "metadata", "--locked", "--format-version", "1"],
@@ -161,19 +234,12 @@ def packages() -> list[tuple[str, Path, list[Path]]]:
         if p["id"] not in wanted:
             continue
         locked = source_id(index, p["name"], p["version"], p["source"])
-        base, roots = compiled_roots(p)
-        found.append((f"{p['name']} {p['version']} {locked}", base, roots))
+        base, files = compiled_sources(p)
+        found.append((f"{p['name']} {p['version']} {locked}", base, files))
     return found
 
 
-def search(package: str, base: Path, roots: list[Path]) -> list[Hit]:
-    files = sorted(
-        {
-            f
-            for root in roots
-            for f in ([root] if root.is_file() else root.rglob("*.rs"))
-        }
-    )
+def search(package: str, base: Path, files: list[Path]) -> list[Hit]:
     hits = []
     for source in files:
         path = source.relative_to(base).as_posix()
@@ -189,7 +255,7 @@ def main() -> None:
         sys.exit(__doc__)
     found = packages()
     hits = [
-        hit for package, base, roots in found for hit in search(package, base, roots)
+        hit for package, base, files in found for hit in search(package, base, files)
     ]
     unlisted, stale = compare(hits, parse_reviewed(REVIEWED.read_text()))
     for hit in unlisted:

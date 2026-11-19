@@ -6,8 +6,12 @@ environment; each ``test_`` function is run in turn.
 
 from __future__ import annotations
 
+import atexit
+import shutil
 import sys
+import tempfile
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -258,6 +262,65 @@ def test_census_walks_a_build_script_directory_of_its_own() -> None:
     base, roots = census.compiled_roots(package)
     assert base == Path("/r/libm-0.2.16")
     assert roots == [Path("/r/libm-0.2.16/src"), Path("/r/libm-0.2.16/build")]
+
+
+def crate(files: dict[str, str]) -> Path:
+    """A package's sources written into a fresh directory; returns the manifest's directory."""
+    scratch = tempfile.mkdtemp()
+    atexit.register(shutil.rmtree, scratch)
+    root = Path(scratch) / "pkg"
+    for name, text in {"Cargo.toml": "", **files}.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    return root
+
+
+def package_at(root: Path, *targets: tuple[str, str]) -> dict[str, Any]:
+    return {
+        "manifest_path": str(root / "Cargo.toml"),
+        "targets": [{"kind": [k], "src_path": str(root / p)} for k, p in targets],
+    }
+
+
+def test_census_follows_the_modules_a_build_script_declares() -> None:
+    root = crate(
+        {
+            "build.rs": "use std::env;\n\nmod configure;\n\nfn main() {}\n",
+            "configure.rs": 'pub fn f() {\n    if is_x86_feature_detected!("avx") {}\n}\n',
+            "tests/t.rs": 'if is_x86_feature_detected!("avx") {}\n',
+            "src/lib.rs": "",
+        }
+    )
+    package = package_at(root, ("lib", "src/lib.rs"), ("custom-build", "build.rs"))
+    base, files = census.compiled_sources(package)
+    assert root / "configure.rs" in files
+    assert root / "tests/t.rs" not in files
+    hits = census.search(CPU, base, files)
+    assert [h.key for h in hits] == [f"{CPU} configure.rs:2"]
+
+
+def test_census_follows_a_module_path_outside_the_library_directory() -> None:
+    root = crate(
+        {
+            "src/lib.rs": '#[cfg(unix)]\n#[path = "../shared/x.rs"]\npub(crate) mod x;\nmod inline {}\n',
+            "shared/x.rs": "mod inner;\n",
+            "shared/x/inner.rs": "let r = __cpuid(1);\n",
+        }
+    )
+    base, files = census.compiled_sources(package_at(root, ("lib", "src/lib.rs")))
+    assert root / "shared/x/inner.rs" in files
+    assert [h.key for h in census.search(CPU, base, files)] == [
+        f"{CPU} shared/x/inner.rs:1"
+    ]
+
+
+def test_census_stops_on_a_module_it_cannot_find() -> None:
+    root = crate({"build.rs": "mod missing;\nfn main() {}\n"})
+    try:
+        census.compiled_sources(package_at(root, ("custom-build", "build.rs")))
+    except SystemExit:
+        return
+    raise AssertionError("a declared module with no file was passed over")
 
 
 def test_census_patterns() -> None:
