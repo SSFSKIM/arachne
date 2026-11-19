@@ -1,0 +1,26 @@
+[project]
+name = "arachne-compare"
+version = "0.1.0.dev0"
+description = "Compare two sequences of frames at the scale a viewer can see"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.1",
+    "scipy>=1.13",
+]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+module-name = "arachne_compare"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
