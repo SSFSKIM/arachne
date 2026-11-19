@@ -167,9 +167,11 @@ At the release, built as the reproducers were (with `std`):
 | `revolute-angle-3d-published` | `3f94f0a0` | `3f94f0a0` | `3f94f0a0` |
 
 The published differences reproduce. At the pinned commits every case and both worlds agree on the
-three systems: `39a3ae8e`, `bd3f472d`, `3f94f09f`, the values `libm` gives. The worlds' digests did
-not move between the release and the pin, on any system: their inputs reach none of the calls with
-a value at which the platform's functions round differently. That is why two agreeing runs prove
+three systems, and the outputs of the two x86-64 systems are byte-identical: `39a3ae8e`,
+`bd3f472d`, `3f94f09f`, the values `libm` gives. The worlds as first written (before the applied
+drag and spring were added) gave the same digests at the release and at the pin, on every system:
+their inputs reach none of the calls with a value at which the platform's functions round
+differently. That is why two agreeing runs prove
 nothing, and why the audit reads the import list.
 
 Run it with `cargo run --release --locked --example probe` from `sim/`.
