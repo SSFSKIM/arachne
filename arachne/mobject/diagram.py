@@ -52,7 +52,6 @@ from arachne.utils.rate_functions import smooth
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from typing import Self
 
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
@@ -103,6 +102,8 @@ class Diagram(VGroup):
         tip: bool = True,
         font_size: float = 24,
         corner_radius: float = 0.15,
+        stub: float = 0.3,
+        end_stub: float | None = None,
         color: ParsableManimColor = WHITE,
         label_color: ParsableManimColor | None = None,
         **kwargs: Any,
@@ -115,6 +116,10 @@ class Diagram(VGroup):
         ``"straight"``. ``label`` puts a text on a pill (a plate the
         background's colour) at the connector's middle, which the
         connector keeps as ``label``.
+
+        An elbow runs ``stub`` straight out of its start before it turns,
+        and ``end_stub`` (``stub`` when ``None``) into its end, each cut to
+        half the clear space when the piece at the other end lies across it.
         """
         if route not in ("elbow", "straight"):
             raise ValueError(
@@ -130,8 +135,13 @@ class Diagram(VGroup):
                 start_direction=leaving,
                 end_direction=arriving_from,
                 detour=_detour(_piece(start), _piece(end), a, b, leaving),
-                stub=_stub(a, leaving, _piece(end)),
-                end_stub=_stub(b, arriving_from, _piece(start)),
+                stub=_stub(a, leaving, _piece(end), stub),
+                end_stub=_stub(
+                    b,
+                    arriving_from,
+                    _piece(start),
+                    stub if end_stub is None else end_stub,
+                ),
                 corner_radius=corner_radius,
                 tip=tip,
                 color=color,
@@ -191,27 +201,23 @@ def _piece(spec: Any) -> VMobject:
 #: How far past a piece a connector going round it runs.
 _ROUND = 0.3
 
-#: How far a connector runs straight out of a port before it turns, where
-#: there is room.
-_STUB = 0.3
 
-
-def _stub(port: np.ndarray, out: np.ndarray, other: VMobject) -> float:
+def _stub(port: np.ndarray, out: np.ndarray, other: VMobject, wanted: float) -> float:
     """How far a connector can run straight out of ``port`` along ``out``
-    before it turns: :data:`_STUB`, or half the clear space up to ``other``
-    (the piece at the connector's other end) when that piece lies across
-    its course. A port ``other`` covers has no route out: refused.
+    before it turns: ``wanted``, or less, half the clear space up to
+    ``other`` (the piece at the connector's other end), when that piece lies
+    across its course. A port ``other`` covers has no route out: refused.
     """
     axis = 0 if abs(out[0]) >= abs(out[1]) else 1
     across = 1 - axis
     sign = math.copysign(1.0, out[axis])
     low, high = other.get_critical_point(DL), other.get_critical_point(UR)
     if not low[across] - 1e-9 <= port[across] <= high[across] + 1e-9:
-        return _STUB
+        return wanted
     near = low[axis] if sign > 0 else high[axis]
     far = high[axis] if sign > 0 else low[axis]
     if (far - port[axis]) * sign <= 0:
-        return _STUB  # the other piece is behind the port
+        return wanted  # the other piece is behind the port
     clear = (near - port[axis]) * sign
     if clear <= 1e-9:
         raise ValueError(
@@ -219,7 +225,7 @@ def _stub(port: np.ndarray, out: np.ndarray, other: VMobject) -> float:
             f" the {type(other).__name__} at its other end covers it; move the"
             " two pieces apart"
         )
-    return float(min(_STUB, clear / 2))
+    return float(min(wanted, clear / 2))
 
 
 def _detour(
@@ -270,9 +276,8 @@ class Flow(VGroup):
     mod L`` along the edge, ``L`` the edge's length then and ``elapsed`` the
     scene time since the flow started, read from the scene's own clock
     (:attr:`~.Scene.time`), never summed from steps. It starts when it is
-    made in a running scene, or else the first time it runs in one: when its
-    updater first runs there, or an animation first takes it over (a flow
-    made before the scene, a copy). From then on two engine updaters keep
+    made in a running scene, or else when its updater first runs in one (a
+    flow made before the scene, a copy). From then on two engine updaters keep
     it there: its own, which a play's end runs, and the scene's
     :class:`FlowDriver`, which the scene runs after every animation and
     mobject updater at every instant and no animation suspends. So the
@@ -339,13 +344,6 @@ class Flow(VGroup):
         """Stop the tokens where they are."""
         self.stopped = True
         return self
-
-    def suspend_updating(self, recursive: bool = True) -> Self:
-        # An animation that takes the flow over suspends its own updater,
-        # which may not have run in the scene yet: the scene's driver must
-        # hold the flow by then.
-        _run_in_scene(self)
-        return super().suspend_updating(recursive)
 
 
 def _start_flow(flow: Mobject, dt: float) -> None:

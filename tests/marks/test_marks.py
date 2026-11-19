@@ -370,6 +370,52 @@ def test_a_trail_made_between_two_ticks_keeps_the_scene_s_time(fps):
         admission.DEMOTED.clear()
 
 
+@pytest.mark.parametrize("fps", [15, 60])
+def test_a_trail_leaves_no_dots_for_time_it_was_out_of_the_scene(fps):
+    admission.DEMOTED.clear()
+    session = Session.open(
+        Path(trail_scenes.__file__),
+        "TrailLeftAndRejoined",
+        config={"pixel_width": 96, "pixel_height": 54, "frame_rate": fps},
+    )
+    try:
+        xs = [d[0] for d in session.record._scene.trail.dots]
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+    away, back = START + SPEED, START + 2 * SPEED
+    # Watched for 1 s, then for 1 s again: a dot every interval of each.
+    watched = [x for x in xs if x <= away + 1e-6]
+    assert len(watched) == math.floor(1 / INTERVAL) + 1
+    # Nothing where the dot went while the trail was out.
+    assert not [x for x in xs if away + 1e-6 < x < back - 1e-6]
+    rejoined = [x for x in xs if x >= back - 1e-6]
+    assert rejoined
+    # From where it came back, a dot each interval of the time it watched.
+    steps = np.diff(rejoined)
+    assert steps == pytest.approx([SPEED * INTERVAL] * len(steps), abs=1e-6)
+
+
+def test_a_diagram_s_elbow_takes_a_stub_and_still_keeps_out_of_the_other_piece():
+    diagram = arachne.Diagram()
+    a = diagram.place(Block("a"), 0, 0)
+    b = diagram.place(Block("b"), 1, 0)
+    c = diagram.place(Block("c"), 0, 2)
+    # Asked for, and given where there is room: the route runs that far
+    # right out of the port before it turns down to the piece below.
+    reach = {}
+    for stub in (0.2, 0.6):
+        edge = diagram.connect((a, "right"), (c, "top"), stub=stub, end_stub=0.1)
+        reach[stub] = float(_samples(edge)[:, 0].max()) - a.port("right")[0]
+        assert stub - 0.15 < reach[stub] <= stub + 1e-9
+    assert reach[0.6] > reach[0.2]
+    # Asked for, and cut where the other piece is in the way.
+    edge = diagram.connect((a, "right"), (b, "right"), stub=0.6)
+    path = _samples(edge)
+    assert not _inside(path, a.body)
+    assert not _inside(path, b.body)
+
+
 #: Each mark made of several parts, and the parts that keep a style of their
 #: own whatever style the mark is given.
 GROUPED = {

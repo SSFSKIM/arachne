@@ -51,3 +51,19 @@ class TrailMadeOffTheGrid(Scene):
         self.play(
             dot.animate.shift(RIGHT * SPEED * rest), run_time=rest, rate_func=linear
         )
+
+
+class TrailLeftAndRejoined(Scene):
+    """The trail watches the dot move from ``START`` for 1 s; it is out of
+    the scene while the dot moves on for 1 s; back in, it watches 1 s more.
+    """
+
+    def construct(self):
+        dot = Dot(RIGHT * START)
+        self.trail = DottedTrail(dot, interval=INTERVAL)
+        self.add(self.trail, dot)
+        self.play(dot.animate.shift(RIGHT * SPEED), run_time=1, rate_func=linear)
+        self.remove(self.trail)
+        self.play(dot.animate.shift(RIGHT * SPEED), run_time=1, rate_func=linear)
+        self.add(self.trail)
+        self.play(dot.animate.shift(RIGHT * SPEED), run_time=1, rate_func=linear)

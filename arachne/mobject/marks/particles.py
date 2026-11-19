@@ -14,6 +14,7 @@ import numpy as np
 from arachne.constants import ORIGIN, RIGHT, TAU
 from arachne.mobject.geometry.arc import Circle, Dot
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
+from arachne.timeline.clock import TICK_DT
 from arachne.typing import Point3DLike, Vector3DLike
 from arachne.utils.color import BLUE, GREY, RED, WHITE, ParsableManimColor
 
@@ -196,14 +197,17 @@ class DottedTrail(VMobject):
     for as long as the trail is in the scene and running. A trajectory, a
     migration path, a packet's trace.
 
-    It keeps the scene's time: in a running scene it reads
-    :attr:`~.Scene.time` when it is made (or first runs there) and at every
-    tick, and outside one it adds the ``dt`` each update is handed. A dot
+    It keeps the time it watches its object: in a running scene it reads
+    :attr:`~.Scene.time` when it is made and at every tick it is updated,
+    and runs on by the scene time between two readings a tick or less
+    apart; outside a scene it adds the ``dt`` each update is handed. A dot
     due between two readings of the centre falls where the centre was at
     its due time, read along the straight course between them. So a dot
     falls at the same scene time, in the same place, at any frame rate and
-    any interval, the trail made on the tick's grid or off it. :meth:`stop`
-    leaves the dots as they are.
+    any interval, the trail made on the tick's grid or off it. A longer gap
+    between readings is time the trail did not watch (it was out of the
+    scene): it resumes from the next reading and leaves that time without
+    dots. :meth:`stop` leaves the dots as they are.
     """
 
     def __init__(
@@ -223,10 +227,10 @@ class DottedTrail(VMobject):
         self.interval = float(interval)
         self.dot_radius = float(dot_radius)
         scene = running_scene()
-        #: The scene time the trail started at; ``None`` until it runs in a
-        #: scene.
-        self.start: float | None = float(scene.time) if scene is not None else None
-        #: Seconds of scene time the trail has run.
+        #: The scene time the trail last read its object at; ``None`` until
+        #: it runs in a scene.
+        self.read_at: float | None = float(scene.time) if scene is not None else None
+        #: Seconds of scene time the trail has watched its object.
         self.elapsed = 0.0
         #: Where each dot fell, in order.
         self.dots: tuple[tuple[float, float, float], ...] = ()
@@ -238,14 +242,19 @@ class DottedTrail(VMobject):
         def keep_time(trail: Mobject, dt: float) -> None:
             assert isinstance(trail, DottedTrail)
             before = trail.elapsed
+            here = mobject.get_center()
             scene = running_scene()
             if scene is None:
                 now = before + dt
             else:
-                if trail.start is None:
-                    trail.start = float(scene.time) - before
-                now = float(scene.time) - trail.start
-            was, here = np.array(trail._seen), mobject.get_center()
+                t = float(scene.time)
+                last, trail.read_at = trail.read_at, t
+                if last is None or t - last > max(dt, TICK_DT) + 1e-9:
+                    # Not watched since the last reading: resume from here.
+                    trail._seen = _point(here)
+                    return
+                now = before + (t - last)
+            was = np.array(trail._seen)
             # Every dot due by now (to a rounding), where the centre was then.
             while len(trail.dots) * trail.interval <= now + 1e-9:
                 due = len(trail.dots) * trail.interval
