@@ -272,10 +272,11 @@ _TABLE = (
         "asset.unreadable",
         "error",
         "AssetUnreadable",
-        "a file of an asset cannot be parsed, or holds something the asset"
-        " reader does not draw (text, an embedded image, a gradient or pattern"
-        " paint, a clip path, a mask, a filter, a reference to another file),"
-        " or draws nothing",
+        "a file of an asset cannot be read or parsed, or holds something the"
+        " asset reader does not draw exactly as the file says (text, an embedded"
+        " image, a gradient or pattern paint, a dash, a clip path, a mask, a"
+        " filter, a percentage length, a reference to another file or to"
+        " nothing), or draws nothing",
         "Export the file again as plain vector shapes with flat colours: outline"
         " text, flatten masks, clips and filters, and embed nothing.",
         ("asset", "file", "reason"),
@@ -285,9 +286,10 @@ _TABLE = (
         "error",
         "AssetRemote",
         "an asset is named by an address that would be fetched, or its manifest"
-        " names a file by such an address, by an absolute path or by a path"
-        " that leaves the asset's directory",
-        "Copy the file into the asset's directory and name it by a path"
+        " names a file by anything but a plain path inside the asset's"
+        " directory: an address, an absolute path, a path with .. or one"
+        " through a link",
+        "Copy the file into the asset's directory and name it by a plain path"
         " relative to it; assets are read from local directories only.",
         ("asset", "file"),
     ),

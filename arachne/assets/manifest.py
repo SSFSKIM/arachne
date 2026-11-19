@@ -25,6 +25,7 @@ from __future__ import annotations
 __all__ = [
     "ANGLE_UNITS",
     "ATTACHMENTS",
+    "DEFAULT_UNIT",
     "DRIVER_KINDS",
     "FEATURES",
     "KINDS",
@@ -32,6 +33,7 @@ __all__ = [
     "MANIFEST",
     "NAME",
     "PROVENANCE",
+    "UNIT",
     "AnchorKey",
     "AnchorSpec",
     "DrawingSpec",
@@ -43,10 +45,14 @@ __all__ = [
     "PartSpec",
     "Size",
     "SlotSpec",
+    "MAX_INTEGER",
     "digest",
+    "frozen",
     "normalised",
     "parse_manifest",
+    "read_json",
     "refuse",
+    "thawed",
 ]
 
 import hashlib
@@ -187,7 +193,9 @@ class DriverSpec:
 @dataclass(frozen=True)
 class ParameterSpec:
     """A parameter: its lowest and highest tested values, its default, its
-    unit and what it drives.
+    unit (:data:`DEFAULT_UNIT` when the manifest gives none; any spelling
+    :data:`UNIT` admits, read by no part of the engine but a ``rotate``
+    driver's own) and what it drives.
     """
 
     name: str
@@ -222,7 +230,8 @@ class AnchorSpec:
 @dataclass(frozen=True)
 class Manifest:
     """An asset's manifest, checked. ``document`` is the parsed JSON as it
-    was, unknown members included.
+    was, unknown members included, deep-immutable (:func:`frozen`), as are
+    ``checks`` and ``provenance``; :func:`thawed` gives a plain copy.
     """
 
     manifest_version: str
@@ -274,7 +283,7 @@ def digest(document: Mapping[str, Any], files: Mapping[str, bytes]) -> str:
         sha.update(b"\0")
         sha.update(len(data).to_bytes(8, "big"))
         sha.update(data)
-    attested = {key: value for key, value in document.items() if key != "checks"}
+    attested = {key: thawed(v) for key, v in document.items() if key != "checks"}
     sha.update(
         json.dumps(
             attested,
@@ -285,6 +294,100 @@ def digest(document: Mapping[str, Any], files: Mapping[str, bytes]) -> str:
         ).encode("utf-8")
     )
     return f"sha256:{sha.hexdigest()}"
+
+
+#: The largest integer a manifest may hold, so that every JSON reader reads
+#: it exactly.
+MAX_INTEGER = 2**53 - 1
+
+
+def read_json(data: bytes) -> Any:
+    """The JSON document ``data`` holds, in the domain a manifest is read and
+    digested in: UTF-8; objects whose members are each named once; strings
+    of Unicode scalar values; finite numbers, integers within
+    :data:`MAX_INTEGER`; ``true``, ``false`` and ``null``. Raises
+    :class:`ValueError`, saying why, for anything else.
+    """
+
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        found: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in found:
+                raise ValueError(f"the member {key!r} is given twice")
+            found[key] = value
+        return found
+
+    def real(text: str) -> float:
+        number = float(text)
+        if not math.isfinite(number):
+            raise ValueError(f"{text} is not a finite number")
+        return number
+
+    def integer(text: str) -> int:
+        number = int(text)
+        if abs(number) > MAX_INTEGER:
+            raise ValueError(f"{text} is beyond the integers JSON readers agree on")
+        return number
+
+    def constant(name: str) -> Any:
+        raise ValueError(f"{name} is not a JSON number")
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("it is not UTF-8") from None
+    try:
+        document = json.loads(
+            text,
+            object_pairs_hook=unique,
+            parse_float=real,
+            parse_int=integer,
+            parse_constant=constant,
+        )
+    except RecursionError:
+        raise ValueError("it is nested too deep") from None
+    _scalar_values(document)
+    return document
+
+
+def _scalar_values(value: Any) -> None:
+    """Refuse a string, or a member's name, that is not Unicode scalar
+    values (a lone surrogate), which no UTF-8 writes.
+    """
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _scalar_values(key)
+            _scalar_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            _scalar_values(item)
+    elif isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError(f"the string {value!r} is not valid Unicode") from None
+
+
+def frozen(value: Any) -> Any:
+    """``value``, parsed JSON, deep-immutable: objects as read-only mappings
+    and arrays as tuples.
+    """
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: frozen(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(frozen(item) for item in value)
+    return value
+
+
+def thawed(value: Any) -> Any:
+    """``value``, as :func:`frozen` keeps it, as plain JSON again: a detached
+    copy.
+    """
+    if isinstance(value, Mapping):
+        return {key: thawed(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [thawed(item) for item in value]
+    return value
 
 
 def parse_manifest(document: Any, asset: str) -> Manifest:
@@ -298,6 +401,11 @@ _VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 #: What a declared name may be: it is a segment of the names an asset's
 #: values are read by (``rig.param.<parameter>``, ``rig.slot.<slot>``).
 NAME = re.compile(r"[A-Za-z0-9_-]+")
+#: What a parameter's unit may be: 1 to 16 printable ASCII characters
+#: without white space.
+UNIT = re.compile(r"[!-~]{1,16}")
+#: The unit of a parameter that gives none: a plain number.
+DEFAULT_UNIT = "1"
 
 
 class _Reader:
@@ -452,22 +560,31 @@ class _Reader:
             slots=slots,
             parameters=parameters,
             anchors=anchors,
-            checks=None if checks is None else MappingProxyType(checks),
-            provenance=MappingProxyType(provenance),
-            document=MappingProxyType(top),
+            checks=None if checks is None else frozen(checks),
+            provenance=frozen(provenance),
+            document=frozen(top),
         )
 
     def size(self, value: Any) -> Size:
         size = self.object(value, "size")
-        return Size(
+        found = Size(
             scene_units_per_unit=self.positive(
                 self.member(size, "scene_units_per_unit", "size"),
                 "size.scene_units_per_unit",
             ),
             origin=self.point(self.member(size, "origin", "size"), "size.origin"),
-            width=self.positive(self.member(size, "width", "size"), "size.width"),
-            height=self.positive(self.member(size, "height", "size"), "size.height"),
+            width=self.extent(self.member(size, "width", "size"), "size.width"),
+            height=self.extent(self.member(size, "height", "size"), "size.height"),
         )
+        if found.width == 0 and found.height == 0:
+            self.invalid("size", "width and height are both 0; one may be, for a line")
+        return found
+
+    def extent(self, value: Any, member: str) -> float:
+        number = self.number(value, member)
+        if number < 0:
+            self.invalid(member, "it must be 0 or more")
+        return number
 
     def part(self, value: Any, at: str) -> PartSpec:
         entry = self.object(value, at)
@@ -573,6 +690,15 @@ class _Reader:
         placed: Mapping[str, PartSpec | SlotSpec],
     ) -> ParameterSpec:
         entry = self.object(value, at)
+        name = self.name(self.member(entry, "name", at), f"{at}.name")
+        unit = entry.get("unit", DEFAULT_UNIT)
+        if not isinstance(unit, str) or UNIT.fullmatch(unit) is None:
+            self.invalid(
+                f"{at}.unit",
+                f"the unit {unit!r} is not 1 to 16 printable ASCII characters without"
+                " white space",
+                name=name,
+            )
         low = self.number(self.member(entry, "min", at), f"{at}.min")
         high = self.number(self.member(entry, "max", at), f"{at}.max")
         if not low < high:
@@ -589,12 +715,7 @@ class _Reader:
             )
         )
         return ParameterSpec(
-            name=self.name(self.member(entry, "name", at), f"{at}.name"),
-            min=low,
-            max=high,
-            default=default,
-            unit=self.text(self.member(entry, "unit", at), f"{at}.unit"),
-            drives=drives,
+            name=name, min=low, max=high, default=default, unit=unit, drives=drives
         )
 
     def driver(

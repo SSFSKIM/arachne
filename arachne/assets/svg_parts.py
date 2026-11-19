@@ -2,12 +2,9 @@
 
 An asset's part files are drawn exactly or not at all. :func:`read_svg`
 parses a file's bytes, writes nothing anywhere, and refuses
-(:class:`Unreadable`, with the reason) a file that is not SVG, or that holds
-anything the shape conversion would drop or change: text, an embedded image,
-a gradient or pattern paint, a clip path, a mask, a filter, a marker, a
-style sheet, a nested viewport, or a reference to anything but a fragment of
-the same file. Elements of other namespaces, and the contents of ``title``,
-``desc`` and ``metadata``, are not drawn by anything and are passed over.
+(:class:`~.svg_check.Unreadable`, with the reason) a file that is not SVG or
+that holds anything the shape conversion would not draw exactly as the file
+says (:mod:`.svg_check`, which fails closed).
 
 Coordinates are the file's user units, y down: the asset's canvas. The root's
 ``viewBox`` is kept to compare canvases, never applied, so a file's
@@ -19,49 +16,19 @@ its file's flat paint.
 
 from __future__ import annotations
 
-__all__ = ["SvgFile", "Unreadable", "read_svg"]
+__all__ = ["SvgFile", "Unreadable", "read_svg", "structure"]
 
 import io
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from xml.etree import ElementTree as ET
 
+import numpy as np
 import svgelements as se
 
 from ..mobject.svg.svg_mobject import SVGMobject, VMobjectFromSVGPath
 from ..mobject.types.vectorized_mobject import VMobject
-
-_SVG = "http://www.w3.org/2000/svg"
-_XLINK = "http://www.w3.org/1999/xlink"
-
-#: The elements whose shapes are drawn.
-_SHAPES = frozenset(
-    {"path", "rect", "circle", "ellipse", "line", "polyline", "polygon"}
-)
-#: The elements that only hold or place others.
-_STRUCTURE = frozenset({"g", "defs", "use"})
-#: The elements nothing draws, whose contents are passed over.
-_INERT = frozenset({"title", "desc", "metadata"})
-#: Presentation properties whose any value but ``none`` the conversion drops.
-_DROPPED = (
-    "clip-path",
-    "mask",
-    "filter",
-    "marker",
-    "marker-start",
-    "marker-mid",
-    "marker-end",
-)
-#: The root's attributes that place its viewport, which the canvas ignores.
-_VIEWPORT = ("width", "height", "viewBox", "preserveAspectRatio", "x", "y")
-
-
-class Unreadable(Exception):
-    """A part file the reader cannot draw exactly; ``reason`` says why."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
+from .svg_check import VIEWPORT, Unreadable, check
 
 
 class SvgFile:
@@ -95,11 +62,9 @@ def read_svg(data: bytes) -> SvgFile:
         root = ET.fromstring(data)
     except ET.ParseError as error:
         raise Unreadable(f"it is not well-formed XML ({error})") from None
-    if _local(root.tag) != "svg" or _namespace(root.tag) not in ("", _SVG):
-        raise Unreadable("its root element is not <svg>")
-    _check(root, is_root=True)
+    check(root)
     view_box = _view_box(root.get("viewBox"))
-    for name in _VIEWPORT:
+    for name in VIEWPORT:
         root.attrib.pop(name, None)
     try:
         parsed = se.SVG.parse(io.BytesIO(ET.tostring(root)), reify=True)
@@ -108,58 +73,17 @@ def read_svg(data: bytes) -> SvgFile:
     return SvgFile(view_box, parsed)
 
 
-def _local(tag: str) -> str:
-    return tag.rpartition("}")[2]
-
-
-def _namespace(tag: str) -> str:
-    return tag[1:].partition("}")[0] if tag.startswith("{") else ""
-
-
-def _check(element: ET.Element, *, is_root: bool = False) -> None:
-    """Refuse what in ``element`` and below the conversion would not draw as
-    the file says.
+def structure(shapes: Sequence[VMobject]) -> list[list[tuple[int, bool]]]:
+    """Each shape's subpaths, in order, as their point counts and whether
+    each is closed: what a stored outline shares with its rest outline.
     """
-    if not isinstance(element.tag, str) or _namespace(element.tag) not in ("", _SVG):
-        return  # a comment, or another namespace's: nothing draws it
-    name = _local(element.tag)
-    if name in _INERT:
-        return
-    if not (is_root or name in _SHAPES or name in _STRUCTURE):
-        raise Unreadable(f"it holds a <{name}> element, which the reader does not draw")
-    for attribute, value in element.attrib.items():
-        _check_attribute(name, attribute, value)
-    for child in element:
-        _check(child)
-
-
-def _check_attribute(element: str, attribute: str, value: str) -> None:
-    namespace, local = _namespace(attribute), _local(attribute)
-    if local == "href" and namespace in ("", _XLINK):
-        if not value.strip().startswith("#"):
-            raise Unreadable(
-                f"its <{element}> refers to {value!r}, which is not a part of the"
-                " same file"
-            )
-        return
-    if namespace:
-        return
-    properties = [(local, value)]
-    if local == "style":
-        properties = [
-            (key.strip(), found.strip())
-            for key, _, found in (item.partition(":") for item in value.split(";"))
+    return [
+        [
+            (len(subpath), bool(np.allclose(subpath[0], subpath[-1], atol=1e-9)))
+            for subpath in shape.get_subpaths()
         ]
-    for key, found in properties:
-        if key in ("fill", "stroke") and "url(" in found:
-            raise Unreadable(
-                f"its <{element}> is painted with {found!r}, a gradient or pattern;"
-                " the reader draws flat colours only"
-            )
-        if key in _DROPPED and found not in ("", "none"):
-            raise Unreadable(
-                f"its <{element}> has {key} {found!r}, which the reader does not draw"
-            )
+        for shape in shapes
+    ]
 
 
 def _view_box(value: str | None) -> tuple[float, ...] | None:

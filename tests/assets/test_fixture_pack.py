@@ -52,4 +52,4 @@ def test_every_file_is_as_the_hooks_leave_it():
         assert text.endswith("\n"), file
         assert not text.endswith("\n\n"), file
         assert all(line == line.rstrip() for line in text.splitlines()), file
-        assert "\r" not in text, file
+        assert b"\r" not in (FIXTURES / file).read_bytes(), file
