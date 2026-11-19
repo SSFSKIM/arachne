@@ -5,6 +5,7 @@ never an empty space on screen.
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 
@@ -12,6 +13,7 @@ import pytest
 
 from arachne import load_asset
 from arachne.assets import Rig
+from arachne.constants import LineJointType
 
 from .helpers import BROKEN, copied, edited, refused
 
@@ -62,7 +64,8 @@ def test_a_file_the_manifest_names_that_is_not_there_is_refused(tmp_path):
         ("draws-nothing.svg", "draws nothing"),
         ("dashed.svg", "stroke-dasharray"),
         ("dash-style.svg", "stroke-dashoffset"),
-        ("round-join.svg", "stroke-linejoin"),
+        ("clip-join.svg", "stroke-linejoin"),
+        ("small-miter-limit.svg", "stroke-miterlimit"),
         ("even-odd.svg", "fill-rule"),
         ("group-opacity.svg", "opacity"),
         ("hidden.svg", "display"),
@@ -298,7 +301,7 @@ ALLOWED = """\
   <g id="needle" data-name="needle" inkscape:label="needle" transform="translate(0, 0) rotate(0 150 160)">
     <use href="#tip"/>
     <path d="M 150 160 L 156 160 L 150 172 Z" style="fill: rgb(192, 57, 43); stroke: black; stroke-width: 2px;
-          stroke-linejoin: miter; stroke-linecap: butt; opacity: 1" shape-rendering="geometricPrecision"/>
+          stroke-linejoin: miter; stroke-miterlimit: 10; stroke-linecap: butt; opacity: 1" shape-rendering="geometricPrecision"/>
     <circle cx="150px" cy="160" r="3" fill="#333" fill-opacity="0.5" stroke="none" fill-rule="nonzero"/>
   </g>
 </svg>
@@ -433,3 +436,96 @@ def test_a_unit_outside_short_printable_ascii_is_refused(tmp_path, unit):
     found = refused("asset.manifest_invalid", lambda: Rig(directory))
     assert found.detail["member"] == "parameters[0].unit"
     assert found.detail["name"] == "reading"
+
+
+def _stroked(d: str, *attributes: str, stroke: str = "#000", width: str = "2") -> str:
+    """A dial needle file holding one stroked path ``d``."""
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">\n'
+        f'  <path d="{d}" fill="none" stroke="{stroke}" stroke-width="{width}"'
+        f" {' '.join(attributes)}/>\n"
+        "</svg>\n"
+    )
+
+
+def _spike(degrees: float) -> str:
+    """An open path with one corner, at (150, 100), whose two segments meet
+    at ``degrees``.
+    """
+    half = math.radians(degrees / 2)
+    dx, dy = 100 * math.sin(half), 100 * math.cos(half)
+    return f"M {150 - dx:.6f} {100 + dy:.6f} L 150 100 L {150 + dx:.6f} {100 + dy:.6f}"
+
+
+#: A closed triangle whose sharp (20 degree) corner is its closing point.
+_CLOSED_AT_SPIKE = "M 150 100 L 167.364818 198.480775 L 132.635182 198.480775 Z"
+
+
+@pytest.mark.parametrize(
+    ("d", "attributes", "angle", "limit"),
+    [
+        (_spike(20), (), "20.0", "4"),
+        (_spike(20), ('stroke-linejoin="miter"', 'stroke-miterlimit="4"'), "20.0", "4"),
+        (_CLOSED_AT_SPIKE, (), "20.0", "4"),
+        (_spike(10), ('stroke-miterlimit="12"',), "10.0", "12"),
+    ],
+    ids=["no-limit", "limit-4", "closing-point", "limit-12"],
+)
+def test_a_miter_join_drawn_otherwise_at_the_engines_limit_is_refused(
+    tmp_path, d, attributes, angle, limit
+):
+    """Without ``stroke-miterlimit`` a file means SVG's 4; the engine strokes
+    every miter join at 10. A join whose miter falls between the two is
+    drawn otherwise than the file means: refused, naming the part, the
+    angle and the fix.
+    """
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").write_text(_stroked(d, *attributes))
+    found = refused("asset.unreadable", lambda: Rig(directory))
+    reason = found.detail["reason"]
+    assert found.detail["file"] == "pieces/needle.svg"
+    assert "the part 'needle'" in reason
+    assert f"{angle} degrees" in reason
+    assert f"stroke-miterlimit {limit}" in reason
+    assert 'set stroke-miterlimit="10" or use a round or bevel join' in reason
+
+
+@pytest.mark.parametrize(
+    ("d", "attributes", "stroke", "width"),
+    [
+        (_spike(20), ('stroke-miterlimit="10"',), "#000", "2"),
+        (_spike(90), (), "#000", "2"),
+        (_spike(4), (), "#000", "2"),
+        (_spike(20), (), "none", "2"),
+        (_spike(20), (), "#000", "0"),
+    ],
+    ids=["limit-10", "right-angle", "cut-at-both", "no-stroke", "zero-width"],
+)
+def test_a_miter_join_drawn_alike_at_both_limits_is_accepted(
+    tmp_path, d, attributes, stroke, width
+):
+    """A join whose miter both limits keep, or both cut to a bevel, or one
+    not stroked at all, draws as the file means.
+    """
+    directory = copied(tmp_path, "dial")
+    text = _stroked(d, *attributes, stroke=stroke, width=width)
+    (directory / "pieces" / "needle.svg").write_text(text)
+    assert Rig(directory).part("needle").submobjects
+
+
+@pytest.mark.parametrize(
+    ("join", "drawn"), [("round", LineJointType.ROUND), ("bevel", LineJointType.BEVEL)]
+)
+def test_a_round_or_bevel_join_is_drawn_as_the_file_says(tmp_path, join, drawn):
+    """The engine strokes round and bevel joins as SVG does, so the reader
+    carries them, from the shape or from a group around it.
+    """
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">\n'
+        f'  <g style="stroke-linejoin: {join}"><path d="{_spike(20)}" fill="none"'
+        ' stroke="#000" stroke-width="2"/></g>\n'
+        "</svg>\n"
+    )
+    (shape,) = Rig(directory).part("needle").submobjects
+    assert shape.joint_type is drawn

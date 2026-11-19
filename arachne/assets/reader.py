@@ -326,7 +326,12 @@ def _shapes(
     shapes: dict[tuple[str, ...], tuple[VMobject, ...]] = {}
     for i, part in enumerate(manifest.parts):
         shapes[("part", part.name)] = _element(
-            files, part.file, part.element, f"parts[{i}]", label
+            files,
+            part.file,
+            part.element,
+            f"parts[{i}]",
+            f"the part {part.name!r}",
+            label,
         )
     for i, slot in enumerate(manifest.slots):
         for j, drawing in enumerate(slot.drawings):
@@ -335,6 +340,7 @@ def _shapes(
                 drawing.file,
                 drawing.element,
                 f"slots[{i}].drawings[{j}]",
+                f"the drawing {drawing.name!r} of the slot {slot.name!r}",
                 label,
             )
     for i, parameter in enumerate(manifest.parameters):
@@ -345,7 +351,9 @@ def _shapes(
             for k, key in enumerate(driver.keys):
                 assert isinstance(key.value, str)
                 at = f"parameters[{i}].drives[{j}].keys[{k}].file"
-                outline = _element(files, key.value, None, at, label)
+                outline = _element(
+                    files, key.value, None, at, f"the outline in {key.value}", label
+                )
                 _same_structure(rest, outline, at, key.value, label)
                 shapes[("outline", normalised(key.value))] = outline
     return shapes
@@ -356,9 +364,16 @@ def _element(
     file: str,
     element: str | None,
     member: str,
+    drawn: str,
     label: str,
 ) -> tuple[VMobject, ...]:
-    found = files[normalised(file)].shapes(element)
+    """The shapes ``element`` of ``file`` draws, as ``drawn`` (what the
+    manifest at ``member`` makes of them, named in a refusal).
+    """
+    try:
+        found = files[normalised(file)].shapes(element)
+    except Unreadable as error:
+        _unreadable(label, file, f"{drawn}: {error.reason}")
     if found is None:
         reason = f"the file {file} has no element whose id is {element!r}"
         refuse(

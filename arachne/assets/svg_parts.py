@@ -11,7 +11,8 @@ Coordinates are the file's user units, y down: the asset's canvas. The root's
 ``width`` and ``height`` scale nothing. Shapes are converted by the
 conversion :class:`~arachne.mobject.svg.svg_mobject.SVGMobject` uses, each
 an ordinary :class:`~arachne.mobject.types.vectorized_mobject.VMobject` with
-its file's flat paint.
+its file's flat paint and stroke join. A miter join the engine's own miter
+limit would draw otherwise than the file's is refused (:mod:`.joins`).
 """
 
 from __future__ import annotations
@@ -26,9 +27,16 @@ from xml.etree import ElementTree as ET
 import numpy as np
 import svgelements as se
 
+from ..constants import LineJointType
 from ..mobject.svg.svg_mobject import SVGMobject, VMobjectFromSVGPath
 from ..mobject.types.vectorized_mobject import VMobject
+from .joins import ENGINE_LIMIT, disagreeing_corner
 from .svg_check import VIEWPORT, Unreadable, check
+
+#: The miter limit a file means when it states none.
+SVG_LIMIT = 4.0
+#: The joins other than miter the engine strokes as SVG does.
+_JOINS = {"round": LineJointType.ROUND, "bevel": LineJointType.BEVEL}
 
 
 class SvgFile:
@@ -44,7 +52,9 @@ class SvgFile:
         """The shapes the file draws, in document order, in canvas
         coordinates: all of them, or those of the element whose ``id`` is
         ``element`` (a group, or one shape); ``None`` when the file has no
-        such element. A shape with no points is left out.
+        such element. A shape with no points is left out. Raises
+        :class:`Unreadable` for a miter join the engine would draw otherwise
+        than the file means.
         """
         if element is None:
             found: se.SVGElement = self._root
@@ -149,4 +159,28 @@ def _convert(shape: se.SVGElement) -> VMobject | None:
     SVGMobject.apply_style_to_mobject(mob, shape)
     if shape.apply:
         SVGMobject.handle_transform(mob, shape.transform)
+    _join(mob, shape)
     return mob
+
+
+def _join(mob: VMobject, shape: se.SVGElement) -> None:
+    """Give ``mob`` its file's ``stroke-linejoin``; refuse a miter join the
+    engine would draw otherwise than the file's ``stroke-miterlimit`` means
+    (:mod:`.joins`).
+    """
+    join = str(shape.values.get("stroke-linejoin", "miter")).strip()
+    if join != "miter":
+        mob.joint_type = _JOINS[join]
+        return
+    if mob.get_stroke_width() == 0 or mob.get_stroke_opacity() == 0:
+        return
+    limit = float(str(shape.values.get("stroke-miterlimit", SVG_LIMIT)).strip())
+    found = disagreeing_corner(mob, limit)
+    if found is not None:
+        angle, (x, y) = found
+        raise Unreadable(
+            f"a miter join of {angle:.1f} degrees at ({x:g}, {y:g}) is cut to a"
+            f" bevel under one of its stroke-miterlimit {limit:g} and the engine's"
+            f' {ENGINE_LIMIT:g}, and not the other: set stroke-miterlimit="10" or'
+            " use a round or bevel join"
+        )

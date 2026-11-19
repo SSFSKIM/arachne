@@ -16,9 +16,11 @@ is refused, not passed over. What it lists:
   whole; a ``transform`` of the six SVG functions;
 - flat paint: ``fill`` and ``stroke`` of a colour, ``none`` or
   ``currentColor``; their opacities; ``stroke-width``; ``color``;
+- ``stroke-linejoin`` ``miter``, ``round`` or ``bevel``, and a
+  ``stroke-miterlimit`` of at least 1 (whether the engine draws a miter join
+  as its limit means is the reader's to decide, corner by corner);
 - properties the conversion drops, only at the one value it draws:
-  ``stroke-linejoin`` ``miter``, ``stroke-linecap`` ``butt``,
-  ``stroke-miterlimit`` 10, ``stroke-dasharray`` ``none``,
+  ``stroke-linecap`` ``butt``, ``stroke-dasharray`` ``none``,
   ``stroke-dashoffset`` 0, ``fill-rule`` ``nonzero``, ``opacity`` 1,
   ``display`` ``inline``, ``visibility`` ``visible``, ``paint-order``
   ``normal``, ``vector-effect`` ``none``, and ``none`` for ``clip-path``,
@@ -103,9 +105,7 @@ _INERT_ATTRIBUTES = frozenset(
 )
 #: Properties the conversion drops, each with the one value it draws.
 _FIXED: dict[str, str | float] = {
-    "stroke-linejoin": "miter",
     "stroke-linecap": "butt",
-    "stroke-miterlimit": 10.0,
     "stroke-dasharray": "none",
     "stroke-dashoffset": 0.0,
     "fill-rule": "nonzero",
@@ -284,6 +284,11 @@ _PROPERTIES: dict[str, Callable[[str], bool]] = {
     "color": lambda value: value != "currentColor" and _colour(value),
     "fill-opacity": _opacity,
     "stroke-opacity": _opacity,
+    "stroke-linejoin": lambda value: value in ("miter", "round", "bevel"),
+    "stroke-miterlimit": lambda value: (
+        (matched := _PLAIN.fullmatch(value)) is not None
+        and float(matched.group(1)) >= 1
+    ),
 }
 
 
