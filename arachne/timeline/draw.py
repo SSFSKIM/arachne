@@ -19,7 +19,10 @@ moving families, in the camera's draw order. The play's static picture
 covers the longest prefix of that list equal leaf for leaf, at unchanged
 versions, to what it painted, while the camera's inputs are those it was
 painted with; the rest is drawn at the frame's state. ``static_layer=False``
-draws the whole list in every frame. Frames drawn live (:class:`LiveFrames`)
+draws the whole list in every frame. A drawing given a capture filter
+(``leave_out``) paints every frame whole, with no static picture, and each
+of its captures leaves out the leaves the filter takes from it. Frames
+drawn live (:class:`LiveFrames`)
 reuse no static picture, since drawing them runs the scene's code, which can
 read what no recorded state holds; only a frozen frame, during which nothing
 runs, keeps CE's picture under it.
@@ -27,7 +30,14 @@ runs, keeps CE's picture under it.
 
 from __future__ import annotations
 
-__all__ = ["CameraExtras", "Drawing", "LiveFrames", "camera_nodes", "static_list"]
+__all__ = [
+    "CameraExtras",
+    "Drawing",
+    "LeaveOut",
+    "LiveFrames",
+    "camera_nodes",
+    "static_list",
+]
 
 import operator
 from collections.abc import Callable, Iterator, Sequence
@@ -367,6 +377,11 @@ def _set_camera_values(camera: Camera, values: tuple[tuple[str, Any], ...]) -> N
 
 _MISSING = object()
 
+#: A capture filter (:class:`Drawing`'s ``leave_out``): given the list one
+#: capture of the camera is handed and the leaves the camera paints from it,
+#: in its order, the leaves the capture paints.
+LeaveOut = Callable[[Sequence["Mobject"], list["Mobject"]], list["Mobject"]]
+
 
 def _supplied_background(camera: Camera) -> FrozenBackground | None:
     """The background array the scene supplied, itself: it is read-only, so
@@ -544,6 +559,10 @@ class Drawing:
     the frame in XF and draws it from that description alone. Its frames are
     the frame's static list then its moving list, as with the static layer
     off, from a stream kept per record and process across drawings.
+
+    ``leave_out``, a capture filter, takes leaves out of every capture the
+    drawing makes on ``cairo`` (:meth:`capture`): a drawing given one paints
+    every frame whole, reusing no static picture and keeping none.
     """
 
     def __init__(
@@ -552,6 +571,7 @@ class Drawing:
         *,
         static_layer: bool | None = None,
         draw_path: str | None = None,
+        leave_out: LeaveOut | None = None,
     ) -> None:
         from arachne import config
 
@@ -570,6 +590,9 @@ class Drawing:
         #: frames, one for the plays' static pictures.
         self.painter = painter_for(record, draw_path)
         self.static_painter = painter_for(record, draw_path, "static")
+        if leave_out is not None and self.painter is not None:
+            raise ValueError("A capture filter draws on the cairo draw path only.")
+        self.leave_out = leave_out
         #: The painter that drew last, which settles the cameras on exit.
         self._painted_by: Any = None
         self.camera: Camera = record._scene.renderer.camera
@@ -670,6 +693,21 @@ class Drawing:
                 )
             sub_camera.pixel_array = picture
 
+    def capture(self, mobjects: list[Mobject], **options: Any) -> None:
+        """Paint ``mobjects`` into the camera as one capture of it
+        (``Camera.capture_mobjects``, given ``options``), less the leaves the
+        capture filter takes out, if there is one.
+        """
+        camera = self.camera
+        if self.leave_out is None:
+            camera.capture_mobjects(mobjects, **options)
+            return
+        _reset_rotation(camera)
+        leaves = camera.get_mobjects_to_display(mobjects, **options)
+        camera.capture_mobjects(
+            self.leave_out(mobjects, leaves), include_submobjects=False
+        )
+
     def static(self, play: PlayRecord) -> PixelArray | None:
         """The play's static picture: its static mobjects as they were when
         its animations began, or ``None`` when it has none.
@@ -687,7 +725,7 @@ class Drawing:
             camera.set_pixel_array(pixels)
             return pixels
         camera.reset()
-        camera.capture_mobjects(list(play.static))
+        self.capture(list(play.static))
         self._pictures[play.index] = self._painted(play, capture)
         return camera.pixel_array.copy()
 
@@ -724,7 +762,10 @@ class Drawing:
         targets = list(capture.moving) or capture.draw_list()
         if self.painter is not None:
             return self._paint(play, capture, targets, prepare, instant)
-        if self.static_layer and self._picture_holds(play, capture):
+        if self.leave_out is not None:
+            # Drawn whole: no static picture stands for what it leaves out.
+            self._draw_static(play, capture, None, targets, prepare)
+        elif self.static_layer and self._picture_holds(play, capture):
             self.show(capture, targets)
             if prepare is not None:
                 prepare(self)
@@ -734,7 +775,7 @@ class Drawing:
                 self.camera.reset()
         else:
             self._draw_static(play, capture, static, targets, prepare)
-        self.camera.capture_mobjects(targets)
+        self.capture(targets)
         return self.camera.pixel_array.copy()
 
     def restored(
@@ -893,10 +934,10 @@ class Drawing:
                     static = self._prefix_picture(picture, painted, kept)
                 camera.set_frame_to_background(static)
                 if kept < len(painted):
-                    camera.capture_mobjects(painted[kept:], include_submobjects=False)
+                    self.capture(painted[kept:], include_submobjects=False)
                 return
         camera.reset()
-        camera.capture_mobjects(listed)
+        self.capture(listed)
 
     def _picture_of(self, play: PlayRecord) -> _Picture:
         """What the play's static picture painted, found without painting it
@@ -951,7 +992,7 @@ class Drawing:
             return picture.prefix[1]
         camera = self.camera
         camera.reset()
-        camera.capture_mobjects(painted[:kept], include_submobjects=False)
+        self.capture(painted[:kept], include_submobjects=False)
         found = camera.pixel_array.copy()
         picture.prefix = (kept, found)
         return found
@@ -970,7 +1011,7 @@ class Drawing:
             self.camera.set_pixel_array(pixels)
             return pixels
         self.camera.reset()
-        self.camera.capture_mobjects(targets)
+        self.capture(targets)
         return self.camera.pixel_array.copy()
 
 
