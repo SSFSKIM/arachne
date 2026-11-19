@@ -77,10 +77,12 @@ class Covered(Scene):
 class Crowded(Scene):
     """Forty small shapes, a thin line, a glyph and a dot; a square moves.
 
-    ``left_out`` names what is made but never added.
+    ``left_out`` names what is made but never added, ``cleared`` what is
+    added with its points cleared.
     """
 
     left_out: str | None = None
+    cleared: str | None = None
 
     def construct(self):
         crowd = [
@@ -94,6 +96,8 @@ class Crowded(Scene):
             "glyph": Text("T", font_size=10).move_to([3, 2, 0]),
             "dot": Dot([4, 2, 0], radius=0.04),
         }
+        if self.cleared is not None:
+            small[self.cleared].clear_points()
         mover = Square(side_length=0.5, color=RED).move_to([0, -2, 0])
         self.add(*crowd, *(m for name, m in small.items() if name != self.left_out))
         self.add(mover)
@@ -110,6 +114,10 @@ class CrowdedWithoutGlyph(Crowded):
 
 class CrowdedWithoutDot(Crowded):
     left_out = "dot"
+
+
+class CrowdedLineCleared(Crowded):
+    cleared = "line"
 
 
 class Panel(Scene):
@@ -204,3 +212,61 @@ class MovingSurface(ThreeDScene):
         self.add(surface)
         self.add_fixed_in_frame_mobjects(corner)
         self.play(surface.animate.shift(DOWN * 0.5), run_time=0.4, rate_func=linear)
+
+
+class RestoredCentre(ThreeDScene):
+    """The same fixed-orientation centre, read off a dot an updater moves
+    after a tracker: a state-function play, restored between its frames.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-30 * DEGREES)
+        tracker = ValueTracker(-2)
+        dot = Dot(color=RED)
+        dot.add_updater(lambda m: m.move_to(RIGHT * tracker.get_value()))
+        mark = Square(side_length=0.4, color=YELLOW)
+        self.add(dot)
+        self.add_fixed_orientation_mobjects(mark, center_func=dot.get_center)
+        self.play(tracker.animate.set_value(2), run_time=1, rate_func=linear)
+
+
+class Reordered(Scene):
+    """Two overlapping squares between two waits; the lower is brought to the
+    front between them, which changes no mobject's state.
+    """
+
+    def construct(self):
+        low = Square(side_length=2, color=BLUE, fill_opacity=1)
+        high = Square(side_length=2, color=RED, fill_opacity=1).shift(RIGHT)
+        self.add(low, high)
+        self.wait(0.2)
+        self.bring_to_front(low)
+        self.wait(0.2)
+
+
+class RemovedMidPlay(Scene):
+    """A dot a play moves, removed from the scene while the play runs: the
+    play still paints it.
+    """
+
+    def construct(self):
+        dot = Dot(color=RED)
+        self.add(dot, Square().shift(LEFT * 3))
+
+        def drop(dt):
+            if self.time >= 0.2 and dot in self.mobjects:
+                self.remove(dot)
+
+        self.add_updater(drop)
+        self.play(dot.animate.shift(RIGHT * 2), run_time=0.5, rate_func=linear)
+
+
+class RateChanges(Scene):
+    """Two plays drawn at two frame rates: the camera's is changed between."""
+
+    def construct(self):
+        square = Square()
+        self.add(square)
+        self.play(square.animate.shift(RIGHT), run_time=0.4, rate_func=linear)
+        self.camera.frame_rate = 10
+        self.play(square.animate.shift(LEFT), run_time=0.4, rate_func=linear)
