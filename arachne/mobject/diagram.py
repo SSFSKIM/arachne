@@ -22,6 +22,7 @@ from __future__ import annotations
 __all__ = ["Diagram", "Flow", "ZoomInto"]
 
 import math
+import weakref
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -46,7 +47,6 @@ from arachne.mobject.marks.ports import Ported
 from arachne.mobject.text.text_mobject import Text
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
 from arachne.utils.color import WHITE, YELLOW, ParsableManimColor
-from arachne.utils.family import extract_mobject_family_members
 from arachne.utils.rate_functions import smooth
 
 if TYPE_CHECKING:
@@ -236,9 +236,9 @@ class Flow(VGroup):
     mod L`` along the edge, ``L`` the edge's length then and ``elapsed`` the
     scene time since the flow was made, read from the scene's own clock
     (:attr:`~.Scene.time`), never summed from steps. Two engine updaters
-    keep it there: its own, which a play's end runs, and one the scene runs
-    after every animation and mobject updater at every instant, which no
-    animation suspends. So the speed and the spacing hold at any frame
+    keep it there: its own, which a play's end runs, and the scene's
+    :class:`FlowDriver`, which the scene runs after every animation and
+    mobject updater at every instant and no animation suspends. So the speed and the spacing hold at any frame
     rate, through plays and waits, whatever animates the edge, the diagram
     the flow is in or the flow itself, until :meth:`stop`. It reads the
     edge's own points (a connector's wire, not its head) as they are.
@@ -288,7 +288,7 @@ class Flow(VGroup):
         place(self, 0.0)
         self.add_updater(follow)
         if scene is not None:
-            _drive_flows(scene)
+            hold_flow(scene, self)
 
     def travelled(self) -> float:
         """How far the first token has gone along the edge from its start,
@@ -315,21 +315,71 @@ def _running_scene() -> Scene | None:
     return recorder.scene if recorder is not None else None
 
 
-def _drive_flows(scene: Scene) -> None:
-    """Give ``scene``, once, the engine updater that keeps its flows on its
-    clock: last in every instant, after the animations and the mobjects'
-    updaters, unsuspended by any animation.
+class FlowDriver:
+    """What keeps a scene's flows on its clock: the flows made in the
+    scene, each moved to where :attr:`~.Scene.time` puts it at every
+    instant, at a cost of the flows held, whatever else the scene holds.
+
+    A scene has at most one, made with its first flow and found with
+    :func:`flow_driver`. It runs as the scene updater :attr:`updater`, last
+    in every instant, after the animations and the mobjects' updaters, and
+    unsuspended by any animation. :attr:`updater` is a plain function whose
+    code never reads ``dt``, so it changes no play's ticking more than any
+    scene updater does. Calling the driver moves, as one unit, every flow it
+    holds that is not stopped; a flow that has left the scene is moved too
+    and draws nothing. A flow joins its scene's driver only through
+    :func:`hold_flow`. Something else that is to run the flows, such as a
+    clock that runs last itself, takes :attr:`updater` out of the scene's
+    updaters, calls the driver at its own instant, and has
+    :func:`hold_flow` hand it later flows.
+
+    The driver is the scene's engine state, kept beside the scene (not on
+    it, nor on any mobject); :attr:`flows` is replaced, never changed in
+    place.
     """
-    if any(getattr(u, "drives_flows", False) for u in scene.updaters):
-        return
 
-    def drive_flows(dt: float) -> None:
-        for member in extract_mobject_family_members(scene.mobjects):
-            if isinstance(member, Flow):
-                member._follow(member)
+    def __init__(self) -> None:
+        #: The flows held, in the order they were made.
+        self.flows: tuple[Flow, ...] = ()
 
-    drive_flows.drives_flows = True  # type: ignore[attr-defined]
-    scene.add_updater(drive_flows)
+        def drive_flows(dt: float) -> None:
+            self()
+
+        #: The scene updater the driver runs as.
+        self.updater: Callable[[float], None] = drive_flows
+
+    def hold(self, flow: Flow) -> None:
+        """Move ``flow`` from now on."""
+        self.flows = (*self.flows, flow)
+
+    def __call__(self) -> None:
+        """Put every flow held that is not stopped where the scene's time
+        puts it.
+        """
+        for flow in self.flows:
+            if not flow.stopped:
+                flow._follow(flow)
+
+
+#: Each scene's flow driver, by the scene; gone with the scene.
+_DRIVERS: weakref.WeakKeyDictionary[Scene, FlowDriver] = weakref.WeakKeyDictionary()
+
+
+def flow_driver(scene: Scene) -> FlowDriver | None:
+    """``scene``'s flow driver, or ``None`` before its first flow."""
+    return _DRIVERS.get(scene)
+
+
+def hold_flow(scene: Scene, flow: Flow) -> None:
+    """Have ``flow``, made in ``scene``, moved on the scene's clock: by the
+    scene's flow driver, made and added to the scene's updaters with the
+    scene's first flow.
+    """
+    driver = _DRIVERS.get(scene)
+    if driver is None:
+        driver = _DRIVERS[scene] = FlowDriver()
+        scene.add_updater(driver.updater)
+    driver.hold(flow)
 
 
 #: The share of a zoom over which a piece fades in or out.

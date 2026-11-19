@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from arachne import RIGHT, Diagram, Flow, Node
+from arachne.mobject.diagram import flow_driver
 from arachne.session import Session
 from arachne.timeline import admission
 
@@ -195,3 +196,41 @@ def test_a_flow_holds_speed_and_spacing_whatever_animates_it(moving, fps):
             assert (by0 + by1) / 2 == pytest.approx(y0, abs=1e-6)
             found.append((bx0 + bx1) / 2 - x0)
         assert sorted(found) == pytest.approx(expected, abs=1e-6), float(t)
+
+
+def test_a_scene_s_flow_driver_moves_the_flows_it_holds():
+    admission.DEMOTED.clear()
+    session = Session.open(
+        SCENES, "FlowsThatLeaveAndStop", config={**SMALL, "frame_rate": 15}
+    )
+    try:
+        scene = session.record._scene
+        driver = flow_driver(scene)
+        assert driver is not None
+        # Every flow made in the scene, in the order made, and nothing else.
+        assert driver.flows == (scene.kept, scene.left, scene.halted)
+        assert scene.updaters.count(driver.updater) == 1
+        # Held, not found in the scene: the flow that left is still moved.
+        assert scene.kept.elapsed == pytest.approx(1.0)
+        assert scene.left.elapsed == pytest.approx(1.0)
+        assert scene.halted.elapsed == pytest.approx(0.5)
+        # Called as one unit, it moves the flows that are not stopped.
+        before = [m.get_center().copy() for m in scene.halted]
+        driver()
+        assert all(
+            np.allclose(m.get_center(), c)
+            for m, c in zip(scene.halted, before, strict=True)
+        )
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+
+
+def test_a_scene_without_a_flow_has_no_flow_driver():
+    admission.DEMOTED.clear()
+    session = Session.open(SCENES, "LegibleZoom", config={**SMALL, "frame_rate": 15})
+    try:
+        assert flow_driver(session.record._scene) is None
+    finally:
+        session.close()
+        admission.DEMOTED.clear()

@@ -146,3 +146,27 @@ class ZoomWithAFrameOfItsOwn(Scene):
         diagram, middle = zoomed_diagram(36, False)
         self.add(diagram)
         self.play(ZoomInto(middle, frame=Rectangle(width=16, height=9)))
+
+
+class FlowsThatLeaveAndStop(Scene):
+    """Three flows on three straight connectors: one stays, one leaves the
+    scene with its diagram at 0.5 s, one is stopped at 0.5 s; 1 s in all.
+    """
+
+    def construct(self):
+        made = []
+        for row in range(3):
+            a = Node("A").move_to(LEFT * 3 + UP * (2 - 2 * row))
+            b = Node("B").move_to(RIGHT * 3 + UP * (2 - 2 * row))
+            diagram = Diagram(a, b)
+            edge = diagram.connect(
+                (a, "right"), (b, "left"), route="straight", tip=False
+            )
+            diagram.add(Flow(edge, speed=1.0, tokens=2))
+            made.append(diagram)
+        self.add(*made)
+        self.kept, self.left, self.halted = (diagram[-1] for diagram in made)
+        self.wait(0.5)
+        self.remove(made[1])
+        self.halted.stop()
+        self.wait(0.5)
