@@ -212,6 +212,35 @@ def test_a_literal_holds_no_list():
     assert Literal("probe.x", [1, 2.5], "1").value == (1, 2.5)
 
 
+def test_changing_what_a_literal_was_given_changes_no_answer():
+    """A literal keeps what it was given in an immutable form, and of a value
+    it cannot hold only the type's name: nothing it holds is the caller's.
+    """
+    vector, mapping = [1.0, 2.0], {"a": 1.0}
+    array, nested = np.array([1.0]), [[1.0], 2.0]
+    tolerance = np.array(0.5)
+    literals = (
+        Literal("probe.a", vector, "1"),
+        Literal("probe.b", mapping, "1"),
+        Literal("probe.c", array, "1"),
+        Literal("probe.d", nested, "1"),
+        Literal("probe.e", 1.0, "1", tolerance=tolerance),
+    )
+    before = _read_literals(*literals)
+    vector[0], mapping["a"], array[0], nested[0][0] = 9.0, 9.0, 9.0, 9.0
+    tolerance[...] = 9.0
+    del mapping["a"]
+    assert _read_literals(*literals) == before
+    assert before[0].value == (1.0, 2.0)
+    assert "tolerance is a finite number not below 0: an object of type ndarray" in (
+        before[4].unreadable
+    )
+    assert "of type dict" in before[1].unreadable
+    assert "of type ndarray" in before[2].unreadable
+    held = [part for literal in literals for part in (literal.value, literal.tolerance)]
+    assert not any(part is given for part in held for given in (mapping, array, nested))
+
+
 def test_what_the_hook_finds_of_a_class_lets_the_class_go():
     """A scene's class read once is not kept alive by what the hook
     remembered of it, so a module let go on reload or close goes with it.

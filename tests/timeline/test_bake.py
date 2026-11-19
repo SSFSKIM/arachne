@@ -4,6 +4,7 @@ occurrences that place them in a record, read by tick.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import struct
 from fractions import Fraction
@@ -352,3 +353,56 @@ def test_an_event_table_holds_unsigned_integers_only(rows):
 
 def test_an_event_table_takes_whole_floats():
     assert EventTable([[2.0, 1.0]]).rows.tolist() == [[2, 1]]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        # 0xFFFFFFFF as a float32 is 2**32, so the bound is not compared there.
+        np.array([[2**32, 0]], dtype=np.float32),
+        np.array([[2**32, 0]], dtype=np.float64),
+        np.array([[2**32, 0]], dtype=np.int64),
+        np.array([[2**64 - 1, 0]], dtype=np.uint64),
+    ],
+    ids=["float32", "float64", "int64", "uint64"],
+)
+def test_an_event_table_refuses_2_to_the_32(rows):
+    with pytest.raises(ValueError, match="unsigned 32-bit integers"):
+        EventTable(rows)
+
+
+def test_an_event_table_takes_the_largest_values_exactly():
+    below = float(np.float32(2**32 - 256))  # the largest float32 below 2**32
+    assert EventTable(np.array([[below, 0]], dtype=np.float32)).rows.tolist() == [
+        [2**32 - 256, 0]
+    ]
+    largest = np.array([[2**32 - 1, 0]], dtype=np.int64)
+    assert EventTable(largest).rows.tolist() == [[2**32 - 1, 0]]
+
+
+def test_an_identitys_features_are_a_tuple_of_its_own():
+    features = ["b", "a"]
+    identity = dataclasses.replace(IDENTITY, features=features)
+    features.append("c")
+    assert identity.features == ("b", "a")
+    assert identity.strings() == IDENTITY.strings()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        identity.features = ("c",)  # type: ignore[misc]
+    with pytest.raises(TypeError, match="tuple of strings"):
+        dataclasses.replace(IDENTITY, features="ab")
+
+
+@pytest.mark.parametrize(
+    "features", [("a,b",), ("",), (1,)], ids=["comma", "empty", "int"]
+)
+def test_a_feature_is_one_unambiguous_name(features):
+    """Features are joined with commas, so ``('a,b',)`` would read as
+    ``('a', 'b')``.
+    """
+    with pytest.raises(ValueError, match="non-empty string without a comma"):
+        dataclasses.replace(IDENTITY, features=features)
+
+
+def test_an_identitys_fields_are_strings():
+    with pytest.raises(TypeError, match="are strings"):
+        dataclasses.replace(IDENTITY, solver_version=2.0)

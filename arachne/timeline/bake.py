@@ -112,6 +112,21 @@ class BakeIdentity:
     build: str
     features: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        if isinstance(self.features, str):
+            raise TypeError("A bake identity's features are a tuple of strings.")
+        object.__setattr__(self, "features", tuple(self.features))
+        fields: tuple[object, ...] = (self.producer, self.producer_version)
+        fields += (self.solver, self.solver_version, self.integrator, self.build)
+        if not all(isinstance(text, str) for text in fields):
+            raise TypeError("A bake identity's fields are strings.")
+        for feature in self.features:
+            if not isinstance(feature, str) or not feature or "," in feature:
+                # The canonical bytes join the features with commas.
+                raise ValueError(
+                    f"A feature is a non-empty string without a comma, not {feature!r}."
+                )
+
     def strings(self) -> tuple[str, ...]:
         """The seven strings of the canonical bytes, in order."""
         return (
@@ -190,12 +205,18 @@ class EventTable(_Frozen):
         given = np.asarray(rows)
         if given.ndim != 2 or given.shape[1] < 1:
             raise ValueError("An event table is rows of one or more columns.")
-        if given.dtype.kind not in "iuf" or (
-            given.dtype.kind == "f"
-            and not (np.all(np.isfinite(given)) and np.all(given == np.floor(given)))
-        ):
+        if given.dtype.kind not in "iuf":
             raise ValueError("An event table holds unsigned 32-bit integers.")
-        if given.size and (given.min() < 0 or given.max() > 0xFFFFFFFF):
+        if given.dtype.kind == "f":
+            # float64 holds every float32 and every integer up to 2**32
+            # exactly, so the bounds compare exactly.
+            given = given.astype(np.float64)
+            if not (np.all(np.isfinite(given)) and np.all(given == np.floor(given))):
+                raise ValueError("An event table holds unsigned 32-bit integers.")
+            low, high = float(given.min(initial=0)), float(given.max(initial=0))
+        else:
+            low, high = int(given.min(initial=0)), int(given.max(initial=0))
+        if low < 0 or high > 0xFFFFFFFF:
             raise ValueError("An event table holds unsigned 32-bit integers.")
         stored = np.array(given, dtype="<u4", order="C")
         if len(stored):

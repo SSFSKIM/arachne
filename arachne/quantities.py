@@ -170,9 +170,36 @@ class Literal:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not isinstance(self.unit, str):
             raise TypeError("A literal's name and unit are strings.")
-        if isinstance(self.value, list):
-            # Nothing mutable sits in a capture.
-            object.__setattr__(self, "value", tuple(self.value))
+        # Nothing mutable sits in a capture: a value or tolerance is kept as a
+        # Python number, a tuple of floats or a str, and anything else only
+        # as its type's name, which reads as unreadable.
+        object.__setattr__(self, "value", _held(self.value, vector=True))
+        object.__setattr__(self, "tolerance", _held(self.tolerance, vector=False))
+
+
+@dataclass(frozen=True, slots=True)
+class _Unsupported:
+    """What a literal keeps of a value it cannot hold: its type's name."""
+
+    kind: str
+
+    def __repr__(self) -> str:
+        return f"an object of type {self.kind}"
+
+
+def _held(value: Any, *, vector: bool) -> Any:
+    """``value`` as a literal keeps it."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return str(value)
+    number = _number(value)
+    if number is not None:
+        return number
+    numbers = _vector(value) if vector else None
+    if numbers is not None:
+        return numbers
+    return _Unsupported(type(value).__name__)
 
 
 #: A provider: the quantities of a mobject, from its attributes as the
