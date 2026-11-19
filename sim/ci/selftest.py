@@ -149,6 +149,53 @@ def test_census_hits_compare_with_the_reviewed_list() -> None:
     assert stale == ["wide 1.0.3 src/lib.rs:7"]
 
 
+def test_census_entry_for_every_hit_of_a_file() -> None:
+    hits = [
+        census.Hit("libm 0.2.16", "src/math/arch/x86/detect.rs", 63, "__cpuid(0)"),
+        census.Hit("libm 0.2.16", "src/math/arch/x86/detect.rs", 77, "__cpuid(1)"),
+        census.Hit("libm 0.2.17", "src/math/arch/x86/detect.rs", 63, "__cpuid(0)"),
+    ]
+    reviewed = census.parse_reviewed(
+        "libm 0.2.16 src/math/arch/x86/detect.rs:*  selects the fused multiply-add\n"
+    )
+    unlisted, stale = census.compare(hits, reviewed)
+    assert [h.key for h in unlisted] == ["libm 0.2.17 src/math/arch/x86/detect.rs:63"]
+    assert stale == []
+
+
+def test_census_reads_the_shipped_tree_only() -> None:
+    metadata = {
+        "resolve": {
+            "root": "sim",
+            "nodes": [
+                {
+                    "id": "sim",
+                    "deps": [
+                        {"pkg": "rapier", "dep_kinds": [{"kind": None}]},
+                        {"pkg": "sha2", "dep_kinds": [{"kind": "dev"}]},
+                        {
+                            "pkg": "both",
+                            "dep_kinds": [{"kind": "dev"}, {"kind": "build"}],
+                        },
+                    ],
+                },
+                {
+                    "id": "rapier",
+                    "deps": [{"pkg": "libm", "dep_kinds": [{"kind": None}]}],
+                },
+                {"id": "libm", "deps": []},
+                {
+                    "id": "sha2",
+                    "deps": [{"pkg": "cpufeatures", "dep_kinds": [{"kind": None}]}],
+                },
+                {"id": "cpufeatures", "deps": []},
+                {"id": "both", "deps": []},
+            ],
+        }
+    }
+    assert census.shipped(metadata) == {"sim", "rapier", "libm", "both"}
+
+
 def test_census_entry_needs_a_reason() -> None:
     try:
         census.parse_reviewed("cpufeatures 0.2.17 src/x86.rs:40\n")

@@ -1,0 +1,12 @@
+world 2d d5af6a0a91a378b982b0b226f332380c2d5ea22c96ce4c43185a5ed351174db5
+contacts 2d 9 at the end
+world 3d 00314f84688fa13d137c683655844291fd7284a56941906d123c3500cf5aa709
+contacts 3d 10 at the end
+case angular-motor-2d-published 39a3ae8e
+case angular-limits-2d-published bd3f472d
+case contact-coefficients-2d-published 00000000
+case revolute-angle-3d-published 3f94f09f
+case angular-limits-3d 9c4a6656.a02b9158.bcbf54bf.3f7fee20
+case inertia-compound-3d 44952c8a.4324c042.43210cd9.3f5580f3.3d966bf3.3d26878c.3f0b9b8f
+case inertia-hull-3d 424b360f.422a8cd5.421300ea.3d8a8ab4.3ea78a5d.bf29eaa6.3f2b4f45
+case hull-at-rest-3d bde43cc0.3f5c18a4.be3357ba.3d821300.3d8732ed.3de52282.3f7d4f39

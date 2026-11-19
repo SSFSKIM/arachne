@@ -1,11 +1,12 @@
 """Nothing in the crate's tree picks its arithmetic from the CPU it runs on.
 
 ``census.py``
-    Searches the sources of every package in the locked tree (every target, every kind; not a
-    dependency's tests, benches or examples, which are never built here) for run-time CPU
-    feature detection, and fails unless each hit is on the reviewed list,
-    ``ci/census.txt``, with the reason it cannot reach a result, and every entry of the list is
-    still a hit. A changed lock file moves the lines, so the list is reviewed again. Prints
+    Searches the sources of every package of the shipped tree (the crate's normal and build
+    dependencies, on every target; not the probe's dev-dependencies, nor a dependency's tests,
+    benches or examples) for run-time CPU feature detection, and fails unless each hit is on
+    the reviewed list, ``ci/census.txt``, with the reason it cannot reach a result, and every
+    entry of the list is still a hit. An entry names a line, or every hit of a file (``:*``);
+    either way it names the package's version, so a new version is reviewed again. Prints
     ``census: <n> hits, all listed``.
 
 Choices made when the crate is compiled (``cfg(target_feature)``) are not run-time detection:
@@ -22,6 +23,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 DETECTION = re.compile(
     r"is_(x86|aarch64|arm|riscv|powerpc64|loongarch)_feature_detected!"
@@ -68,8 +70,32 @@ def parse_reviewed(text: str) -> dict[str, str]:
 
 def compare(hits: list[Hit], reviewed: dict[str, str]) -> tuple[list[Hit], list[str]]:
     """The hits the list lacks, and the entries that are no longer hits."""
-    keys = {hit.key for hit in hits}
-    return [h for h in hits if h.key not in reviewed], sorted(set(reviewed) - keys)
+    used: set[str] = set()
+    unlisted = []
+    for hit in hits:
+        entries = {hit.key, f"{hit.package} {hit.path}:*"} & set(reviewed)
+        used |= entries
+        if not entries:
+            unlisted.append(hit)
+    return unlisted, sorted(set(reviewed) - used)
+
+
+def shipped(metadata: dict[str, Any]) -> set[str]:
+    """The package ids reached from the root through normal and build dependencies."""
+    nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
+    seen: set[str] = set()
+    stack = [metadata["resolve"]["root"]]
+    while stack:
+        package = stack.pop()
+        if package in seen:
+            continue
+        seen.add(package)
+        stack.extend(
+            dep["pkg"]
+            for dep in nodes[package]["deps"]
+            if any(kind["kind"] != "dev" for kind in dep["dep_kinds"])
+        )
+    return seen
 
 
 def packages() -> list[tuple[str, Path]]:
@@ -82,11 +108,11 @@ def packages() -> list[tuple[str, Path]]:
     if out.returncode != 0:
         sys.exit(f"cargo metadata failed:\n{out.stderr}")
     metadata = json.loads(out.stdout)
-    members = set(metadata["workspace_members"])
+    wanted = shipped(metadata) - set(metadata["workspace_members"])
     return [
         (f"{p['name']} {p['version']}", Path(p["manifest_path"]).parent)
         for p in metadata["packages"]
-        if p["id"] not in members
+        if p["id"] in wanted
     ]
 
 
