@@ -273,9 +273,13 @@ code       meaning, and ``data``
            answers no instant (``RecordRefused``), an instant it can't answer
            (``Unavailable``, ``Unrestorable`` among them), a frame the drawer
            does not draw (``Unsupported``, ``render.unsupported``), two
-           executions that can't be compared (``Incomparable``). ``data`` is
-           ``{type, message, reason}``: the refusal's class name, its message
-           and its stable code, or null
+           executions that can't be compared (``Incomparable``), a finding
+           raised while the scene's code ran (``RaisedFinding``, an asset that
+           cannot be loaded among them). ``data`` is ``{type, message,
+           reason}``: the refusal's class name, its message and its stable
+           code, or null; a raised finding's adds ``finding``, ``{code,
+           class, severity, message, fix, line, detail}``, ``line`` the scene
+           file's innermost line the error went through, or null
 ``-32002`` the request ran past its deadline: ``data`` is ``{method,
            deadline_s, ends}``. ``ends`` true: it ran past it, and the
            server ends; false: it was past it before its turn came, did not
