@@ -171,7 +171,7 @@ def lint(
     context = LintContext(session, record, exact(fps), instants, parts, frames)
     found = [finding for rule in rules for finding in rule(context)]
     found.extend(checks(context))
-    found.extend(unreadable_findings(frames, instants))
+    found.extend(unreadable_findings(frames, instants, parts))
     # After the parts: a forward run that read them may have found one.
     found.extend(_diverged(session))
     if session.stale:

@@ -117,24 +117,19 @@
       }
     },
     "quantity": {
-      "description": "One declared quantity. value is null exactly when unreadable says why it could not be read; tolerance, in the value's unit, is absent where the value is exact.",
+      "description": "One declared quantity. value is null exactly when unreadable says why it could not be read; an unreadable entry keeps the name and unit as they were declared, whatever they are. tolerance, in the value's unit, is absent where the value is exact.",
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "value", "unit"],
       "properties": {
-        "name": {
-          "description": "<prefix>.<rest>: the prefix one segment, the rest one or more, of letters, digits, '_' and '-'.",
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_-]+([.][A-Za-z0-9_-]+)+$"
-        },
+        "name": {"type": "string"},
         "value": {
           "oneOf": [
             {"description": "A finite number.", "type": "number"},
             {
-              "description": "A vector of finite numbers.",
+              "description": "A vector of finite numbers: none to 16.",
               "type": "array",
               "items": {"type": "number"},
-              "minItems": 1,
               "maxItems": 16
             },
             {
@@ -146,17 +141,25 @@
             {"type": "null"}
           ]
         },
-        "unit": {
-          "description": "A registered unit: 1 for a plain number, name for a name value.",
-          "type": "string",
-          "minLength": 1
-        },
+        "unit": {"type": "string"},
         "tolerance": {"type": "number", "minimum": 0},
         "unreadable": {"type": "string"}
       },
       "if": {"properties": {"value": {"type": "null"}}},
-      "then": {"required": ["unreadable"]},
-      "else": {"not": {"required": ["unreadable"]}}
+      "then": {"required": ["unreadable"], "not": {"required": ["tolerance"]}},
+      "else": {
+        "not": {"required": ["unreadable"]},
+        "properties": {
+          "name": {
+            "description": "<prefix>.<rest>: the prefix one segment, the rest one or more, of letters, digits, '_' and '-'.",
+            "pattern": "^[A-Za-z0-9_-]+([.][A-Za-z0-9_-]+)+$"
+          },
+          "unit": {
+            "description": "A registered unit: 1 for a plain number, name for a name value.",
+            "minLength": 1
+          }
+        }
+      }
     },
     "box_or_null": {
       "description": "[x_min, y_min, x_max, y_max], or null.",

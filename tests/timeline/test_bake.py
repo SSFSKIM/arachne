@@ -285,3 +285,70 @@ def test_a_record_s_bakes_pickle():
     assert again.content_of(0).canonical_bytes() == content.canonical_bytes()
     assert again.occurrences == bakes.occurrences
     assert np.array_equal(again.row(0, 4)["pose"], bakes.row(0, 4)["pose"])
+
+
+def _assert_immutable(content: BakeContent) -> None:
+    key = content.key
+    for name, value in (("key", b"0" * 16), ("ticks", 9), ("identity", IDENTITY)):
+        with pytest.raises(AttributeError, match="immutable"):
+            setattr(content, name, value)
+    channel = content.channels["pose"]
+    with pytest.raises(AttributeError, match="immutable"):
+        channel.unit = "m"
+    values = channel.values
+    assert not values.flags.owndata
+    with pytest.raises(ValueError, match="read-only"):
+        values[0, 0, 0] = 1.0
+    with pytest.raises(ValueError, match="WRITEABLE"):
+        values.flags.writeable = True
+    # A read's shape is its own.
+    values.shape = (-1,)
+    assert channel.values.shape == (4, 2, 3)
+    rows = content.events["contact"].rows
+    with pytest.raises(ValueError, match="WRITEABLE"):
+        rows.flags.writeable = True
+    with pytest.raises(AttributeError, match="immutable"):
+        content.events["contact"]._data = b""
+    with pytest.raises(TypeError):
+        content.channels["other"] = channel
+    assert (
+        content.key
+        == key
+        == hashlib.blake2b(content.canonical_bytes(), digest_size=16).digest()
+    )
+
+
+def test_a_content_cannot_change_after_it_is_keyed_before_or_after_pickling():
+    import pickle
+
+    content = _content(events=[[1, 0, 1, 1]])
+    _assert_immutable(content)
+    again = pickle.loads(pickle.dumps(content))
+    assert again.key == content.key
+    assert again.canonical_bytes() == content.canonical_bytes()
+    _assert_immutable(again)
+    finding = BakeFinding("sim.unstable", 1, ("s.py:3#0",), {"speed": 9.0})
+    with pytest.raises(TypeError):
+        finding.detail["speed"] = 1.0
+    assert pickle.loads(pickle.dumps(finding)) == finding
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [[1.5, 0]],
+        [[np.nan, 0]],
+        [[np.inf, 0]],
+        [[True, False]],
+        [["1", "0"]],
+        [[-1, 0]],
+    ],
+    ids=["fraction", "nan", "inf", "bool", "text", "negative"],
+)
+def test_an_event_table_holds_unsigned_integers_only(rows):
+    with pytest.raises(ValueError, match="unsigned 32-bit integers"):
+        EventTable(rows)
+
+
+def test_an_event_table_takes_whole_floats():
+    assert EventTable([[2.0, 1.0]]).rows.tolist() == [[2, 1]]

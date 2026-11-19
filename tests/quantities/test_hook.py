@@ -5,10 +5,13 @@ sources only, through one registry that a scene's code cannot stand in for.
 
 from __future__ import annotations
 
+import gc
 import math
+import weakref
 from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from arachne import Square
@@ -88,8 +91,13 @@ def test_a_restored_and_a_forward_answer_read_their_own_instant(opened):
         "probe.setting": "off",
     }
     assert _values(restored.state, probe)["probe.amount"] == 2.0
+    # An attached source on an ordinary mobject, on both routes.
+    dot = restored.state.named("dot").id
+    assert _values(forward.state, dot) == {"probe.size": 1.0}
+    assert _values(restored.state, dot) == {"probe.count": 2, "probe.size": 1.0}
     (again,) = session.answers([unsampled], frames=False)
     assert _values(again.state, probe)["probe.amount"] == 1.0
+    assert _values(again.state, dot) == {"probe.size": 1.0}
 
 
 def test_a_scene_s_subclass_is_answered_by_the_engine_s_provider(opened):
@@ -162,7 +170,11 @@ def _read_literals(*literals: Literal) -> tuple[Quantity, ...]:
         (Literal("probe.x", 1.0, "furlong"), "unit 'furlong' is not registered"),
         (Literal("probe.x", math.nan, "1"), "not finite"),
         (Literal("probe.x", math.inf, "1"), "not finite"),
-        (Literal("probe.x", (1.0,) * 17, "1"), "1 to 16 numbers, not 17"),
+        (Literal("probe.x", (1.0,) * 17, "1"), "at most 16 numbers, not 17"),
+        (Literal("probe.x", {"a": 1.0}, "1"), "not a number, a vector or a name"),
+        (Literal("probe.x", np.array([1.0]), "1"), "not a number, a vector or a name"),
+        (Literal("probe.x", None, "1"), "holds none"),
+        (Literal("probe.x", 1.0, ""), "unit '' is not registered"),
         (Literal("probe.x", (1.0, math.nan), "1"), "not finite"),
         (Literal("probe.x", "on", "1"), "unit is 'name'"),
         (Literal("probe.x", 1.0, "name"), "is a name"),
@@ -185,12 +197,40 @@ def test_a_readable_quantity_is_kept_as_stored_and_sorted_by_name():
         Literal("probe.b", (1, 2.5), "1"),
         Literal("probe.a", "é" * 32, "name"),
         Literal("probe.c", 7, "1"),
+        Literal("probe.d", [], "1"),
     )
     assert found == (
         Quantity("probe.a", "é" * 32, "name"),
         Quantity("probe.b", (1.0, 2.5), "1"),
         Quantity("probe.c", 7, "1"),
+        # No contact yet: a vector with nothing in it is a value.
+        Quantity("probe.d", (), "1"),
     )
+
+
+def test_a_literal_holds_no_list():
+    assert Literal("probe.x", [1, 2.5], "1").value == (1, 2.5)
+
+
+def test_what_the_hook_finds_of_a_class_lets_the_class_go():
+    """A scene's class read once is not kept alive by what the hook
+    remembered of it, so a module let go on reload or close goes with it.
+    """
+
+    class Discarded(DeclaredProbe):
+        pass
+
+    class Plain(Square):
+        pass
+
+    read(Discarded, DeclaredProbe().__dict__, AT_ZERO)
+    read(Plain, Plain().__dict__, AT_ZERO)
+    assert hook._provider_of(Discarded) is not None
+    assert hook._point_source_of(Plain) is None
+    gone = [weakref.ref(Discarded), weakref.ref(Plain)]
+    del Discarded, Plain
+    gc.collect()
+    assert [ref() for ref in gone] == [None, None]
 
 
 def test_a_name_declared_twice_on_one_object_is_unreadable():

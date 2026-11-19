@@ -136,6 +136,8 @@ FORM_SCENES = [
     (DEFECT_SCENES, "TinyWord"),
     (QUANTITY_SCENES, "ChangedBetweenPlays"),
     (QUANTITY_SCENES, "Unreadables"),
+    (QUANTITY_SCENES, "Readables"),
+    (QUANTITY_SCENES, "Malformed"),
     (QUANTITY_SCENES, "TwoPointField"),
 ]
 

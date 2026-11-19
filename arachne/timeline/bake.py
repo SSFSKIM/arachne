@@ -77,9 +77,23 @@ _NAN_BITS = {
 }
 
 
-def _read_only(array: np.ndarray) -> np.ndarray:
-    array.flags.writeable = False
-    return array
+class _Frozen:
+    """An object no attribute of which is set or deleted once made."""
+
+    __slots__ = ()
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f"A {type(self).__name__} is immutable.")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(f"A {type(self).__name__} is immutable.")
+
+
+def _view(data: bytes, dtype: np.dtype, shape: tuple[int, ...]) -> np.ndarray:
+    """An array over ``data``, which it does not own: neither writable nor
+    able to be made so, a new view (whose shape is its own) at each read.
+    """
+    return np.frombuffer(data, dtype=dtype).reshape(shape)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,64 +125,110 @@ class BakeIdentity:
         )
 
 
-@dataclass(frozen=True)
-class Channel:
+class Channel(_Frozen):
     """Per row, an array of one shape: ``values`` is ``[rows, *shape]`` of
-    the type ``dtype`` (one of :data:`DTYPES`), little-endian and read-only,
-    every non-finite value the type's one quiet NaN.
+    the type ``dtype`` (one of :data:`DTYPES`), little-endian, every
+    non-finite value the type's one quiet NaN. The values are kept as bytes:
+    what :attr:`values` hands out is a read-only view over them.
     """
+
+    __slots__ = ("_data", "_shape", "dtype", "unit")
 
     dtype: str
     unit: str
-    values: np.ndarray
+    _data: bytes
+    _shape: tuple[int, ...]
 
-    def __post_init__(self) -> None:
-        if self.dtype not in DTYPES:
+    def __init__(self, dtype: str, unit: str, values: Any) -> None:
+        if dtype not in DTYPES:
             raise ValueError(f"A channel's type is one of {', '.join(DTYPES)}.")
-        if not isinstance(self.unit, str):
+        if not isinstance(unit, str):
             raise TypeError("A channel's unit is a string.")
-        stored = np.array(self.values, dtype=DTYPES[self.dtype][1], order="C")
+        stored = np.array(values, dtype=DTYPES[dtype][1], order="C")
         if stored.ndim < 1:
             raise ValueError("A channel's values have a row axis first.")
-        if self.dtype in _NAN_BITS:
-            bits, nan = _NAN_BITS[self.dtype]
+        if dtype in _NAN_BITS:
+            bits, nan = _NAN_BITS[dtype]
             stored.view(bits)[~np.isfinite(stored)] = nan
-        object.__setattr__(self, "values", _read_only(stored))
+        object.__setattr__(self, "dtype", dtype)
+        object.__setattr__(self, "unit", unit)
+        object.__setattr__(self, "_data", stored.tobytes())
+        object.__setattr__(self, "_shape", tuple(int(n) for n in stored.shape))
+
+    @property
+    def values(self) -> np.ndarray:
+        """``[rows, *shape]``, read-only."""
+        return _view(self._data, DTYPES[self.dtype][1], self._shape)
 
     @property
     def shape(self) -> tuple[int, ...]:
         """The shape of one row."""
-        return tuple(self.values.shape[1:])
+        return self._shape[1:]
+
+    @property
+    def rows(self) -> int:
+        return self._shape[0]
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (Channel, (self.dtype, self.unit, self.values))
+
+    def __repr__(self) -> str:
+        return f"Channel({self.dtype}, {self.unit!r}, rows of {self.shape})"
 
 
-@dataclass(frozen=True)
-class EventTable:
+class EventTable(_Frozen):
     """Rows of ``columns`` unsigned 32-bit integers, the first a row index,
-    sorted lexicographically, read-only.
+    sorted lexicographically; kept as bytes, handed out read-only.
     """
 
-    rows: np.ndarray
+    __slots__ = ("_data", "_shape")
 
-    def __post_init__(self) -> None:
-        given = np.asarray(self.rows)
+    _data: bytes
+    _shape: tuple[int, ...]
+
+    def __init__(self, rows: Any) -> None:
+        given = np.asarray(rows)
         if given.ndim != 2 or given.shape[1] < 1:
             raise ValueError("An event table is rows of one or more columns.")
+        if given.dtype.kind not in "iuf" or (
+            given.dtype.kind == "f"
+            and not (np.all(np.isfinite(given)) and np.all(given == np.floor(given)))
+        ):
+            raise ValueError("An event table holds unsigned 32-bit integers.")
         if given.size and (given.min() < 0 or given.max() > 0xFFFFFFFF):
             raise ValueError("An event table holds unsigned 32-bit integers.")
         stored = np.array(given, dtype="<u4", order="C")
         if len(stored):
-            stored = stored[np.lexsort(stored.T[::-1])]
-        object.__setattr__(self, "rows", _read_only(np.ascontiguousarray(stored)))
+            stored = np.ascontiguousarray(stored[np.lexsort(stored.T[::-1])])
+        object.__setattr__(self, "_data", stored.tobytes())
+        object.__setattr__(self, "_shape", tuple(int(n) for n in stored.shape))
+
+    @property
+    def rows(self) -> np.ndarray:
+        """``[n, columns]``, read-only."""
+        return _view(self._data, np.dtype("<u4"), self._shape)
 
     @property
     def columns(self) -> int:
-        return int(self.rows.shape[1])
+        return self._shape[1]
+
+    def __len__(self) -> int:
+        return self._shape[0]
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (EventTable, (self.rows,))
 
 
-class BakeContent:
+class BakeContent(_Frozen):
     """One simulation's result, immutable, keyed by the digest of its
     canonical bytes; holding nothing of a scene.
     """
+
+    identity: BakeIdentity
+    ticks: int
+    key: bytes
+    _channels: dict[str, Channel]
+    _events: dict[str, EventTable]
 
     __slots__ = ("_channels", "_events", "identity", "key", "ticks")
 
@@ -182,25 +242,38 @@ class BakeContent:
         if not isinstance(ticks, int) or ticks < 1:
             raise ValueError("A content holds one row or more.")
         tables = dict(events or {})
+        if not isinstance(identity, BakeIdentity):
+            raise TypeError("A content's identity is a BakeIdentity.")
         for name, channel in channels.items():
-            if channel.values.shape[0] != ticks:
+            if not isinstance(channel, Channel):
+                raise TypeError(f"Channel {name!r} is no Channel.")
+            if channel.rows != ticks:
                 raise ValueError(
-                    f"Channel {name!r} holds {channel.values.shape[0]} rows, not {ticks}."
+                    f"Channel {name!r} holds {channel.rows} rows, not {ticks}."
                 )
         for name, table in tables.items():
-            if len(table.rows) and int(table.rows[:, 0].max()) >= ticks:
+            if not isinstance(table, EventTable):
+                raise TypeError(f"Event table {name!r} is no EventTable.")
+            if len(table) and int(table.rows[:, 0].max()) >= ticks:
                 raise ValueError(f"Event table {name!r} names a row past the last.")
-        self.identity = identity
-        self.ticks = ticks
-        # Plain dicts, so that a record holding it pickles.
-        self._channels = {
-            name: channels[name] for name in sorted(channels, key=str.encode)
-        }
-        self._events = {name: tables[name] for name in sorted(tables, key=str.encode)}
+        setting = object.__setattr__
+        setting(self, "identity", identity)
+        setting(self, "ticks", ticks)
+        # Plain dicts behind read-only views, so that a record holding it pickles.
+        setting(
+            self,
+            "_channels",
+            {name: channels[name] for name in sorted(channels, key=str.encode)},
+        )
+        setting(
+            self,
+            "_events",
+            {name: tables[name] for name in sorted(tables, key=str.encode)},
+        )
         digest = hashlib.blake2b(digest_size=16)
         for chunk in self._chunks():
             digest.update(chunk)
-        self.key: bytes = digest.digest()
+        setting(self, "key", digest.digest())
 
     @property
     def channels(self) -> Mapping[str, Channel]:
@@ -235,11 +308,15 @@ class BakeContent:
                 + b"".join(_u32(dim) for dim in shape)
                 + _text(channel.unit)
             )
-            yield channel.values.tobytes()
+            yield channel._data
         yield _u32(len(self.events))
         for name, table in self.events.items():
-            yield _text(name) + struct.pack("<B", table.columns) + _u32(len(table.rows))
-            yield table.rows.tobytes()
+            yield _text(name) + struct.pack("<B", table.columns) + _u32(len(table))
+            yield table._data
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # Made again, so that the key is computed again from what is loaded.
+        return (BakeContent, (self.identity, self.ticks, self._channels, self._events))
 
     def __repr__(self) -> str:
         return f"BakeContent({self.key.hex()}, ticks={self.ticks})"
@@ -281,12 +358,14 @@ class BakeFinding:
     code: str
     row: int
     ids: tuple[str, ...] = ()
-    detail: Mapping[str, Any] = field(default_factory=dict)
+    detail: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ids", tuple(self.ids))
-        # A copy, read and never written: a plain dict, so that it pickles.
-        object.__setattr__(self, "detail", dict(self.detail))
+        object.__setattr__(self, "detail", MappingProxyType(dict(self.detail)))
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (BakeFinding, (self.code, self.row, self.ids, dict(self.detail)))
 
 
 @dataclass(frozen=True)

@@ -30,7 +30,8 @@ A name is ``<prefix>.<rest>``. The prefix has one owner, who registers it
 with :func:`register` when its module is imported (this module knows of
 none); the rest is one or more dot-separated segments of ASCII letters,
 digits, ``_`` and ``-``, which data such as a manifest may define. A value
-is a finite number, a vector of at most :data:`MAX_VECTOR` finite numbers,
+is a finite number, a vector (a tuple or list) of at most :data:`MAX_VECTOR`
+finite numbers, none included (a list of instants with nothing in it yet),
 or a name of at most :data:`MAX_NAME_BYTES` bytes from a set its object
 declares. A unit is a registered string: ``1`` for a plain number and
 ``name`` for a name value are always registered; an owner registers its
@@ -84,6 +85,7 @@ import math
 import os
 import re
 import types
+import weakref
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from fractions import Fraction
@@ -168,6 +170,9 @@ class Literal:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not isinstance(self.unit, str):
             raise TypeError("A literal's name and unit are strings.")
+        if isinstance(self.value, list):
+            # Nothing mutable sits in a capture.
+            object.__setattr__(self, "value", tuple(self.value))
 
 
 #: A provider: the quantities of a mobject, from its attributes as the
@@ -184,9 +189,12 @@ _UNITS: set[str] = {"1", "name"}
 _PROVIDERS: dict[type, Provider] = {}
 _SOURCES_READ: dict[type, SourceReader] = {}
 _POINT_SOURCES: dict[type, _PointReads] = {}
-#: Per class, the provider its MRO finds, or ``None``: found once.
-_FOUND: dict[type, Provider | None] = {}
-_FOUND_POINTS: dict[type, _PointReads | None] = {}
+#: Per class, the provider its MRO finds, or ``None``: found once, and
+#: forgotten with the class (a scene's, once its module is let go).
+_FOUND: weakref.WeakKeyDictionary[type, Provider | None] = weakref.WeakKeyDictionary()
+_FOUND_POINTS: weakref.WeakKeyDictionary[type, _PointReads | None] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def _engine_function(function: Any, role: str) -> None:
@@ -375,10 +383,10 @@ def _check(quantity: Quantity) -> Quantity:
                     quantity,
                     f"the value is not a number, a vector or a name: {value!r}",
                 )
-            if not 1 <= len(numbers) <= MAX_VECTOR:
+            if len(numbers) > MAX_VECTOR:
                 return _unreadable(
                     quantity,
-                    f"a vector holds 1 to {MAX_VECTOR} numbers, not {len(numbers)}",
+                    f"a vector holds at most {MAX_VECTOR} numbers, not {len(numbers)}",
                 )
             if not all(map(math.isfinite, numbers)):
                 return _unreadable(quantity, "a number of the vector is not finite")
@@ -420,12 +428,10 @@ def _number(value: Any) -> float | int | None:
 
 
 def _vector(value: Any) -> tuple[float, ...] | None:
-    """``value`` as a tuple of floats when it is a flat sequence of numbers."""
-    try:
-        items = list(value)
-    except TypeError:
+    """``value`` as a tuple of floats when it is a tuple or list of numbers."""
+    if not isinstance(value, (tuple, list)):
         return None
-    numbers = [_number(item) for item in items]
+    numbers = [_number(item) for item in value]
     if any(number is None for number in numbers):
         return None
     return tuple(float(number) for number in numbers if number is not None)
@@ -433,6 +439,9 @@ def _vector(value: Any) -> tuple[float, ...] | None:
 
 @source(Literal)
 def _literal(found: Literal, held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
+    if found.value is None:
+        why = "a literal declares a value, and this one holds none"
+        return (Quantity(found.name, None, found.unit, unreadable=why),)
     return (Quantity(found.name, found.value, found.unit, found.tolerance),)
 
 

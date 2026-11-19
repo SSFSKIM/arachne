@@ -47,10 +47,12 @@ class ForwardRead(Scene):
         probe = DeclaredProbe(amount=1.0)
         tracker = ValueTracker(0)
         dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value() + SHIFT))
+        attach(dot, Literal("probe.size", 1.0, "1"))
         self.add(probe, dot)
         self.play(tracker.animate.set_value(2), run_time=1)
         SHIFT = 1.0
         probe.set_amount(2.0)
+        attach(dot, Literal("probe.count", 2, "1"))
         self.play(tracker.animate.set_value(0), run_time=1)
 
 
@@ -99,7 +101,8 @@ class Readables(Scene):
     def construct(self):
         always = bake_rows([[1.0]] * 61, channel="level", unit="1")
         prefix = Square().shift(LEFT * 3)
-        attach(prefix, Literal("probe.x", 1.0, "1"))
+        # A vector with nothing in it yet is a value: no contact so far.
+        attach(prefix, Literal("probe.x", 1.0, "1"), Literal("probe.times", [], "1"))
         unit = Square().shift(LEFT)
         attach(unit, Literal("probe.length", 1.0, "1"))
         finite = Square().shift(RIGHT)
@@ -140,3 +143,21 @@ class TwoPointField(Scene):
         plain = Square().shift(RIGHT * 3)
         self.add(grid, linear, flow, plain)
         self.wait(3)
+
+
+class Malformed(Scene):
+    """A malformed name, a malformed unit and a value of no kind, each on its
+    own square: each is answered unreadable with the name and unit declared.
+    """
+
+    def construct(self):
+        name = Square().shift(LEFT * 3)
+        attach(name, Literal("probe.two words", 1.0, "1"))
+        unit = Square().shift(LEFT)
+        attach(unit, Literal("probe.x", 1.0, ""))
+        kind = Square().shift(RIGHT)
+        attach(kind, Literal("probe.x", {"a": 1.0}, "1"))
+        empty = Square().shift(RIGHT * 3)
+        attach(empty, Literal("probe.x", None, "1"))
+        self.add(name, unit, kind, empty)
+        self.wait(0.5)

@@ -5,11 +5,14 @@ the lint reports ``sim.quantity_unreadable`` about its object.
 
 from __future__ import annotations
 
+import json
 from fractions import Fraction
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
+from arachne import api_json
 from arachne.lint import lint
 from arachne.session import Session
 from arachne.timeline import admission
@@ -66,7 +69,13 @@ def test_each_fault_is_null_with_its_reason_and_a_finding(opened):
     for name, finding in by_object.items():
         assert finding.severity == "error"
         assert finding.detail["reason"] == reasons[name]
-        assert finding.objects[0].bbox is not None
+        # Its boxes are those the picture shows it at: in scene units, and
+        # in pixels of the session's resolution.
+        thing = finding.objects[0]
+        node = state.named(name)
+        assert thing.bbox == pytest.approx(node.scene_box, abs=1e-9)
+        assert thing.screen_bbox == pytest.approx(node.screen_box, abs=1e-6)
+        assert thing.screen_bbox[2] <= SMALL["pixel_width"]
     assert by_object["prefix"].detail["name"] == "nothing.x"
     assert by_object["prefix"].objects[0].source_line == _line("prefix") - 1
     # Each held over the run of instants it stayed unreadable: the missing
@@ -76,10 +85,51 @@ def test_each_fault_is_null_with_its_reason_and_a_finding(opened):
     assert by_object["missing"].t_end < 1
 
 
+def _valid(form: str, out: dict) -> dict:
+    read = json.loads(json.dumps(out, allow_nan=False))
+    validator = Draft202012Validator(api_json.schema(form))
+    errors = [f"{list(e.path)}: {e.message}" for e in validator.iter_errors(read)]
+    assert not errors, errors
+    return read
+
+
+def test_a_malformed_name_unit_or_kind_is_answered_in_the_form_and_the_lint(opened):
+    session = opened("Malformed")
+    state = session.state_at(Fraction(1, 4))
+    out = _valid("state", api_json.state(state, session))
+    declared = {
+        "name": ("probe.two words", "1", "dot-separated segments"),
+        "unit": ("probe.x", "", "unit '' is not registered"),
+        "kind": ("probe.x", "1", "not a number, a vector or a name"),
+        "empty": ("probe.x", "1", "holds none"),
+    }
+    for name, (quantity, unit, reason) in declared.items():
+        (entry,) = out["quantities"][state.named(name).id]
+        assert (entry["name"], entry["unit"], entry["value"]) == (quantity, unit, None)
+        assert reason in entry["unreadable"]
+    result = lint(session, rules=())
+    _valid("lint_result", api_json.lint(result))
+    found = {
+        f.objects[0].name: f.detail
+        for f in result.findings
+        if f.code == "sim.quantity_unreadable"
+    }
+    assert sorted(found) == sorted(declared)
+    for name, (quantity, unit, reason) in declared.items():
+        assert (found[name]["name"], found[name]["unit"]) == (quantity, unit)
+        assert reason in found[name]["reason"]
+
+
 def test_the_clean_twin_has_no_finding(opened):
     session = opened("Readables")
     state = session.state_at(Fraction(1, 2))
     assert len(state.quantities) == 4
     assert all(q.unreadable is None for each in state.quantities.values() for q in each)
+    prefix = state.named("prefix").id
+    times = {q.name: q.value for q in state.quantities[prefix]}
+    assert times["probe.times"] == ()
+    out = _valid("state", api_json.state(state, session))
+    (entry,) = [e for e in out["quantities"][prefix] if e["name"] == "probe.times"]
+    assert entry == {"name": "probe.times", "value": [], "unit": "1"}
     result = lint(session, rules=())
     assert not [f for f in result.findings if f.code == "sim.quantity_unreadable"]
