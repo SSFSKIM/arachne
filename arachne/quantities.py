@@ -525,7 +525,7 @@ def value_at(
     t = exact(t)
     if t < 0 or t > record.duration:
         return tuple(PointRead("outside", why="time") for _ in probes)
-    held = _held_at(record, _kept_capture(record, t))
+    held = _held_at(record, _kept_capture(record, t), {probe.id for probe in probes})
     at = At.of(t, record.bakes)
     return tuple(_read_point(held, at, probe) for probe in probes)
 
@@ -538,26 +538,26 @@ def _kept_capture(record: Record, t: Fraction) -> Capture:
     return captures[index]
 
 
-def _held_at(record: Record, capture: Capture) -> dict[str, tuple[type, Mapping]]:
-    """Each mobject ``capture`` reaches, by stable id (the first of an id),
-    with its class and its attributes there.
+def _held_at(
+    record: Record, capture: Capture, ids: set[str]
+) -> dict[str, tuple[type, Mapping[str, Any]]]:
+    """Each mobject of ``ids`` (stable ids) that ``capture`` reaches (the
+    first of an id), with its class and its attributes there.
     """
-    found: dict[str, tuple[type, Mapping]] = {}
+    found: dict[str, tuple[type, Mapping[str, Any]]] = {}
     roots = [*capture.roots, *capture.foreground, *capture.moving]
     for mob, state in record._walk(capture, roots):
         node_id = record.origin(mob).id
-        if node_id not in found:
-            found[node_id] = (
-                type(mob),
-                types.MappingProxyType(
-                    dict(zip(state.keys, state.values, strict=True))
-                ),
-            )
+        if node_id in ids and node_id not in found:
+            attributes = dict(zip(state.keys, state.values, strict=True))
+            found[node_id] = (type(mob), types.MappingProxyType(attributes))
+            if len(found) == len(ids):
+                break
     return found
 
 
 def _read_point(
-    held: Mapping[str, tuple[type, Mapping]], at: At, probe: PointProbe
+    held: Mapping[str, tuple[type, Mapping[str, Any]]], at: At, probe: PointProbe
 ) -> PointRead:
     entry = held.get(probe.id)
     if entry is None:

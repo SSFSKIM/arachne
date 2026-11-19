@@ -170,7 +170,7 @@ class BakeContent:
     canonical bytes; holding nothing of a scene.
     """
 
-    __slots__ = ("channels", "events", "identity", "key", "ticks")
+    __slots__ = ("_channels", "_events", "identity", "key", "ticks")
 
     def __init__(
         self,
@@ -192,16 +192,25 @@ class BakeContent:
                 raise ValueError(f"Event table {name!r} names a row past the last.")
         self.identity = identity
         self.ticks = ticks
-        self.channels: Mapping[str, Channel] = MappingProxyType(
-            {name: channels[name] for name in sorted(channels, key=str.encode)}
-        )
-        self.events: Mapping[str, EventTable] = MappingProxyType(
-            {name: tables[name] for name in sorted(tables, key=str.encode)}
-        )
+        # Plain dicts, so that a record holding it pickles.
+        self._channels = {
+            name: channels[name] for name in sorted(channels, key=str.encode)
+        }
+        self._events = {name: tables[name] for name in sorted(tables, key=str.encode)}
         digest = hashlib.blake2b(digest_size=16)
         for chunk in self._chunks():
             digest.update(chunk)
         self.key: bytes = digest.digest()
+
+    @property
+    def channels(self) -> Mapping[str, Channel]:
+        """Each channel, in bytewise order of name."""
+        return MappingProxyType(self._channels)
+
+    @property
+    def events(self) -> Mapping[str, EventTable]:
+        """Each event table, in bytewise order of name."""
+        return MappingProxyType(self._events)
 
     def canonical_bytes(self) -> bytes:
         """The content's canonical bytes, integers little-endian: ``ARBK``; the
@@ -272,11 +281,12 @@ class BakeFinding:
     code: str
     row: int
     ids: tuple[str, ...] = ()
-    detail: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    detail: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ids", tuple(self.ids))
-        object.__setattr__(self, "detail", MappingProxyType(dict(self.detail)))
+        # A copy, read and never written: a plain dict, so that it pickles.
+        object.__setattr__(self, "detail", dict(self.detail))
 
 
 @dataclass(frozen=True)

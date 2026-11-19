@@ -267,3 +267,21 @@ def test_a_content_holds_its_rows():
         BakeContent(IDENTITY, 4, {}, {"contact": EventTable([[4, 0, 1, 1]])})
     with pytest.raises(ValueError, match="one of"):
         Channel("f16", "1", np.zeros(3))
+
+
+def test_a_record_s_bakes_pickle():
+    """What a record holds can be handed to another process."""
+    import pickle
+
+    bakes = Bakes()
+    content = _content(events=[[1, 0, 1, 1]])
+    _sealed(
+        bakes,
+        content,
+        3,
+        findings=(BakeFinding("sim.unstable", 1, ("s.py:3#0",), {"speed": 9.0}),),
+    )
+    again = pickle.loads(pickle.dumps(bakes))
+    assert again.content_of(0).canonical_bytes() == content.canonical_bytes()
+    assert again.occurrences == bakes.occurrences
+    assert np.array_equal(again.row(0, 4)["pose"], bakes.row(0, 4)["pose"])

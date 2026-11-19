@@ -206,7 +206,7 @@ _TABLE = (
         "sim.quantity_unreadable",
         "error",
         "QuantityUnreadable",
-        "a declared quantity of an object on the picture has no readable value"
+        "a declared quantity of an object in the scene has no readable value"
         " at the instant: its name has no registered prefix, its unit is not"
         " registered, its value is not finite or not of its kind, or its source"
         " holds no value there (a simulation's quantity outside the stay it was"
