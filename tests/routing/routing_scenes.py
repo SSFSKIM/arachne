@@ -102,3 +102,15 @@ class Refused(Scene):
         dot = HashDot()
         declare(dot, "effect.blur")
         self.play(FadeIn(dot))  # @refused
+
+
+class RemovedThenDeclared(Scene):
+    """An object animated, removed once the last play has ended, then given
+    a capability: the scene's last frame does not show it.
+    """
+
+    def construct(self):
+        square = Square()
+        self.play(square.animate.shift([1, 0, 0]))
+        self.remove(square)
+        declare(square, "effect.blur")

@@ -24,7 +24,9 @@ class _Refusal(Exception):
     #: What the message says of the scene, after its capabilities.
     because: ClassVar[str]
 
-    def __init__(self, capabilities: Mapping[str, Where], **detail: Any) -> None:
+    def __init__(
+        self, capabilities: Mapping[str, Where], *, why: str = "", **detail: Any
+    ) -> None:
         if not capabilities:
             raise ValueError(f"{self.code} is raised for a scene holding a capability.")
         self.capabilities = dict(capabilities)
@@ -35,7 +37,7 @@ class _Refusal(Exception):
         line = f", {first.line}" if first.line is not None else ""
         message = (
             f"the scene holds the GPU-only {held} {rows} (first at {at}{line},"
-            f" on {first.object}) {self.because}"
+            f" on {first.object}) {self.because}{why}"
         )
         self.finding = Finding(
             self.code,
@@ -75,5 +77,6 @@ class GpuLive(_Refusal):
     )
 
     def __init__(self, capabilities: Mapping[str, Where], cause: str | None) -> None:
-        super().__init__(capabilities, cause=cause)
+        why = f". It draws as it runs: {cause}" if cause else ""
+        super().__init__(capabilities, why=why, cause=cause)
         self.cause = cause

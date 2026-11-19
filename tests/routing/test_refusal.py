@@ -5,6 +5,7 @@ it must be drawn as it runs.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 
@@ -70,8 +71,46 @@ def build_offering(monkeypatch):
     return offer
 
 
+class _Broken:
+    """A finder for an installed GPU build whose import fails, as one whose
+    native part cannot load does.
+    """
+
+    def __init__(self, error: ImportError) -> None:
+        self.error = error
+
+    def find_spec(self, name, path=None, target=None):
+        if name != "arachne_gpu":
+            return None
+        return importlib.util.spec_from_loader(name, self)
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        raise self.error
+
+
 def test_without_the_gpu_build_there_is_no_gpu(no_build):
     assert gpu() is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModuleNotFoundError(
+            "No module named 'arachne_gpu._gpu'", name="arachne_gpu._gpu"
+        ),
+        ImportError("libgcc_s.so.1: cannot open shared object file"),
+    ],
+)
+def test_a_broken_gpu_build_is_raised_not_taken_for_no_build(monkeypatch, error):
+    for name in [n for n in sys.modules if n.split(".")[0] == "arachne_gpu"]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", [_Broken(error), *sys.meta_path])
+    with pytest.raises(ImportError) as raised:
+        gpu()
+    assert raised.value is error
 
 
 def test_a_cpu_route_scene_needs_no_device(session_of, no_build):
@@ -156,8 +195,19 @@ def test_the_live_refusal_names_the_capability_and_why_it_draws_live(session_of)
     assert (error.finding.code, error.finding.severity) == ("render.gpu_live", "error")
     assert error.finding.line == line_of("refused")
     assert error.finding.detail["cause"] == record.refusal
-    assert str(error).startswith("render.gpu_live: ")
-    assert "effect.blur" in str(error)
+    message = str(error)
+    assert message.startswith("render.gpu_live: ")
+    assert "effect.blur" in message
+    assert str(line_of("refused")) in message
+    # The cause travels in the message, the one text a refusal's answer carries.
+    assert record.refusal in message
+    assert record.refusal in _error_answer(error, None).data["message"]
+
+
+def test_the_live_refusal_with_no_known_cause_says_none(session_of):
+    error = GpuLive(capabilities(session_of("LastPlay").record), None)
+    assert "None" not in str(error)
+    assert "It draws as it runs:" not in str(error)
 
 
 def test_both_codes_are_errors_appended_last_to_the_table():

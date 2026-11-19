@@ -63,8 +63,8 @@ def capabilities(record: Record) -> dict[str, Where]:
     first appears, in that order. An object declared and never shown, or a
     capability withdrawn before its object is, counts for nothing.
 
-    A pure read of the record: it walks each drawn capture from what the
-    scene held there, so it answers for a record that refuses drawing too.
+    A pure read of the record: it walks each drawn capture from what a frame
+    of it draws, so it answers for a record that refuses drawing too.
     The states the record keeps for the lint alone are left out, so that the
     answer does not depend on whether the record keeps them.
     """
@@ -79,8 +79,7 @@ def capabilities(record: Record) -> dict[str, Where]:
         return found
     plays = _plays_by_capture(record)
     for capture in record._captures:
-        roots = (*capture.roots, *capture.foreground, *capture.moving)
-        for mob, state in record._walk(capture, roots):
+        for mob, state in record._walk(capture, _drawn(record, capture)):
             for row in sorted(state.get(ATTRIBUTE, ()), key=_ORDER.__getitem__):
                 if row not in found:
                     found[row] = _where(record, plays, capture, mob)
@@ -104,13 +103,18 @@ def route(record: Record) -> Route:
 
 def gpu() -> dict[str, str] | None:
     """The pin of the device this process would draw on, or ``None`` when
-    the GPU build is not installed or offers no GPU: the adapter a
+    the GPU build is not installed or offers no GPU (one installed and
+    broken raises its import error): the adapter a
     compositor opens (discrete, then integrated, then virtual; the first of
     a kind as listed), never a software adapter.
     """
     try:
         build: Any = importlib.import_module("arachne_gpu")
-    except ImportError:
+    except ModuleNotFoundError as error:
+        # Only the build's own absence is no build: an installed build that
+        # fails to import (a native part that cannot load) is raised.
+        if error.name != "arachne_gpu":
+            raise
         return None
     ranked = [
         (_DRAWING_TYPES.index(adapter["device_type"]), index, adapter)
@@ -158,6 +162,17 @@ def cache_token(route: str, pin: Mapping[str, str] | None) -> str:
         raise ValueError("The gpu route draws under a pin.")
     fields = json.dumps([pin[name] for name in PIN_FIELDS]).encode()
     return "gpu-" + hashlib.blake2b(fields, digest_size=8).hexdigest()
+
+
+def _drawn(record: Record, capture: Capture) -> tuple[Mobject, ...]:
+    """What a frame drawn from ``capture`` paints: the scene's last frame
+    only what the scene holds (an object removed after the last play stays
+    in the moving list, unpainted); a play's frame its moving objects over
+    the scene.
+    """
+    if capture is record.final:
+        return tuple(capture.draw_list())
+    return (*capture.roots, *capture.foreground, *capture.moving)
 
 
 def _plays_by_capture(record: Record) -> dict[int, int]:

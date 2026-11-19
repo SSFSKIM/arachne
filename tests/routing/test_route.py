@@ -67,7 +67,7 @@ def test_a_capability_in_a_scene_with_no_play_counts(session_of):
     assert route(record) == "gpu"
 
 
-@pytest.mark.parametrize("scene", ["NeverShown", "Withdrawn"])
+@pytest.mark.parametrize("scene", ["NeverShown", "Withdrawn", "RemovedThenDeclared"])
 def test_an_object_never_shown_holding_it_routes_cpu(session_of, scene):
     record = session_of(scene).record
     assert capabilities(record) == {}

@@ -232,8 +232,8 @@ _TABLE = (
         "a scene holding a GPU-only capability has its frames drawn before its"
         " record is complete, which only Cairo does; nothing is written. Listed"
         " by the lint on every host",
-        "Remove what makes the scene draw as it runs (the cause names it), or"
-        " the GPU-only capability.",
+        "Remove what makes the scene draw as it runs, which the message names,"
+        " or the GPU-only capability.",
         ("capabilities", "play", "object", "cause"),
     ),
 )
