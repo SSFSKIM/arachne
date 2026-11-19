@@ -10,6 +10,7 @@ from arachne_compare import (
     ArrayFrames,
     EdgeBudget,
     Footprint,
+    HandedMaps,
     ObjectMap,
     Thresholds,
     cheap,
@@ -330,3 +331,19 @@ def test_a_mode_other_than_the_two_is_refused():
     frame = plain(27, 48)
     with pytest.raises(ValueError, match="mode"):
         verdict_of(frame, frame, "loose")
+
+
+def test_an_empty_comparison_is_refused():
+    none = ArrayFrames([], Fraction(15))
+    with pytest.raises(ValueError, match="no frames"):
+        compare(
+            none,
+            none,
+            mode="same",
+            maps=HandedMaps({}, {}),
+            changed=lambda i, j: None,
+            plays=[],
+            fps=Fraction(15),
+            seed=0,
+            key="empty",
+        )

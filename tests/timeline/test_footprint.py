@@ -331,3 +331,94 @@ def test_another_draw_path_is_unsupported(session_of):
         Drawing(
             session.record, draw_path="ir_cairo", leave_out=lambda h, leaves: leaves
         )
+
+
+def test_a_scene_that_plays_nothing_is_its_final_frame(session_of):
+    """A still saves its final frame: compared, a changed still blocks."""
+    reference = session_of("Still", SCENES, **FRAME)
+    candidate = session_of("StillShifted", SCENES, **FRAME)
+    frames = SessionFrames(candidate)
+    assert len(frames) == 1
+    assert list(frames.plays) == [(0, 1)]
+    assert np.array_equal(frames.frame(0), _frame(candidate, frames.instant(0)))
+    verdict, codes = _codes(reference, candidate)
+    assert verdict.verdict == "block"
+    assert codes == {"gate.cluster"}
+    same, _ = _codes(reference, session_of("Still", SCENES, **FRAME))
+    assert same.verdict == "pass"
+
+
+def test_frames_at_the_rate_the_camera_draws_at(session_of):
+    session = session_of("OwnRate", SCENES, **FRAME)
+    frames = SessionFrames(session)
+    assert frames.fps == 10
+    assert len(frames) == 5
+    assert list(frames.plays) == [(0, 5)]
+
+
+def test_a_pair_with_one_side_on_another_draw_path_is_refused_before_a_frame(
+    session_of,
+):
+    cairo = session_of("Nested", SCENES, **FRAME)
+    described = session_of("Nested", SCENES, **FRAME, draw_path="ir_cairo")
+    with pytest.raises(ReplayUnsupported, match="ir_cairo"):
+        ReplayMaps(cairo, described)
+    with pytest.raises(ReplayUnsupported, match="ir_cairo"):
+        SessionFrames(described)
+
+
+def test_a_camera_drawing_into_displays_is_refused(session_of):
+    session = session_of("Zoomed", SCENES)
+    with pytest.raises(ReplayUnsupported, match="displays"):
+        SessionFrames(session)
+    with pytest.raises(ReplayUnsupported, match="displays"):
+        ReplayMaps(session, session)
+    with pytest.raises(ReplayUnsupported, match="displays"):
+        drawables(session, Fraction(0))
+
+
+def test_the_camera_is_changed_by_the_value_of_its_inputs(session_of):
+    session = session_of("CameraMoves", SCENES, **FRAME)
+    frame = session.scene.camera.frame
+    record = session.record
+    versions = {
+        id(record.node_state(frame, record.capture_at(Fraction(k, 15))[1]))
+        for k in (7, 8, 9)
+    }
+    assert len(versions) == 3  # new versions, equal values
+    # Across the cut into the play that animates the frame to where it is,
+    # and inside it: the camera's inputs are the same.
+    assert not changed_between(session, Fraction(7, 15), Fraction(8, 15)).camera
+    assert not changed_between(session, Fraction(8, 15), Fraction(9, 15)).camera
+    # Its frame moving, between two frames and to an instant evaluated
+    # between captures.
+    assert changed_between(session, Fraction(16, 15), Fraction(17, 15)).camera
+    assert changed_between(session, Fraction(16, 15), Fraction(8, 7)).camera
+    assert not changed_between(session, Fraction(8, 7), Fraction(8, 7)).camera
+
+
+def test_a_centre_function_reading_a_moving_dot_changes_the_camera(session_of):
+    session = session_of("FollowedCentre", SCENES, **FRAME)
+    assert changed_between(session, Fraction(1, 15), Fraction(2, 15)).camera
+
+
+def test_a_surface_painted_as_one_group_is_one_drawable(session_of):
+    session = session_of("MovingSurface", SCENES, **FRAME)
+    t = Fraction(2, 15)
+    state = session.state_at(t)
+    (surface,) = [n for n in state.nodes if n.type == "Surface"]
+    (corner,) = [n.id for n in state.nodes if n.type == "Square"]
+    found = drawables(session, t)
+    assert set(found) == _frame_ir_ids(session, t) == {surface.id, corner}
+    assert not set(surface.children) & set(found)
+    footprints = object_map(session, t, [surface.id, corner]).objects
+    assert footprints[surface.id].mask.any()
+    without = frame_without(session, t, [surface.id])
+    shown = np.any(without[..., :3] != without[0, 0, :3], axis=2)
+    alone = np.zeros(shown.shape, dtype=bool)
+    x0, y0, x1, y1 = footprints[corner].box
+    alone[y0:y1, x0:x1] = footprints[corner].mask
+    assert np.array_equal(shown, alone)
+    moved = changed_between(session, Fraction(2, 15), Fraction(3, 15))
+    assert surface.id in moved.ids
+    assert not (moved.ids | moved.undecided) & set(surface.children)

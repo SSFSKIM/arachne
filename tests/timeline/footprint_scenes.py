@@ -8,8 +8,12 @@ mobject they both make has the same stable id in both.
 
 from __future__ import annotations
 
+import numpy as np
+
 from arachne import (
     BLUE,
+    DEGREES,
+    DOWN,
     GREEN,
     LEFT,
     RED,
@@ -20,11 +24,15 @@ from arachne import (
     Circle,
     Dot,
     Line,
+    MovingCameraScene,
     Scene,
     Square,
+    Surface,
     Text,
+    ThreeDScene,
     ValueTracker,
     VGroup,
+    ZoomedScene,
     linear,
 )
 
@@ -117,3 +125,82 @@ class Panel(Scene):
 
 class PanelShifted(Panel):
     offset = 0.2
+
+
+class Still(Scene):
+    """A diagram that plays nothing: a render saves its final frame."""
+
+    offset = 0.0
+
+    def construct(self):
+        self.add(
+            Square(side_length=2, color=BLUE, fill_opacity=1).shift(RIGHT * self.offset)
+        )
+
+
+class StillShifted(Still):
+    offset = 0.2
+
+
+class Zoomed(ZoomedScene):
+    """A scene whose camera draws into the displays of other cameras."""
+
+    def construct(self):
+        self.add(Dot())
+        self.wait(0.2)
+
+
+class OwnRate(Scene):
+    """A scene whose camera draws at its own frame rate."""
+
+    def construct(self):
+        self.camera.frame_rate = 10
+        square = Square()
+        self.add(square)
+        self.play(square.animate.shift(RIGHT), run_time=0.5, rate_func=linear)
+
+
+class CameraMoves(MovingCameraScene):
+    """A play that leaves the camera alone; one that animates its frame to
+    where it is, giving it new versions of equal values; one that moves it.
+    """
+
+    def construct(self):
+        square = Square(side_length=0.5)
+        self.add(square, Dot().shift(LEFT * 2))
+        self.play(square.animate.shift(RIGHT), run_time=0.5, rate_func=linear)
+        self.play(self.camera.frame.animate.scale(1), run_time=0.5, rate_func=linear)
+        self.play(self.camera.frame.animate.shift(LEFT), run_time=0.5, rate_func=linear)
+
+
+class FollowedCentre(ThreeDScene):
+    """A fixed-orientation square whose centre a function reads off a dot
+    that moves: the camera's inputs change, its own mobjects do not.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-30 * DEGREES)
+        dot = Dot(color=RED)
+        mark = Square(side_length=0.4, color=YELLOW)
+        self.add(dot)
+        self.add_fixed_orientation_mobjects(mark, center_func=dot.get_center)
+        self.play(dot.animate.shift(RIGHT * 2), run_time=0.5, rate_func=linear)
+
+
+class MovingSurface(ThreeDScene):
+    """A surface a play moves, its faces painted as one group, and a square
+    fixed in the frame's corner.
+    """
+
+    def construct(self):
+        self.set_camera_orientation(phi=60 * DEGREES, theta=-30 * DEGREES)
+        surface = Surface(
+            lambda u, v: np.array([u, v, 0.3 * u * v]),
+            u_range=(-1.5, 1.5),
+            v_range=(-1.5, 1.5),
+            resolution=(6, 6),
+        )
+        corner = Square(side_length=0.5, color=YELLOW).to_corner(UP + LEFT)
+        self.add(surface)
+        self.add_fixed_in_frame_mobjects(corner)
+        self.play(surface.animate.shift(DOWN * 0.5), run_time=0.4, rate_func=linear)

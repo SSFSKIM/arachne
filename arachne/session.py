@@ -413,6 +413,16 @@ class Session:
         )
         return self.scene.renderer.camera.get_image(pixels)
 
+    def _current_draw_quality(self) -> str | None:
+        """The quality the session draws at now (:meth:`frame`'s last)."""
+        return self._quality
+
+    def _render_frame_rate(self) -> Fraction:
+        """The frame rate a render of the scene draws its frames at: its
+        camera's, as the renderer reads it.
+        """
+        return exact(self.scene.renderer.camera.frame_rate)
+
     @_under_its_settings
     def _frame_leaving_out(
         self, t: Fraction | float, quality: str | None, leave_out: LeaveOut

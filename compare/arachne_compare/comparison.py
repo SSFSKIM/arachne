@@ -70,6 +70,10 @@ def compare(
     """
     frames = cheap(reference, candidate, mode=mode, thresholds=thresholds)
     count = len(frames)
+    if not count:
+        raise ValueError(
+            "there are no frames to compare: an empty comparison passes nothing"
+        )
     sampled = sample(
         count,
         fps,
