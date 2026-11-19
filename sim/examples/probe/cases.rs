@@ -20,6 +20,7 @@ pub fn all() -> Vec<(&'static str, String)> {
             "revolute-angle-3d-published",
             hex(&three::revolute_angle_published()),
         ),
+        ("angular-motor-3d", hex(&three::angular_motor())),
         ("angular-limits-3d", hex(&three::angular_limits())),
         (
             "inertia-compound-3d",
