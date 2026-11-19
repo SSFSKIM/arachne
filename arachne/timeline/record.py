@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from arachne.scene.scene import Scene
 
     from .admission import Admission
+    from .bake import Bakes
     from .bodies import Exit
     from .camera_code import Replaced
     from .draw import CameraExtras
@@ -596,6 +597,10 @@ class Record:
     #: The assertion bridge's calls, per play (:class:`.recorder.Bridge`),
     #: given by the recorder that makes the record.
     bridge: Bridge
+    #: The record's bakes (:class:`.bake.Bakes`): immutable contents by
+    #: digest, and the occurrences that place them in this execution;
+    #: ``None`` on a record of a scene that made none.
+    bakes: Bakes | None = None
 
     def __init__(
         self,

@@ -103,7 +103,8 @@ method          params, (default) when optional           result, beside generat
                 ("held+sampled"), ``rules`` ("armed"),    ``key_frames_dir``
                 ``sample_fps`` (none),
                 ``key_frames_dir`` (none)
-``query``       ``t``, ``what``, ``ids`` ([])             ``query``
+``query``       ``t``, ``what``, ``ids`` ([]),            ``query``
+                ``probes`` ([])
 ``frame``       ``t``, ``path``, ``quality`` (none)       ``frame``
 ``key_frames``  ``out_dir``, ``quality`` (none)           ``key_frames``
 ``reload``      ``force`` (false)                         ``reloaded``, a boolean
@@ -162,7 +163,12 @@ describes it.
   size. A finding is an answer, never an error.
 - ``query``'s ``what`` is one of :data:`~arachne.api_json.QUERY_ANSWERS`, or
   a list of them; ``ids`` are the stable ids ``bbox`` boxes, required with
-  it.
+  it. ``probes``, required with ``value_at``, are the points it reads, each
+  ``{id, channel, position, space}``: a stable id, a channel's name, one to
+  three numbers and ``"scene"`` (scene units, the default) or ``"grid"`` (the
+  object's own cells). ``value_at`` is read at ``t`` itself, not at the
+  frame on screen there (:func:`arachne.quantities.value_at`): each answer
+  is dated, and with no other measure asked the answer's ``t`` is ``t``.
 - ``key_frames`` writes the key frames into the directory ``out_dir``, at
   ``quality``, else the session's pixel size.
 - ``reload`` executes the scene again when its files changed, or with
