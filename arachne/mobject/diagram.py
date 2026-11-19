@@ -52,6 +52,7 @@ from arachne.utils.rate_functions import smooth
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Self
 
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
@@ -276,8 +277,9 @@ class Flow(VGroup):
     mod L`` along the edge, ``L`` the edge's length then and ``elapsed`` the
     scene time since the flow started, read from the scene's own clock
     (:attr:`~.Scene.time`), never summed from steps. It starts when it is
-    made in a running scene, or else when its updater first runs in one (a
-    flow made before the scene, a copy). From then on two engine updaters keep
+    made in a running scene, or else the first time it runs in one: when its
+    updater first runs there, or a play first takes it over and suspends
+    that updater (a flow made before the scene, a copy). From then on two engine updaters keep
     it there: its own, which a play's end runs, and the scene's
     :class:`FlowDriver`, which the scene runs after every animation and
     mobject updater at every instant and no animation suspends. So the
@@ -344,6 +346,13 @@ class Flow(VGroup):
         """Stop the tokens where they are."""
         self.stopped = True
         return self
+
+    def suspend_updating(self, recursive: bool = True) -> Self:
+        # A play that takes the flow over suspends its own updater, which
+        # may not have run in the scene yet: the scene's driver must hold
+        # the flow by then.
+        _run_in_scene(self)
+        return super().suspend_updating(recursive)
 
 
 def _start_flow(flow: Mobject, dt: float) -> None:

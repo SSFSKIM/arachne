@@ -256,3 +256,24 @@ def test_a_closed_session_s_scene_is_let_go_after_it_made_a_flow():
     gc.collect()
     admission.DEMOTED.clear()
     assert scene() is None
+
+
+@pytest.mark.parametrize("fps", [15, 30, 60])
+def test_a_flow_first_taken_over_by_a_suspending_play_keeps_the_scene_s_time(
+    moving, fps
+):
+    """A flow that has not run in the scene before a play suspends its
+    updater is still moved: at every frame it has run as long as the scene.
+    """
+    session = moving(fps, "FlowMadeBeforeASuspendingPlay")
+    record = session.record
+    _, _, flow = record._scene.early
+    checked = 0
+    for k in range(1, 3 * fps // 2 + 1):
+        t = Fraction(k, fps)
+        _, capture = record.capture_at(t)
+        assert record.node_state(flow, capture).get("elapsed") == pytest.approx(
+            float(t), abs=1e-9
+        ), float(t)
+        checked += 1
+    assert checked == 3 * fps // 2

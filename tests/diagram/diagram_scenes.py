@@ -220,3 +220,26 @@ class FlowOfACopy(Scene):
         self.play(MoveAlongPath(diagram, Line(home, home + UP)), run_time=1)
         self.play(edge.animate.scale(0.5), run_time=1)
         self.wait(1)
+
+
+class FlowMadeBeforeASuspendingPlay(Scene):
+    """A flow made with the scene, whose first instant in it is a play that
+    suspends its diagram's updaters: the diagram moves up over 0-1 s, then a
+    wait to 1.5 s.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        #: The diagram, its edge and its flow.
+        self.early = moving_flow()
+
+    def construct(self):
+        diagram, edge, flow = self.early
+        home = diagram.get_center()
+        self.play(
+            MoveAlongPath(
+                diagram, Line(home, home + UP), suspend_mobject_updating=True
+            ),
+            run_time=1,
+        )
+        self.wait(0.5)
