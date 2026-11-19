@@ -1,0 +1,85 @@
+{
+  "manifest_version": "1.0",
+  "name": "layered-section",
+  "version": 1,
+  "kind": "parts",
+  "requires": [],
+  "size": {
+    "scene_units_per_unit": 0.01,
+    "origin": [200, 150],
+    "width": 3.2,
+    "height": 2.2
+  },
+  "parts": [
+    {
+      "name": "wall",
+      "file": "parts/wall.svg",
+      "parent": null,
+      "pivot": [200, 150],
+      "order": 0
+    },
+    {
+      "name": "outer_layer",
+      "file": "parts/outer_layer.svg",
+      "parent": "wall",
+      "pivot": [200, 150],
+      "order": 1
+    },
+    {
+      "name": "inner_layer",
+      "file": "parts/inner_layer.svg",
+      "parent": "outer_layer",
+      "pivot": [200, 150],
+      "order": 2
+    },
+    {
+      "name": "core",
+      "file": "parts/core.svg",
+      "parent": "inner_layer",
+      "pivot": [200, 150],
+      "order": 3
+    }
+  ],
+  "slots": [],
+  "parameters": [
+    {
+      "name": "swell",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": "1",
+      "drives": [
+        {
+          "part": "inner_layer",
+          "kind": "shape",
+          "keys": [
+            {"at": 0, "file": "parts/inner_layer.svg"},
+            {"at": 0.5, "file": "shapes/inner_layer-1.svg"},
+            {"at": 1, "file": "shapes/inner_layer-2.svg"}
+          ]
+        }
+      ]
+    }
+  ],
+  "anchors": [
+    {"name": "tip", "part": "inner_layer", "attach": "outline", "at": [290, 150]},
+    {
+      "name": "granule",
+      "part": "inner_layer",
+      "attach": "interior",
+      "at": [250, 140],
+      "keys": [
+        {"at": 0, "point": [250, 140]},
+        {"at": 0.5, "point": [258.333, 139.091]},
+        {"at": 1, "point": [266.667, 138]}
+      ]
+    }
+  ],
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

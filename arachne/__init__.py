@@ -41,6 +41,7 @@ from .animation.transform import *
 from .animation.transform_matching_parts import *
 from .animation.updaters.mobject_update_utils import *
 from .animation.updaters.update import *
+from .assets import *
 from .camera.camera import *
 from .camera.mapping_camera import *
 from .camera.moving_camera import *
