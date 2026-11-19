@@ -43,6 +43,7 @@ from ..errors import SceneError, explain, message_of
 from ..frame_ir.cairo_painter import Unsupported
 from ..lint.exempt import Exemptions
 from ..lint.instants import DEFAULT as LINT_AT
+from ..lint.raised import RaisedFinding
 from ..routing import GpuLive, GpuRequired
 from ..session import Session
 from ..timeline.execution import Incomparable
@@ -642,9 +643,11 @@ def _changed(file: str, read: tuple[tuple[str, str], ...]) -> bool:
 #: answers no instant (``RecordRefused``), an instant it can't answer
 #: (``Unavailable``, ``Unrestorable`` among them), a frame the drawer does
 #: not draw (``Unsupported``, ``render.unsupported``), two executions that
-#: can't be compared (``Incomparable``), and a scene holding a GPU-only
+#: can't be compared (``Incomparable``), a scene holding a GPU-only
 #: capability on a host with no GPU (``GpuRequired``, ``render.gpu_required``)
-#: or drawn as it runs (``GpuLive``, ``render.gpu_live``).
+#: or drawn as it runs (``GpuLive``, ``render.gpu_live``), and a finding
+#: raised while the scene's code ran (``RaisedFinding``), whose answer
+#: carries the finding.
 REFUSALS: tuple[type[Exception], ...] = (
     SceneHookRefused,
     RecordRefused,
@@ -653,34 +656,32 @@ REFUSALS: tuple[type[Exception], ...] = (
     Incomparable,
     GpuRequired,
     GpuLive,
+    RaisedFinding,
 )
 
 
 def _error_answer(error: BaseException, scene_file: str | None) -> RpcError | None:
-    """``error``'s answer: the engine's refusal; else what the scene's code
-    raised, explained, as the session explained it or, for an execution it
-    did not explain (a forward run's), by the frames of the scene's own
-    code ``error`` went through (of ``scene_file``, the session's); else,
-    for an :class:`Exception`, an internal error. ``None``: none of these, so
-    not the server's to answer.
+    """``error``'s answer: the engine's refusal, with the finding whole for
+    a raised one, at the line of ``scene_file`` it went through; else what
+    the scene's code raised, explained, as the session explained it or, for
+    an execution it did not explain (a forward run's), by the frames of the
+    scene's own code ``error`` went through (of ``scene_file``, the
+    session's); else, for an :class:`Exception`, an internal error.
+    ``None``: none of these, so not the server's to answer.
     """
     kind = type(error).__name__
     if isinstance(error, REFUSALS):
         reason = getattr(error, "reason", None) or getattr(error, "code", None)
         message = message_of(error)
-        return RpcError(
-            REFUSED,
-            f"{kind}: {message}",
-            {
-                "type": kind,
-                "message": message,
-                "reason": reason if isinstance(reason, str) else None,
-            },
-        )
-    explained = getattr(error, "scene_error", None)
-    if explained is None and scene_file is not None:
-        found = explain(error, scene_file)
-        explained = found if found.frames else None
+        data: dict[str, Any] = {
+            "type": kind,
+            "message": message,
+            "reason": reason if isinstance(reason, str) else None,
+        }
+        if isinstance(error, RaisedFinding):
+            data["finding"] = error.finding(_scene_line(error, scene_file))
+        return RpcError(REFUSED, f"{kind}: {message}", data)
+    explained = _explained(error, scene_file)
     if isinstance(explained, SceneError):
         message = (
             f"{explained.cls}: {explained.message}"
@@ -691,6 +692,25 @@ def _error_answer(error: BaseException, scene_file: str | None) -> RpcError | No
     if not isinstance(error, Exception):
         return None
     return internal_error(error)
+
+
+def _explained(error: BaseException, scene_file: str | None) -> SceneError | None:
+    """``error`` explained: as the session explained it, else by the frames
+    of ``scene_file``'s code it went through, if any.
+    """
+    explained = getattr(error, "scene_error", None)
+    if explained is None and scene_file is not None:
+        found = explain(error, scene_file)
+        explained = found if found.frames else None
+    return explained if isinstance(explained, SceneError) else None
+
+
+def _scene_line(error: BaseException, scene_file: str | None) -> int | None:
+    """The innermost line of the scene file ``error`` went through, found as
+    a scene error's is; ``None`` when it went through none.
+    """
+    explained = _explained(error, scene_file)
+    return None if explained is None else explained.line
 
 
 def internal_error(error: BaseException) -> RpcError:
