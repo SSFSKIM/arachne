@@ -1,0 +1,27 @@
+"""The errors the GPU build raises."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+class NoGpu(Exception):
+    """No adapter this build may draw on: the ordinary constructor found no GPU, or the testing
+    door no software adapter. ``seen`` lists every adapter found, as :func:`adapters` does.
+    """
+
+    def __init__(self, message: str, seen: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.seen = seen
+
+
+class Unsupported(Exception):
+    """A frame refused whole: it asks for something this build does not draw
+    (``render.unsupported``). Nothing is drawn.
+    """
+
+    code = "render.unsupported"
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"{self.code}: {reason}")
+        self.reason = reason
