@@ -231,3 +231,42 @@ def test_a_stored_outline_unlike_the_rest_outline_is_refused(tmp_path):
     found = refused("asset.manifest_invalid", lambda: Rig(directory))
     assert found.detail["member"] == "parameters[0].drives[0].keys[1].file"
     assert "structure" in found.detail["reason"]
+
+
+@pytest.mark.parametrize(
+    ("edit", "member", "name"),
+    [
+        (
+            lambda d: d["parameters"][0].update(name="lid open"),
+            "parameters[0].name",
+            "lid open",
+        ),
+        (
+            lambda d: d["parameters"][0].update(name="ångle"),
+            "parameters[0].name",
+            "ångle",
+        ),
+        (lambda d: d.update(name="lidded.box"), "name", "lidded.box"),
+        (lambda d: d["parts"][1].update(name="lid/top"), "parts[1].name", "lid/top"),
+        (lambda d: d["anchors"][0].update(name=""), "anchors[0].name", None),
+    ],
+)
+def test_a_name_outside_ascii_letters_digits_underscore_and_dash_is_refused(
+    tmp_path, edit, member, name
+):
+    directory = edited(copied(tmp_path, "lidded-box"), edit)
+    found = refused("asset.manifest_invalid", lambda: Rig(directory))
+    assert found.detail["member"] == member
+    assert found.detail.get("name") == name
+
+
+def test_a_name_with_dashes_and_underscores_is_accepted(tmp_path):
+    def rename(document):
+        document["name"] = "Lidded-Box_2"
+        document["parameters"][0]["name"] = "lid-open_deg"
+        document["anchors"][0]["name"] = "knob-1"
+
+    asset = load_asset(edited(copied(tmp_path, "lidded-box"), rename))
+    assert asset.name == "Lidded-Box_2"
+    assert list(asset.parameters) == ["lid-open_deg"]
+    assert list(asset.anchors) == ["knob-1"]
