@@ -116,3 +116,27 @@ gates:
       cd "$work"
       venv/bin/python -c "import importlib.util as u, arachne_compare; assert u.find_spec('arachne') is None"
       venv/bin/python -m pytest -q -p no:cacheprovider tests
+
+  # The GPU build (gpu/, the arachne-gpu crate and its Python binding): a build of its own, never
+  # an extra of the engine. Its drawing tests run on a software adapter (lavapipe) that each gate
+  # installs itself. gpu-binding and cpu-bytes run on every pull request, whatever it changes:
+  # cpu-bytes shows that a scene using nothing new draws the same bytes with the GPU build
+  # installed and without it.
+  - name: gpu-lint
+    setup: false
+    paths: ["gpu/**", ".github/ci-kit.yml"]
+    run: bash gpu/ci/lint.sh
+    timeout: 20
+  - name: gpu-test
+    setup: false
+    paths: ["gpu/**", ".github/ci-kit.yml"]
+    run: bash gpu/ci/test.sh
+    timeout: 30
+  - name: gpu-binding
+    run: bash gpu/ci/binding.sh gpu/tests/python
+    env: {UV_PYTHON: "3.12"}
+    timeout: 30
+  - name: cpu-bytes
+    run: bash gpu/ci/cpu_bytes.sh
+    env: {UV_PYTHON: "3.12"}
+    timeout: 45
