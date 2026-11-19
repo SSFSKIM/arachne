@@ -134,15 +134,25 @@ def compare(
             pair = changed(i - 1, i)
             totals["undecided_objects"] += len(pair.undecided)
             moving = pair.ids | pair.undecided
-            at_current = _at(cand_map, listed[1] if listed else None, moving)
+            now = listed[1] if listed else None
+            at_current = _at(cand_map, now, moving)
+            earlier: ObjectMap | None = None
+            then: Mapping[str, Box] | None = None
             if listed is not None:
                 before = maps.boxes(i - 1)
-                at_previous = (
-                    _as_footprints(before[1], moving) if before is not None else {}
-                )
+                then = before[1] if before is not None else None
+                at_previous = _as_footprints(then, moving) if then is not None else {}
             else:
                 earlier = maps.map("candidate", i - 1, None)
                 at_previous = dict(earlier.objects) if earlier is not None else {}
+            if any(
+                _unknown(name, cand_map, now) or _unknown(name, earlier, then)
+                for name in moving
+            ):
+                # Where a changed object drew is not known: the pair is not judged.
+                totals["flicker_unjudged"] += 1
+                findings += own + clusters
+                continue
             groups = flicker(
                 candidate.frame(i - 1),
                 current,
@@ -180,6 +190,18 @@ def compare(
         counts=totals,
         edges={name: edges[name] for name in sorted(edges)},
     )
+
+
+def _unknown(
+    name: str, found: ObjectMap | None, boxes: Mapping[str, Box] | None
+) -> bool:
+    """Whether where ``name`` draws in a frame is unknown: no box or footprint is
+    given for it, and no complete map says it draws nothing there. A listed source's
+    boxes hold every drawable, so an id they lack draws nothing.
+    """
+    if boxes is not None:
+        return False
+    return found is None or (name not in found.objects and not found.complete)
 
 
 def _at(

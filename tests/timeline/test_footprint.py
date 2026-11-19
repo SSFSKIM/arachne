@@ -402,6 +402,20 @@ def test_a_centre_function_reading_a_moving_dot_changes_the_camera(session_of):
     assert changed_between(session, Fraction(1, 15), Fraction(2, 15)).camera
 
 
+def test_restored_centres_are_the_ones_drawn(session_of):
+    """Two instants restored from one kept capture, a fixed-orientation
+    centre following a dot between them: the camera changed.
+    """
+    session = session_of("RestoredCentre", SCENES, **FRAME)
+    (play,) = session.record.plays
+    early, late = Fraction(3, 15) + Fraction(1, 100), Fraction(3, 15) + Fraction(3, 100)
+    assert play.route == "state"
+    assert play.base_at(early) is play.base_at(late)
+    assert {session.state_at(t).answer for t in (early, late)} == {"restored"}
+    assert changed_between(session, early, late).camera
+    assert not changed_between(session, late, late).camera
+
+
 def test_a_surface_painted_as_one_group_is_one_drawable(session_of):
     session = session_of("MovingSurface", SCENES, **FRAME)
     t = Fraction(2, 15)
@@ -422,3 +436,47 @@ def test_a_surface_painted_as_one_group_is_one_drawable(session_of):
     moved = changed_between(session, Fraction(2, 15), Fraction(3, 15))
     assert surface.id in moved.ids
     assert not (moved.ids | moved.undecided) & set(surface.children)
+
+
+def test_a_line_whose_points_are_cleared_is_missing(session_of):
+    """Held but painting nothing, it is examined and empty, not untested."""
+    reference = session_of("Crowded", SCENES, **FRAME)
+    candidate = session_of("CrowdedLineCleared", SCENES, **FRAME)
+    (cleared,) = set(drawables(reference, 0)) - set(drawables(candidate, 0))
+    found = object_map(candidate, 0, [cleared]).objects[cleared]
+    assert found.examined
+    assert found.empty
+    verdict, codes = _codes(reference, candidate)
+    assert codes == {"gate.presence.missing"}
+    assert {f.object for f in verdict.findings} == {cleared}
+
+
+def test_a_change_of_paint_order_is_a_change(session_of):
+    reference = session_of("Reordered", SCENES, **FRAME)
+    candidate = session_of("Reordered", SCENES, **FRAME)
+    frames = SessionFrames(candidate)
+    (_, cut), _ = frames.plays
+    found = changed_between(candidate, frames.instant(cut - 1), frames.instant(cut))
+    assert len(found.ids) == 1
+    assert found.ids <= set(drawables(candidate, frames.instant(cut)))
+    verdict, codes = _codes(reference, candidate)
+    assert codes == set()
+    assert verdict.verdict == "pass"
+
+
+def test_a_removed_mobject_a_play_still_paints_is_found(session_of):
+    session = session_of("RemovedMidPlay", SCENES, **FRAME)
+    t = Fraction(6, 15)
+    dot = next(n.id for n in session.state_at(0).nodes if n.type == "Dot")
+    assert dot not in {n.id for n in session.state_at(t).nodes}
+    assert dot in drawables(session, t)
+    footprint = object_map(session, t, [dot]).objects[dot]
+    assert footprint.mask.any()
+    assert not np.array_equal(frame_without(session, t, [dot]), _frame(session, t))
+
+
+def test_plays_drawn_at_different_frame_rates_are_refused(session_of):
+    session = session_of("RateChanges", SCENES, **FRAME)
+    assert [p.frame_rate for p in session.record.plays] == [15, 10]
+    with pytest.raises(ReplayUnsupported, match="frame rates"):
+        SessionFrames(session)

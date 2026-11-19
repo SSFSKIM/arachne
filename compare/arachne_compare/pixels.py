@@ -25,9 +25,10 @@ def check_frame(frame: np.ndarray, what: str) -> np.ndarray:
 
 
 def peak_difference(a: np.ndarray, b: np.ndarray, what: str = "frames") -> np.ndarray:
-    """Per pixel, the largest difference in any channel both frames have.
+    """Per pixel, the largest difference in any channel.
 
-    Frames of different sizes are refused, never compared.
+    Frames of different sizes, or with different channels (RGB against RGBA), are
+    refused, never compared.
     """
     a = check_frame(a, what)
     b = check_frame(b, what)
@@ -36,10 +37,12 @@ def peak_difference(a: np.ndarray, b: np.ndarray, what: str = "frames") -> np.nd
             f"{what}: sizes differ ({a.shape[1]} x {a.shape[0]} against "
             f"{b.shape[1]} x {b.shape[0]}); frames of different sizes are not compared"
         )
-    channels = min(a.shape[2], b.shape[2])
-    difference = np.abs(
-        a[..., :channels].astype(np.int16) - b[..., :channels].astype(np.int16)
-    )
+    if a.shape[2] != b.shape[2]:
+        raise ValueError(
+            f"{what}: one frame has {a.shape[2]} channels, the other {b.shape[2]}; "
+            "frames with different channels are not compared"
+        )
+    difference = np.abs(a.astype(np.int16) - b.astype(np.int16))
     return difference.max(axis=2).astype(np.uint8)
 
 

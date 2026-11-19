@@ -127,6 +127,32 @@ def _drawn_by(
     return (None, None) if best is None else (best[1], best[2])
 
 
+def _by_drawable(
+    each: Mapping[str, tuple[tuple[int, int, int, int], np.ndarray]],
+    objects: Mapping[str, Footprint],
+) -> dict[str, tuple[tuple[int, int, int, int], np.ndarray]]:
+    """Each drawable's edges: its own and its parts' (a part names its drawable as
+    ``parent``) in one mask over their joint box, a pixel two of them share once.
+    """
+    owned: dict[str, list[tuple[tuple[int, int, int, int], np.ndarray]]] = {}
+    for name, edges in each.items():
+        owned.setdefault(objects[name].parent or name, []).append(edges)
+    joined = {}
+    for name, parts in owned.items():
+        if len(parts) == 1:
+            joined[name] = parts[0]
+            continue
+        x0 = min(box[0] for box, _ in parts)
+        y0 = min(box[1] for box, _ in parts)
+        x1 = max(box[2] for box, _ in parts)
+        y1 = max(box[3] for box, _ in parts)
+        mask = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+        for (px0, py0, px1, py1), part in parts:
+            mask[py0 - y0 : py1 - y0, px0 - x0 : px1 - x0] |= part
+        joined[name] = ((x0, y0, x1, y1), mask)
+    return joined
+
+
 def structural(
     reference: np.ndarray,
     candidate: np.ndarray,
@@ -143,8 +169,9 @@ def structural(
 
     Presence is decided first and from the maps alone, for every listed or asked id;
     no pixel is exempt from it. In ``cross`` mode the reference map's edge pixels are
-    taken out of the cluster test, counted per object, and held to the edge budget
-    where one is set. Without a reference map nothing is exempt.
+    taken out of the cluster test and counted per object; each drawable's edges, its
+    parts' with its own and a shared pixel once, are held to the edge budget where
+    one is set. Without a reference map nothing is exempt.
     """
     peak = peak_difference(reference, candidate, f"frame {frame}")
     size = peak.shape
@@ -174,18 +201,21 @@ def structural(
         budget = thresholds.edge_budget
         for name, ((x0, y0, x1, y1), mask) in each.items():
             local = peak[y0:y1, x0:x1]
-            pixels = int(mask.sum())
             edge_counts[name] = {
-                "pixels": pixels,
+                "pixels": int(mask.sum()),
                 "changed": int((mask & (local > floor)).sum()),
                 "strong": int((mask & (local > thresholds.strong_delta)).sum()),
             }
-            if budget is None:
-                continue
-            differing = int((mask & (local > budget.delta)).sum())
-            allowed = budget.allowed(pixels)
-            if differing > allowed:
-                footprint = reference_map.objects[name]
+        if budget is not None:
+            for name, ((x0, y0, x1, y1), mask) in _by_drawable(
+                each, reference_map.objects
+            ).items():
+                pixels = int(mask.sum())
+                differing = int((mask & (peak[y0:y1, x0:x1] > budget.delta)).sum())
+                allowed = budget.allowed(pixels)
+                if differing <= allowed:
+                    continue
+                footprint = reference_map.objects.get(name)
                 findings.append(
                     Finding(
                         code=EDGE_OVER_BUDGET,
@@ -193,7 +223,7 @@ def structural(
                         t=t,
                         box=tight_box(mask, (x0, y0)),
                         object=name,
-                        source_line=footprint.source,
+                        source_line=None if footprint is None else footprint.source,
                         detail={
                             "edge_pixels": pixels,
                             "differing": differing,

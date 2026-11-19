@@ -33,6 +33,7 @@ __all__ = [
     "object_map",
 ]
 
+import bisect
 import contextlib
 import hashlib
 import math
@@ -53,7 +54,7 @@ from arachne.mobject.mobject import Mobject
 from arachne.utils.family import extract_mobject_family_members
 
 from .clock import exact, frames_in
-from .draw import CameraExtras, _same_value
+from .draw import CameraExtras, _constant, _same_value
 from .record import SAMPLE_DECIMALS, NodeState, content_fields
 from .restore import Unrestorable
 from .routes import RecordRefused, _resolve
@@ -80,9 +81,11 @@ class _Seen:
     """What one draw of an instant painted.
 
     ``boxes`` holds each drawable painted, in paint order, with its box in
-    the frame's pixels; ``sources`` its source line where known. ``held``
-    are the asked ids the frame's tree holds, and ``resolved`` the drawables
-    each asked id stands for. ``versions`` holds each drawable's recorded
+    the frame's pixels; ``sources`` its source line where known; ``order``
+    the drawables in the order painted, a drawable painted twice twice.
+    ``held`` are the asked ids the frame holds, ``groups`` those of them that
+    name a group (painting nothing of its own, holding submobjects), and
+    ``resolved`` the drawables each asked id stands for. ``versions`` holds each drawable's recorded
     states (itself, then the leaves it paints), and ``evaluated`` the
     content key of those an evaluated instant changed, as evaluated there.
     """
@@ -91,7 +94,9 @@ class _Seen:
     boxes: dict[str, Box] = field(default_factory=dict)
     sources: dict[str, str | None] = field(default_factory=dict)
     held: set[str] = field(default_factory=set)
+    groups: set[str] = field(default_factory=set)
     resolved: dict[str, set[str]] = field(default_factory=dict)
+    order: list[str] = field(default_factory=list)
     versions: dict[str, tuple[NodeState | None, ...]] = field(default_factory=dict)
     evaluated: dict[str, bytes] = field(default_factory=dict)
     camera: _CameraView | None = None
@@ -106,7 +111,8 @@ class _CameraView:
     draw holds it (:class:`~arachne.camera.projection.View`: the frame a
     MovingCamera's frame mobject gives, a ThreeDCamera's angles, distance
     and zoom), with its light's place, and ``centers`` the fixed-orientation
-    centres the capture recorded, numbers rounded to
+    centres the draw installed (a restore's evaluated ones where it
+    restored), numbers rounded to
     :data:`~.record.SAMPLE_DECIMALS` places: a mobject animated to where it
     is moves by ulps and by nothing a frame shows.
     """
@@ -157,6 +163,30 @@ def _rounded(value: object) -> object:
     return repr(value)
 
 
+#: The code of the centre functions a drawing installs, each returning a
+#: recorded or evaluated value (:meth:`.CameraExtras.install`).
+_CONSTANT_CODE = _constant(np.zeros(3)).__code__
+
+
+def _installed_centers(
+    camera: object, capture: Capture
+) -> tuple[tuple[Mobject, np.ndarray], ...]:
+    """The fixed-orientation centres the camera draws with now, as a drawing
+    installed them: its capture's, or a restore's evaluated ones. Read from
+    the installed functions when every one of them is a drawing's, which
+    only return a value; else the capture's own record, calling no
+    function of the scene's.
+    """
+    orientations = getattr(camera, "fixed_orientation_mobjects", None)
+    if orientations and all(
+        getattr(func, "__code__", None) is _CONSTANT_CODE
+        for func in orientations.values()
+    ):
+        return tuple((mob, func()) for mob, func in orientations.items())
+    recorded = capture.camera
+    return recorded.centers if recorded is not None else ()
+
+
 def _same_background(a: np.ndarray | None, b: np.ndarray | None) -> bool:
     if a is None or b is None:
         return a is b
@@ -205,7 +235,7 @@ class _Filter:
         out: set[int] = set()
         for mob in self._named:
             name = self.record.origin(mob).id
-            if id(mob) in drawn or (len(mob.points) and draw_kind(mob) is not None):
+            if id(mob) in drawn or _paints_itself(mob):
                 # A drawable stands for itself, not for what it holds.
                 found = [mob] if id(mob) in drawn else []
             else:
@@ -232,16 +262,24 @@ class _Filter:
         """
         named: list[Mobject] = []
         if self.ids:
-            members = extract_mobject_family_members(self.capture.draw_list())
+            # What the frame paints: the scene's mobjects, and the moving ones
+            # a play still paints once the scene removed them.
+            capture = self.capture
+            members = extract_mobject_family_members(
+                [*capture.draw_list(), *capture.moving]
+            )
+            seen: set[int] = set()
             for mob in members:
                 name = self.record.origin(mob).id
-                if name in self.ids:
+                if name in self.ids and id(mob) not in seen:
+                    seen.add(id(mob))
                     self.seen.held.add(name)
                     named.append(mob)
+                    if mob.submobjects and not _paints_itself(mob):
+                        self.seen.groups.add(name)
         self._named = named
         if self.watch:
             camera = self.camera
-            recorded = self.capture.camera
             light = getattr(camera, "light_source", None)
             self.seen.camera = _CameraView(
                 CameraExtras.observe(camera, None, evaluate=False),
@@ -251,7 +289,7 @@ class _Filter:
                 ),
                 tuple(
                     (id(mob), _rounded(center))
-                    for mob, center in (recorded.centers if recorded else ())
+                    for mob, center in _installed_centers(camera, self.capture)
                 ),
             )
 
@@ -281,6 +319,7 @@ class _Filter:
                 found = pixel_box(camera, view, owner, ink=True)
             box = _pixel_box(found, camera.pixel_width, camera.pixel_height)
             seen.boxes[name] = _union(seen.boxes.get(name), box)
+            seen.order.append(name)
             seen.sources[name] = (
                 None if origin.source_line is None else str(origin.source_line)
             )
@@ -306,6 +345,13 @@ class _Filter:
         ):
             return None
         return _content_key(NodeState.of(mob) for mob in mobs)
+
+
+def _paints_itself(mob: Mobject) -> bool:
+    """Whether ``mob`` is a leaf a camera paints: it has points of its own and
+    a kind of draw.
+    """
+    return bool(len(mob.points)) and draw_kind(mob) is not None
 
 
 def _content_key(states: Iterable[NodeState | None]) -> bytes:
@@ -461,8 +507,12 @@ def _map(
     height, width = whole.shape[:2]
     objects: dict[str, Footprint] = {}
     for name in ids:
-        if name not in seen.held:
-            objects[name] = Footprint(_NO_BOX, np.zeros((0, 0), dtype=bool))
+        if not seen.resolved.get(name) and name not in seen.groups:
+            # Not held, or held painting nothing (points cleared): it draws
+            # nothing here. A group holding nothing painted gets no entry.
+            objects[name] = Footprint(
+                _NO_BOX, np.zeros((0, 0), dtype=bool), source=seen.sources.get(name)
+            )
     wanted = sorted(set().union(*(seen.resolved.get(name, ()) for name in ids)))
     for name in wanted:
         without = _draw(session, t, quality, [name], remove=True).pixels
@@ -511,8 +561,47 @@ def changed_between(
             changed.add(name)
     assert a.camera is not None
     assert b.camera is not None
+    changed |= _reordered(a.order, b.order)
     camera = not a.camera.same(b.camera)
     return ChangedSet(frozenset(changed), frozenset(undecided), camera)
+
+
+def _reordered(first: Sequence[str], second: Sequence[str]) -> set[str]:
+    """The drawables of both paint orders whose place among the others
+    changed: those outside a longest run the two orders share, each drawable
+    at the place it is painted last (on top).
+    """
+    common = set(first) & set(second)
+
+    def last(order: Sequence[str]) -> list[str]:
+        places = {name: k for k, name in enumerate(order) if name in common}
+        return sorted(places, key=places.__getitem__)
+
+    a, b = last(first), last(second)
+    if a == b:
+        return set()
+    place = {name: k for k, name in enumerate(a)}
+    sequence = [place[name] for name in b]
+    # A longest increasing run of ``sequence`` (patience sorting).
+    tails: list[int] = []
+    tail_at: list[int] = []
+    before = [-1] * len(sequence)
+    for k, value in enumerate(sequence):
+        slot = bisect.bisect_left(tails, value)
+        if slot:
+            before[k] = tail_at[slot - 1]
+        if slot == len(tails):
+            tails.append(value)
+            tail_at.append(k)
+        else:
+            tails[slot] = value
+            tail_at[slot] = k
+    kept: set[str] = set()
+    k = tail_at[-1]
+    while k >= 0:
+        kept.add(b[k])
+        k = before[k]
+    return set(b) - kept
 
 
 def _key(seen: _Seen, name: str) -> bytes:
@@ -541,7 +630,17 @@ class SessionFrames:
         _check(session)
         self.session = session
         self.quality = quality
-        self.fps: Fraction = session._render_frame_rate()
+        rates = {
+            play.frame_rate
+            for play in session.record.plays
+            if not play.skipped and play.frame_rate is not None
+        }
+        if len(rates) > 1:
+            raise ReplayUnsupported(
+                "the scene's plays were drawn at different frame rates: "
+                + ", ".join(str(rate) for rate in sorted(rates))
+            )
+        self.fps: Fraction = rates.pop() if rates else session._render_frame_rate()
         instants: list[Fraction] = []
         plays: list[tuple[int, int]] = []
         for play in session.record.plays:
