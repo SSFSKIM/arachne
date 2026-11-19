@@ -91,6 +91,24 @@ gates:
     run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
     timeout: 30
 
+  # The comparator (compare/, the arachne-compare distribution): its built wheel's tests, run
+  # outside the checkout, where arachne is not importable and no root options apply.
+  - name: compare
+    setup: false
+    paths: ["compare/**", ".github/ci-kit.yml"]
+    timeout: 10
+    run: |
+      set -euo pipefail
+      command -v uv >/dev/null || pipx install uv==0.12.3
+      work=$(mktemp -d)
+      uv build --wheel --out-dir "$work/wheels" compare
+      uv venv --quiet --python 3.12 "$work/venv"
+      VIRTUAL_ENV="$work/venv" uv pip install --quiet "$work"/wheels/arachne_compare-*.whl pytest
+      cp -R compare/tests "$work/tests"
+      cd "$work"
+      venv/bin/python -c "import importlib.util as u, arachne_compare; assert u.find_spec('arachne') is None"
+      venv/bin/python -m pytest -q -p no:cacheprovider tests
+
   # The simulation crate (sim/, arachne-sim: the rigid-body solver pinned with its determinism
   # feature): its own toolchain, lock file and clippy rules, set up by each gate, and run only when
   # sim/ or this file changes.
