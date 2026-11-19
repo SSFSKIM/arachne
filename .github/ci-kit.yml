@@ -49,6 +49,10 @@ gates:
     timeout: 45
   - name: macos
     lane: hosted-macos
+    # GitHub runs five hosted macOS jobs at a time for the whole account, shared with the account's other
+    # repositories, so a ci-gate push does not start this one: the pull request's run carries it, and
+    # `ci-gate --gates macos` runs it by name.
+    on: [pr, dispatch]
     run: uv run python -m pytest --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.14"}
     timeout: 60
@@ -86,6 +90,10 @@ gates:
     timeout: 20
   - name: core-macos
     lane: hosted-macos
+    # GitHub runs five hosted macOS jobs at a time for the whole account, shared with the account's other
+    # repositories, so a ci-gate push does not start this one: the pull request's run carries it, and
+    # `ci-gate --gates core-macos` runs it by name.
+    on: [pr, dispatch]
     setup: false
     paths: ["core/**", ".github/ci-kit.yml"]
     run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
