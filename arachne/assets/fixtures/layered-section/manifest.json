@@ -13,28 +13,28 @@
   "parts": [
     {
       "name": "wall",
-      "file": "parts/wall.svg",
+      "file": "pieces/wall.svg",
       "parent": null,
       "pivot": [200, 150],
       "order": 0
     },
     {
       "name": "outer_layer",
-      "file": "parts/outer_layer.svg",
+      "file": "pieces/outer_layer.svg",
       "parent": "wall",
       "pivot": [200, 150],
       "order": 1
     },
     {
       "name": "inner_layer",
-      "file": "parts/inner_layer.svg",
+      "file": "pieces/inner_layer.svg",
       "parent": "outer_layer",
       "pivot": [200, 150],
       "order": 2
     },
     {
       "name": "core",
-      "file": "parts/core.svg",
+      "file": "pieces/core.svg",
       "parent": "inner_layer",
       "pivot": [200, 150],
       "order": 3
@@ -53,7 +53,7 @@
           "part": "inner_layer",
           "kind": "shape",
           "keys": [
-            {"at": 0, "file": "parts/inner_layer.svg"},
+            {"at": 0, "file": "pieces/inner_layer.svg"},
             {"at": 0.5, "file": "shapes/inner_layer-1.svg"},
             {"at": 1, "file": "shapes/inner_layer-2.svg"}
           ]

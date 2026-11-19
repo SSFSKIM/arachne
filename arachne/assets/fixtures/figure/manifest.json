@@ -21,7 +21,7 @@
     },
     {
       "name": "head",
-      "file": "parts/head.svg",
+      "file": "pieces/head.svg",
       "parent": "torso",
       "pivot": [150, 148],
       "order": 1,
