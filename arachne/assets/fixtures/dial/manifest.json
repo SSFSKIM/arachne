@@ -1,0 +1,64 @@
+{
+  "manifest_version": "1.0",
+  "name": "dial",
+  "version": 1,
+  "kind": "parts",
+  "requires": [],
+  "size": {"scene_units_per_unit": 0.01, "origin": [150, 160], "width": 2, "height": 2},
+  "parts": [
+    {
+      "name": "face",
+      "file": "parts/face.svg",
+      "parent": null,
+      "pivot": [150, 160],
+      "order": 0
+    },
+    {
+      "name": "needle",
+      "file": "parts/needle.svg",
+      "parent": "face",
+      "pivot": [150, 160],
+      "order": 2
+    }
+  ],
+  "slots": [
+    {
+      "name": "lamp",
+      "parent": "face",
+      "pivot": [150, 215],
+      "order": 1,
+      "default": "off",
+      "drawings": [
+        {"name": "off", "file": "slots/lamp-off.svg"},
+        {"name": "on", "file": "slots/lamp-on.svg"}
+      ]
+    }
+  ],
+  "parameters": [
+    {
+      "name": "reading",
+      "min": 0,
+      "max": 100,
+      "default": 50,
+      "unit": "1",
+      "drives": [
+        {
+          "part": "needle",
+          "kind": "rotate",
+          "unit": "deg",
+          "keys": [{"at": 0, "value": 120}, {"at": 100, "value": -120}]
+        }
+      ]
+    }
+  ],
+  "anchors": [
+    {"name": "needle_tip", "part": "needle", "attach": "outline", "at": [150, 78]}
+  ],
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}
