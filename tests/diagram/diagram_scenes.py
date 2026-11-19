@@ -13,12 +13,16 @@ from arachne import (
     Circle,
     Diagram,
     Flow,
+    Line,
+    MoveAlongPath,
     MovingCameraScene,
     Node,
     Rectangle,
     Scene,
+    VMobject,
     ZoomInto,
 )
+from arachne.timeline.recorder import running
 
 #: The flows' speeds, scene units per second.
 STRAIGHT_SPEED = 1.5
@@ -119,6 +123,23 @@ MOVING_SPEED = 1.2
 MOVING_TOKENS = 4
 
 
+def moving_flow() -> tuple[Diagram, VMobject, Flow]:
+    """Two nodes joined straight, with a flow inside the diagram."""
+    a = Node("A").move_to(LEFT * 3 + DOWN)
+    b = Node("B").move_to(RIGHT * 3 + DOWN)
+    diagram = Diagram(a, b)
+    edge = diagram.connect((a, "right"), (b, "left"), route="straight", tip=False)
+    flow = Flow(edge, speed=MOVING_SPEED, tokens=MOVING_TOKENS, offset=0.2)
+    diagram.add(flow)
+    return diagram, edge, flow
+
+
+#: A diagram and its flow made when this file is read, before any scene runs.
+EARLY = moving_flow()
+#: Whether a scene was running when it was made.
+EARLY_IN_A_SCENE = running() is not None
+
+
 class FlowOnAMovingEdge(Scene):
     """A flow inside its diagram: the diagram moves over 0.5-1.5 s, then
     the connector alone shrinks to half its length over 1.5-2.5 s; 3 s in
@@ -126,12 +147,7 @@ class FlowOnAMovingEdge(Scene):
     """
 
     def construct(self):
-        a = Node("A").move_to(LEFT * 3 + DOWN)
-        b = Node("B").move_to(RIGHT * 3 + DOWN)
-        diagram = Diagram(a, b)
-        edge = diagram.connect((a, "right"), (b, "left"), route="straight", tip=False)
-        flow = Flow(edge, speed=MOVING_SPEED, tokens=MOVING_TOKENS, offset=0.2)
-        diagram.add(flow)
+        diagram, edge, flow = moving_flow()
         self.add(diagram)
         self.wait(0.5)
         self.play(diagram.animate.shift(UP), run_time=1)
@@ -170,3 +186,32 @@ class FlowsThatLeaveAndStop(Scene):
         self.remove(made[1])
         self.halted.stop()
         self.wait(0.5)
+
+
+class FlowMadeBeforeTheScene(Scene):
+    """:class:`FlowOnAMovingEdge` with a flow made before the scene ran."""
+
+    def construct(self):
+        diagram, edge, flow = EARLY
+        self.add(diagram)
+        self.wait(0.5)
+        self.play(diagram.animate.shift(UP), run_time=1)
+        self.play(edge.animate.scale(0.5), run_time=1)
+        self.wait(0.5)
+
+
+class FlowOfACopy(Scene):
+    """A copy of a diagram and its flow, shown in place of the original,
+    brought in by the first play, which moves it without copies of its own:
+    the diagram over 0-1 s, then the connector shrinks over 1-2 s, then a
+    wait to 3 s.
+    """
+
+    def construct(self):
+        original, _, _ = moving_flow()
+        diagram = original.copy()
+        edge, flow = diagram.edges[0], diagram[-1]
+        home = diagram.get_center()
+        self.play(MoveAlongPath(diagram, Line(home, home + UP)), run_time=1)
+        self.play(edge.animate.scale(0.5), run_time=1)
+        self.wait(1)

@@ -5,6 +5,8 @@ something else.
 
 from __future__ import annotations
 
+import gc
+import weakref
 from fractions import Fraction
 from pathlib import Path
 
@@ -158,10 +160,8 @@ def moving():
     admission.DEMOTED.clear()
     opened: list[Session] = []
 
-    def open_at(fps: int) -> Session:
-        session = Session.open(
-            SCENES, "FlowOnAMovingEdge", config={**SMALL, "frame_rate": fps}
-        )
+    def open_at(fps: int, scene: str = "FlowOnAMovingEdge") -> Session:
+        session = Session.open(SCENES, scene, config={**SMALL, "frame_rate": fps})
         opened.append(session)
         return session
 
@@ -171,13 +171,16 @@ def moving():
     admission.DEMOTED.clear()
 
 
+@pytest.mark.parametrize(
+    "scene", ["FlowOnAMovingEdge", "FlowMadeBeforeTheScene", "FlowOfACopy"]
+)
 @pytest.mark.parametrize("fps", [15, 30, 60])
-def test_a_flow_holds_speed_and_spacing_whatever_animates_it(moving, fps):
+def test_a_flow_holds_speed_and_spacing_whatever_animates_it(moving, fps, scene):
     """The diagram holding the flow moves, then the wire shrinks: at every
     frame each token is where the declared speed and the wire's length then
-    put it.
+    put it, for a flow made in the scene, one made before it, and a copy.
     """
-    session = moving(fps)
+    session = moving(fps, scene)
     for k in range(3 * fps):
         t = Fraction(k, fps)
         state = session.state_at(t)
@@ -234,3 +237,21 @@ def test_a_scene_without_a_flow_has_no_flow_driver():
     finally:
         session.close()
         admission.DEMOTED.clear()
+
+
+def test_a_flow_made_before_the_scene_was_made_outside_a_recording():
+    assert diagram_scenes.EARLY_IN_A_SCENE is False
+
+
+def test_a_closed_session_s_scene_is_let_go_after_it_made_a_flow():
+    admission.DEMOTED.clear()
+    session = Session.open(
+        SCENES, "FlowOnAMovingEdge", config={**SMALL, "frame_rate": 15}
+    )
+    scene = weakref.ref(session.record._scene)
+    assert flow_driver(session.record._scene) is not None
+    session.close()
+    del session
+    gc.collect()
+    admission.DEMOTED.clear()
+    assert scene() is None

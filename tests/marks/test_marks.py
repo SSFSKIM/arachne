@@ -47,7 +47,7 @@ from arachne.timeline import admission
 from arachne.timeline.frozen import engine_class
 
 from . import trail_scenes
-from .trail_scenes import INTERVAL, SPEED, START
+from .trail_scenes import INTERVAL, LATE_INTERVAL, LATE_START, SPEED, START
 
 
 def _built(name: str) -> Mobject:
@@ -336,6 +336,40 @@ def test_a_trail_keeps_time_at_any_frame_rate(opened, fps):
         assert [d[0] for d in dots] == pytest.approx(expected, abs=1e-6)
 
 
+@pytest.mark.parametrize("fps", [15, 30, 60])
+def test_a_trail_made_between_two_ticks_keeps_the_scene_s_time(fps):
+    """A trail made off the tick's grid drops each dot at its own scene
+    time, counted from when the trail was made, not from a tick before.
+    """
+    admission.DEMOTED.clear()
+    session = Session.open(
+        Path(trail_scenes.__file__),
+        "TrailMadeOffTheGrid",
+        config={"pixel_width": 96, "pixel_height": 54, "frame_rate": fps},
+    )
+    try:
+        record = session.record
+        scene = record._scene
+        made = float(scene.made_at)
+        assert made == pytest.approx(LATE_START)
+        checked = 0
+        for capture in (c for play in record.plays for c in play.samples):
+            state = record.node_state(scene.trail, capture)
+            if state is None or capture.instant < scene.made_at:
+                continue
+            t = capture.instant
+            dots = state.get("dots")
+            due = math.floor((float(t) - made) / LATE_INTERVAL + 1e-9) + 1
+            assert len(dots) == due, float(t)
+            expected = [START + SPEED * (made + n * LATE_INTERVAL) for n in range(due)]
+            assert [d[0] for d in dots] == pytest.approx(expected, abs=1e-6)
+            checked += 1
+        assert checked >= 0.6 * fps
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+
+
 #: Each mark made of several parts, and the parts that keep a style of their
 #: own whatever style the mark is given.
 GROUPED = {
@@ -454,3 +488,30 @@ def test_side_by_side_ports_are_joined_round_both_pieces(first_port, second_port
         run = curve[3] - curve[0]
         straight = np.allclose(np.cross(curve[1] - curve[0], run), 0)
         assert not straight or min(abs(run[0]), abs(run[1])) < 1e-9
+
+
+@pytest.mark.parametrize(
+    ("first_port", "second_port"),
+    [("right", "right"), ("left", "left"), ("left", "right"), ("right", "left")],
+)
+def test_neighbours_at_the_diagram_s_own_spacing_are_joined_clear_of_both(
+    first_port, second_port
+):
+    diagram = arachne.Diagram()
+    a = diagram.place(Block("a"), 0, 0)
+    b = diagram.place(Block("b"), 1, 0)
+    # The defaults leave a narrow gap between the two.
+    gap = b.body.get_left()[0] - a.body.get_right()[0]
+    assert 0 < gap < 0.3
+    edge = diagram.connect((a, first_port), (b, second_port))
+    path = _samples(edge)
+    assert not _inside(path, a.body)
+    assert not _inside(path, b.body)
+
+
+def test_a_port_the_other_piece_covers_is_refused():
+    a = Block("a")
+    b = Block("b").next_to(a, RIGHT, buff=0)
+    diagram = arachne.Diagram(a, b)
+    with pytest.raises(ValueError, match="move the two pieces apart"):
+        diagram.connect((a, "right"), (b, "right"))

@@ -30,9 +30,10 @@ import numpy as np
 
 from arachne import config
 from arachne.animation.animation import Animation
-from arachne.constants import DOWN, LEFT, ORIGIN, RIGHT, UP
+from arachne.constants import DL, DOWN, LEFT, ORIGIN, RIGHT, UP, UR
 from arachne.mobject.geometry.arc import Dot
 from arachne.mobject.marks._paths import ArcLength, as_point, direction, head, line
+from arachne.mobject.marks._running import running_scene
 from arachne.mobject.marks._style import (
     Opacities,
     apply_style,
@@ -51,6 +52,7 @@ from arachne.utils.rate_functions import smooth
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Self
 
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
@@ -128,6 +130,8 @@ class Diagram(VGroup):
                 start_direction=leaving,
                 end_direction=arriving_from,
                 detour=_detour(_piece(start), _piece(end), a, b, leaving),
+                stub=_stub(a, leaving, _piece(end)),
+                end_stub=_stub(b, arriving_from, _piece(start)),
                 corner_radius=corner_radius,
                 tip=tip,
                 color=color,
@@ -187,6 +191,36 @@ def _piece(spec: Any) -> VMobject:
 #: How far past a piece a connector going round it runs.
 _ROUND = 0.3
 
+#: How far a connector runs straight out of a port before it turns, where
+#: there is room.
+_STUB = 0.3
+
+
+def _stub(port: np.ndarray, out: np.ndarray, other: VMobject) -> float:
+    """How far a connector can run straight out of ``port`` along ``out``
+    before it turns: :data:`_STUB`, or half the clear space up to ``other``
+    (the piece at the connector's other end) when that piece lies across
+    its course. A port ``other`` covers has no route out: refused.
+    """
+    axis = 0 if abs(out[0]) >= abs(out[1]) else 1
+    across = 1 - axis
+    sign = math.copysign(1.0, out[axis])
+    low, high = other.get_critical_point(DL), other.get_critical_point(UR)
+    if not low[across] - 1e-9 <= port[across] <= high[across] + 1e-9:
+        return _STUB
+    near = low[axis] if sign > 0 else high[axis]
+    far = high[axis] if sign > 0 else low[axis]
+    if (far - port[axis]) * sign <= 0:
+        return _STUB  # the other piece is behind the port
+    clear = (near - port[axis]) * sign
+    if clear <= 1e-9:
+        raise ValueError(
+            f"a connector cannot leave the port at {np.round(port[:2], 3).tolist()}:"
+            f" the {type(other).__name__} at its other end covers it; move the"
+            " two pieces apart"
+        )
+    return float(min(_STUB, clear / 2))
+
 
 def _detour(
     first: VMobject, second: VMobject, a: np.ndarray, b: np.ndarray, leaving: np.ndarray
@@ -234,15 +268,19 @@ class Flow(VGroup):
 
     At every instant a token is at ``(offset + speed * elapsed + i * L / n)
     mod L`` along the edge, ``L`` the edge's length then and ``elapsed`` the
-    scene time since the flow was made, read from the scene's own clock
-    (:attr:`~.Scene.time`), never summed from steps. Two engine updaters
-    keep it there: its own, which a play's end runs, and the scene's
+    scene time since the flow started, read from the scene's own clock
+    (:attr:`~.Scene.time`), never summed from steps. It starts when it is
+    made in a running scene, or else the first time it runs in one: when its
+    updater first runs there, or an animation first takes it over (a flow
+    made before the scene, a copy). From then on two engine updaters keep
+    it there: its own, which a play's end runs, and the scene's
     :class:`FlowDriver`, which the scene runs after every animation and
-    mobject updater at every instant and no animation suspends. So the speed and the spacing hold at any frame
-    rate, through plays and waits, whatever animates the edge, the diagram
-    the flow is in or the flow itself, until :meth:`stop`. It reads the
-    edge's own points (a connector's wire, not its head) as they are.
-    Style keywords go to the tokens.
+    mobject updater at every instant and no animation suspends. So the
+    speed and the spacing hold at any frame rate, through plays and waits,
+    whatever animates the edge, the diagram the flow is in or the flow
+    itself, until :meth:`stop`. It reads the edge's own points (a
+    connector's wire, not its head) as they are. Style keywords go to the
+    tokens.
     """
 
     def __init__(
@@ -259,36 +297,20 @@ class Flow(VGroup):
             raise ValueError("a flow has at least one token")
         style = take_style(kwargs)
         super().__init__(**kwargs)
+        self.edge = edge
         self.speed = float(speed)
         self.offset = float(offset)
-        scene = _running_scene()
-        #: The scene time the flow was made at, from which it runs.
-        self.start = float(scene.time) if scene is not None else 0.0
+        #: The scene time the flow started at; ``None`` until it runs in a
+        #: scene.
+        self.start: float | None = None
         #: Seconds of scene time the flow has run, as last shown.
         self.elapsed = 0.0
         self.stopped = False
         self.add(*(Dot(radius=radius, color=color) for _ in range(tokens)))
         apply_style(self.submobjects, style)
-
-        def place(flow: Flow, seconds: float) -> None:
-            flow.elapsed = seconds
-            path = ArcLength(edge.points)
-            share = path.length / len(flow.submobjects)
-            for index, token in enumerate(flow.submobjects):
-                along = (flow.travelled() + index * share) % path.length
-                token.move_to(path.point(along))
-
-        def follow(flow: Mobject) -> None:
-            assert isinstance(flow, Flow)
-            if scene is not None and not flow.stopped:
-                place(flow, float(scene.time) - flow.start)
-
-        self._show = place
-        self._follow = follow
-        place(self, 0.0)
-        self.add_updater(follow)
-        if scene is not None:
-            hold_flow(scene, self)
+        self.show_at(0.0)
+        self.add_updater(_start_flow)
+        _run_in_scene(self)
 
     def travelled(self) -> float:
         """How far the first token has gone along the edge from its start,
@@ -298,25 +320,76 @@ class Flow(VGroup):
 
     def show_at(self, seconds: float) -> Flow:
         """Put the tokens where they are ``seconds`` after the flow started."""
-        self._show(self, float(seconds))
+        self.elapsed = float(seconds)
+        path = ArcLength(self.edge.points)
+        share = path.length / len(self.submobjects)
+        for index, token in enumerate(self.submobjects):
+            along = (self.travelled() + index * share) % path.length
+            token.move_to(path.point(along))
         return self
+
+    def follow(self, now: float) -> None:
+        """Put the tokens where the scene time ``now`` puts them, unless the
+        flow is stopped or has not started.
+        """
+        if not self.stopped and self.start is not None:
+            self.show_at(now - self.start)
 
     def stop(self) -> Flow:
         """Stop the tokens where they are."""
         self.stopped = True
         return self
 
+    def suspend_updating(self, recursive: bool = True) -> Self:
+        # An animation that takes the flow over suspends its own updater,
+        # which may not have run in the scene yet: the scene's driver must
+        # hold the flow by then.
+        _run_in_scene(self)
+        return super().suspend_updating(recursive)
 
-def _running_scene() -> Scene | None:
-    """The scene whose script is running now, if any."""
-    from arachne.timeline.recorder import running
 
-    recorder = running()
-    return recorder.scene if recorder is not None else None
+def _start_flow(flow: Mobject, dt: float) -> None:
+    """A flow's own updater until it starts in a scene. It reads ``dt``,
+    which has the scene tick every instant it runs at, a wait's too, so it
+    runs at the first instant the flow is in a running scene; there the
+    flow starts and its updater becomes :func:`_keep_flow`.
+    """
+    assert isinstance(flow, Flow)
+    if dt >= 0:  # the read the scene's ticking looks for
+        _keep_flow(flow)
+
+
+def _keep_flow(flow: Mobject) -> None:
+    """A flow's own updater: the flow joins the running scene's driver, if
+    it has not, and goes where the scene's time puts it.
+    """
+    assert isinstance(flow, Flow)
+    scene = _run_in_scene(flow)
+    if scene is not None:
+        flow.follow(float(scene.time))
+
+
+def _run_in_scene(flow: Flow) -> Scene | None:
+    """Start ``flow`` in the scene running now, if any, and have the
+    scene's driver hold it; the scene, or ``None``.
+    """
+    scene = running_scene()
+    if scene is None:
+        return None
+    driver = flow_driver(scene)
+    if driver is None or not driver.holds(flow):
+        if flow.start is None:
+            flow.start = float(scene.time)
+        if _start_flow in flow.updaters:
+            # The scene's driver keeps the scene ticking from now on.
+            flow.remove_updater(_start_flow)
+            flow.add_updater(_keep_flow)
+        hold_flow(scene, flow)
+    return scene
 
 
 class FlowDriver:
-    """What keeps a scene's flows on its clock: the flows made in the
+    """What keeps a scene's flows on its clock: the flows started in the
     scene, each moved to where :attr:`~.Scene.time` puts it at every
     instant, at a cost of the flows held, whatever else the scene holds.
 
@@ -334,13 +407,15 @@ class FlowDriver:
     :func:`hold_flow` hand it later flows.
 
     The driver is the scene's engine state, kept beside the scene (not on
-    it, nor on any mobject); :attr:`flows` is replaced, never changed in
-    place.
+    it, nor on any mobject), and no record reads it. It refers to the scene
+    and to its flows weakly, so it keeps neither alive: a flow nothing else
+    holds (an animation's copy, once the animation is done) leaves it.
     """
 
-    def __init__(self) -> None:
-        #: The flows held, in the order they were made.
-        self.flows: tuple[Flow, ...] = ()
+    def __init__(self, scene: Scene) -> None:
+        self._scene = weakref.ref(scene)
+        #: The flows held, by id, in the order they joined.
+        self._held: dict[int, weakref.ref[Flow]] = {}
 
         def drive_flows(dt: float) -> None:
             self()
@@ -348,17 +423,37 @@ class FlowDriver:
         #: The scene updater the driver runs as.
         self.updater: Callable[[float], None] = drive_flows
 
+    @property
+    def flows(self) -> tuple[Flow, ...]:
+        """The flows held that still exist, in the order they joined."""
+        return tuple(f for ref in self._held.values() if (f := ref()) is not None)
+
+    def holds(self, flow: Flow) -> bool:
+        """Whether the driver moves ``flow``."""
+        ref = self._held.get(id(flow))
+        return ref is not None and ref() is flow
+
     def hold(self, flow: Flow) -> None:
         """Move ``flow`` from now on."""
-        self.flows = (*self.flows, flow)
+        self._held[id(flow)] = weakref.ref(flow, self._let_go(id(flow)))
+
+    def _let_go(self, key: int) -> Callable[[weakref.ref[Flow]], None]:
+        def gone(ref: weakref.ref[Flow]) -> None:
+            if self._held.get(key) is ref:
+                del self._held[key]
+
+        return gone
 
     def __call__(self) -> None:
         """Put every flow held that is not stopped where the scene's time
         puts it.
         """
+        scene = self._scene()
+        if scene is None:
+            return
+        now = float(scene.time)
         for flow in self.flows:
-            if not flow.stopped:
-                flow._follow(flow)
+            flow.follow(now)
 
 
 #: Each scene's flow driver, by the scene; gone with the scene.
@@ -371,13 +466,13 @@ def flow_driver(scene: Scene) -> FlowDriver | None:
 
 
 def hold_flow(scene: Scene, flow: Flow) -> None:
-    """Have ``flow``, made in ``scene``, moved on the scene's clock: by the
-    scene's flow driver, made and added to the scene's updaters with the
+    """Have ``flow``, started in ``scene``, moved on the scene's clock: by
+    the scene's flow driver, made and added to the scene's updaters with the
     scene's first flow.
     """
     driver = _DRIVERS.get(scene)
     if driver is None:
-        driver = _DRIVERS[scene] = FlowDriver()
+        driver = _DRIVERS[scene] = FlowDriver(scene)
         scene.add_updater(driver.updater)
     driver.hold(flow)
 

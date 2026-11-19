@@ -104,10 +104,13 @@ def _elbow_route(
     arriving_from: np.ndarray,
     stub: float,
     detour: float,
+    end_stub: float | None = None,
 ) -> list[np.ndarray]:
     """Corner points of a right-angled route that leaves ``start`` along
     ``leaving`` and reaches ``end`` from the side ``arriving_from`` points
-    to (an outward direction of the end's port).
+    to (an outward direction of the end's port), running ``stub`` straight
+    out of the start before it turns and ``end_stub`` (``stub`` when
+    ``None``) straight into the end.
 
     Two ports on parallel sides that do not face each other are joined round
     the outside. When the two lie within ``detour`` of one line across their
@@ -124,7 +127,7 @@ def _elbow_route(
     out = start.copy()
     out[s_axis] += s_sign * stub
     into = end.copy()
-    into[e_axis] += e_sign * stub
+    into[e_axis] += e_sign * (stub if end_stub is None else end_stub)
     if s_axis == e_axis:
         other = 1 - s_axis
         ahead = (end[s_axis] - start[s_axis]) * s_sign > 0
@@ -176,9 +179,10 @@ class ElbowConnector(VMobject):
 
     Its own points are the wire, ending at the head's base, so a token
     sent along it (:class:`~arachne.mobject.diagram.Flow`) runs on the wire.
-    ``stub`` is how far it runs straight out of a port before it turns, and
-    ``detour`` how far past the further port it goes round two ports that
-    sit side by side on parallel sides (:func:`_elbow_route`).
+    ``stub`` is how far it runs straight out of a port before it turns
+    (``end_stub``, when given, at ``end``), and ``detour`` how far past the
+    further port it goes round two ports that sit side by side on parallel
+    sides (:func:`_elbow_route`).
     """
 
     def __init__(
@@ -192,6 +196,7 @@ class ElbowConnector(VMobject):
         tip_length: float = 0.2,
         stub: float = 0.3,
         detour: float = 0.5,
+        end_stub: float | None = None,
         color: ParsableManimColor = WHITE,
         **kwargs: Any,
     ) -> None:
@@ -201,7 +206,7 @@ class ElbowConnector(VMobject):
         a, b = as_point(start), as_point(end)
         leaving, arriving_from = as_point(start_direction), as_point(end_direction)
         self.corner_radius = float(corner_radius)
-        corners = _elbow_route(a, leaving, b, arriving_from, stub, detour)
+        corners = _elbow_route(a, leaving, b, arriving_from, stub, detour, end_stub)
         if tip:
             last = corners[-2]
             u = direction(last, b)
