@@ -52,7 +52,7 @@ from .timeline.admission import (
     whole_line,
 )
 from .timeline.clock import exact
-from .timeline.draw import Drawing
+from .timeline.draw import Drawing, LeaveOut
 from .timeline.execution import (
     Divergence,
     ExecutionSummary,
@@ -412,6 +412,21 @@ class Session:
             record, [_resolve(record, exact(t))], self._static_picture
         )
         return self.scene.renderer.camera.get_image(pixels)
+
+    @_under_its_settings
+    def _frame_leaving_out(
+        self, t: Fraction | float, quality: str | None, leave_out: LeaveOut
+    ) -> PixelArray:
+        """The frame at ``t`` as :meth:`frame` draws it, but whole, every
+        capture leaving out what the capture filter ``leave_out`` takes from
+        it (:class:`.Drawing`): the session's kept static picture is neither
+        used nor replaced.
+        """
+        self._use_quality(quality)
+        record = self.record
+        freeze_mapping_centre(record)
+        with Drawing(record, draw_path=self.draw_path, leave_out=leave_out) as drawing:
+            return _draw(drawing, _resolve(record, exact(t)), lambda play: None)
 
     def _drawn(
         self,
