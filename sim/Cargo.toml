@@ -1,0 +1,40 @@
+[package]
+name = "arachne-sim"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Arachne's simulation crate: rigid-body worlds stepped on a fixed clock"
+repository = "https://github.com/SSFSKIM/arachne"
+publish = false
+
+[lib]
+name = "arachne_sim"
+
+[dependencies]
+# The solver, pinned by exact version, its features listed one by one (README.md, "Determinism").
+rapier2d = { version = "=0.36.1", default-features = false, features = [
+    "dim2",
+    "f32",
+    "std",
+    "block-solver",
+    "enhanced-determinism",
+] }
+rapier3d = { version = "=0.36.1", default-features = false, features = [
+    "dim3",
+    "f32",
+    "std",
+    "enhanced-determinism",
+] }
+
+[dev-dependencies]
+# The probe's digests.
+sha2 = "0.11.1"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+# The release build with line tables, for ci/imports.py --where.
+[profile.audit]
+inherits = "release"
+debug = "line-tables-only"

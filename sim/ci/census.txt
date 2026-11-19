@@ -1,0 +1,2 @@
+# Run-time CPU feature detection in the locked tree (ci/census.py), each with the reason it cannot
+# reach a result of the solver. One entry per hit: <name> <version> <path>:<line>  <reason>

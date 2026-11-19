@@ -90,3 +90,28 @@ gates:
     paths: ["core/**", ".github/ci-kit.yml"]
     run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
     timeout: 30
+
+  # The simulation crate (sim/, arachne-sim: the rigid-body solver pinned with its determinism
+  # feature): its own toolchain, lock file and clippy rules, set up by each gate, and run only when
+  # sim/ or this file changes.
+  - name: sim-lint
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/lint.sh
+    timeout: 30
+  - name: sim-test
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/test.sh
+    timeout: 30
+  - name: sim-identity
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/identity.sh
+    timeout: 30
+  - name: sim-macos
+    lane: hosted-macos
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/macos.sh
+    timeout: 40
