@@ -77,25 +77,25 @@ def test_an_asset_without_its_manifest_is_refused(tmp_path):
 
 
 def test_an_svg_asked_for_as_an_asset_is_refused_for_its_missing_manifest(tmp_path):
-    svg = copied(tmp_path, "dial") / "parts" / "face.svg"
+    svg = copied(tmp_path, "dial") / "pieces" / "face.svg"
     data, line = _refusal(tmp_path, str(svg))
     _assert_refused(data, "asset.manifest_missing", line)
 
 
 def test_an_asset_missing_a_file_is_refused(tmp_path):
     directory = copied(tmp_path, "figure")
-    (directory / "parts" / "head.svg").unlink()
+    (directory / "pieces" / "head.svg").unlink()
     data, line = _refusal(tmp_path, str(directory))
     detail = _assert_refused(data, "asset.file_missing", line)
-    assert detail == {"asset": str(directory), "file": "parts/head.svg"}
+    assert detail == {"asset": str(directory), "file": "pieces/head.svg"}
 
 
 def test_an_asset_with_an_unreadable_file_is_refused(tmp_path):
     directory = copied(tmp_path, "dial")
-    shutil.copy(BROKEN / "text.svg", directory / "parts" / "face.svg")
+    shutil.copy(BROKEN / "text.svg", directory / "pieces" / "face.svg")
     data, line = _refusal(tmp_path, str(directory))
     detail = _assert_refused(data, "asset.unreadable", line)
-    assert detail["file"] == "parts/face.svg"
+    assert detail["file"] == "pieces/face.svg"
     assert "<text>" in detail["reason"]
 
 

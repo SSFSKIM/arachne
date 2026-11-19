@@ -369,7 +369,7 @@ def dial(root: Path) -> None:
         for a in range(-120, 121, 30)
     ]
     face = pack.file(
-        "parts/face.svg",
+        "pieces/face.svg",
         {
             None: [
                 Shape(ellipse(150, 160, 100, 100), "#f4f1e8", "#333333", 4),
@@ -379,7 +379,7 @@ def dial(root: Path) -> None:
         },
     )
     needle = pack.file(
-        "parts/needle.svg",
+        "pieces/needle.svg",
         {
             None: [
                 Shape(polygon((150, 78), (156, 160), (150, 172), (144, 160)), "#c0392b")
@@ -512,7 +512,8 @@ def figure(root: Path) -> None:
         },
     )
     head = pack.file(
-        "parts/head.svg", {None: [Shape(ellipse(150, 110, 32, 38), skin, "#8a6a50", 2)]}
+        "pieces/head.svg",
+        {None: [Shape(ellipse(150, 110, 32, 38), skin, "#8a6a50", 2)]},
     )
     eyes_open = pack.file(
         "slots/eyes-open.svg",
@@ -667,7 +668,7 @@ def layered_section(root: Path) -> None:
     ]
     files = {
         name: pack.file(
-            f"parts/{name}.svg", {None: [Shape(ellipse(cx, cy, rx, ry), fill, line)]}
+            f"pieces/{name}.svg", {None: [Shape(ellipse(cx, cy, rx, ry), fill, line)]}
         )
         for name, rx, ry, fill, line in layers
     }

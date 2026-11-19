@@ -240,7 +240,7 @@ def test_the_digest_attests_every_file_and_the_manifest_but_not_its_checks(tmp_p
     edited(directory, lambda d: d.update(version=2))
     changed = load_asset(directory).digest
     assert changed != before
-    head = directory / "parts" / "head.svg"
+    head = directory / "pieces" / "head.svg"
     head.write_text(head.read_text().replace('stroke-width="2"', 'stroke-width="3"'))
     assert load_asset(directory).digest not in (before, changed)
 

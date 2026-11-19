@@ -24,7 +24,7 @@ def test_a_directory_without_a_manifest_is_refused(tmp_path):
 
 def test_a_part_file_alone_is_no_asset(tmp_path):
     directory = copied(tmp_path, "dial")
-    refused("asset.manifest_missing", lambda: Rig(directory / "parts" / "needle.svg"))
+    refused("asset.manifest_missing", lambda: Rig(directory / "pieces" / "needle.svg"))
 
 
 def test_a_path_that_is_nothing_is_refused_with_where_it_was_looked_for(tmp_path):
@@ -63,9 +63,9 @@ def test_a_file_the_manifest_names_that_is_not_there_is_refused(tmp_path):
 )
 def test_a_file_the_reader_cannot_draw_exactly_is_refused(tmp_path, broken, says):
     directory = copied(tmp_path, "dial")
-    shutil.copy(BROKEN / broken, directory / "parts" / "needle.svg")
+    shutil.copy(BROKEN / broken, directory / "pieces" / "needle.svg")
     found = refused("asset.unreadable", lambda: Rig(directory))
-    assert found.detail["file"] == "parts/needle.svg"
+    assert found.detail["file"] == "pieces/needle.svg"
     assert says in found.detail["reason"]
 
 
@@ -78,7 +78,7 @@ def test_reading_a_file_writes_nothing_beside_it(tmp_path):
 
 def test_part_files_on_different_canvases_are_refused(tmp_path):
     directory = copied(tmp_path, "dial")
-    shutil.copy(BROKEN / "other-canvas.svg", directory / "parts" / "needle.svg")
+    shutil.copy(BROKEN / "other-canvas.svg", directory / "pieces" / "needle.svg")
     found = refused("asset.manifest_invalid", lambda: Rig(directory))
     assert "canvas" in found.detail["reason"]
 
@@ -90,14 +90,14 @@ def test_part_files_on_different_canvases_are_refused(tmp_path):
         "file:///tmp/needle.svg",
         "/tmp/needle.svg",
         "../needle.svg",
-        "parts/../../needle.svg",
+        "pieces/../../needle.svg",
     ],
 )
 def test_a_file_named_by_an_address_or_outside_the_asset_is_refused(tmp_path, file):
     directory = edited(
         copied(tmp_path, "dial"), lambda d: d["parts"][1].update(file=file)
     )
-    shutil.copy(directory / "parts" / "needle.svg", tmp_path / "needle.svg")
+    shutil.copy(directory / "pieces" / "needle.svg", tmp_path / "needle.svg")
     found = refused("asset.remote", lambda: Rig(directory))
     assert found.detail["file"] == file
 
@@ -105,8 +105,8 @@ def test_a_file_named_by_an_address_or_outside_the_asset_is_refused(tmp_path, fi
 def test_a_link_out_of_the_asset_is_refused(tmp_path):
     directory = copied(tmp_path, "dial")
     outside = tmp_path / "needle.svg"
-    shutil.move(directory / "parts" / "needle.svg", outside)
-    (directory / "parts" / "needle.svg").symlink_to(outside)
+    shutil.move(directory / "pieces" / "needle.svg", outside)
+    (directory / "pieces" / "needle.svg").symlink_to(outside)
     refused("asset.remote", lambda: Rig(directory))
 
 

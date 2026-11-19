@@ -8,14 +8,14 @@
   "parts": [
     {
       "name": "face",
-      "file": "parts/face.svg",
+      "file": "pieces/face.svg",
       "parent": null,
       "pivot": [150, 160],
       "order": 0
     },
     {
       "name": "needle",
-      "file": "parts/needle.svg",
+      "file": "pieces/needle.svg",
       "parent": "face",
       "pivot": [150, 160],
       "order": 2
