@@ -171,8 +171,16 @@ def test_the_quad_s_picture_is_its_member_s_file_checked_against_its_digest():
 
 
 def _keyed(mob) -> dict:
-    """Each field of ``mob``'s content key, by its name."""
-    return {key: part for key, part, *_ in content_fields(NodeState.of(mob))}
+    """Each field of ``mob``'s content key, by its name, less the fields its
+    class declares no part of a key (``_content_key_omits``): a key is built
+    from what the class keeps, whatever a field's type.
+    """
+    omits = getattr(type(mob), "_content_key_omits", frozenset())
+    return {
+        key: part
+        for key, part, *_ in content_fields(NodeState.of(mob))
+        if key not in omits
+    }
 
 
 def test_the_quad_s_fields_that_decide_its_picture_are_plain_and_keyed():
