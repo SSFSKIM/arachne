@@ -237,11 +237,48 @@ def test_every_source_failing_names_each_one(cairo, monkeypatch, tmp_path):
     assert len(calls) == 3
 
 
+class _Trickle(_Response):
+    """A response that answers every read, each a minute after the last."""
+
+    def __init__(self, data: bytes, now: list[float]):
+        super().__init__(data)
+        self.now = now
+
+    def read(self, size=-1):
+        self.now[0] += 60
+        return super().read(size)
+
+
+def test_a_trickling_source_gives_way_to_the_next(cairo, monkeypatch, tmp_path):
+    now = [0.0]
+    urlopen, calls = _opener(
+        [
+            _Trickle(b"the tarball", now),
+            _Trickle(b"the tarball", now),
+            _Response(b"the tarball"),
+        ]
+    )
+    monkeypatch.setattr(cairo.urllib.request, "urlopen", urlopen)
+    target = tmp_path / "cairo.tar.xz"
+    source = cairo.download_cairo(
+        target,
+        SOURCES,
+        CHECKSUM,
+        attempts=2,
+        sleep=lambda s: None,
+        clock=lambda: now[0],
+    )
+    assert source == SOURCES[1]
+    assert target.read_bytes() == b"the tarball"
+    assert calls == [SOURCES[0], SOURCES[0], SOURCES[1]]
+
+
 def test_the_sources_and_their_bounds(cairo):
     assert cairo.CAIRO_SOURCES[0].startswith("https://cairographics.org/")
     assert len(cairo.CAIRO_SOURCES) >= 2
-    worst = len(cairo.CAIRO_SOURCES) * (
-        cairo.DOWNLOAD_ATTEMPTS * cairo.DOWNLOAD_TIMEOUT
-        + cairo.DOWNLOAD_WAIT * (2 ** (cairo.DOWNLOAD_ATTEMPTS - 1) - 1)
-    )
-    assert worst < 300
+    waits = cairo.DOWNLOAD_WAIT * (2 ** (cairo.DOWNLOAD_ATTEMPTS - 1) - 1)
+    sources = len(cairo.CAIRO_SOURCES)
+    silent = sources * (cairo.DOWNLOAD_ATTEMPTS * cairo.DOWNLOAD_TIMEOUT + waits)
+    trickling = sources * (cairo.DOWNLOAD_ATTEMPTS * cairo.DOWNLOAD_DEADLINE + waits)
+    assert silent < 300
+    assert trickling < 600

@@ -1,7 +1,9 @@
 # Logic is as follows:
 # 1. Download cairo source code from the first of CAIRO_SOURCES that serves it: the
 #    upstream release (https://cairographics.org/releases/cairo-<version>.tar.xz), then
-#    mirrors of the same file. Each connection and read times out after DOWNLOAD_TIMEOUT.
+#    mirrors of the same file. Each connection and read times out after DOWNLOAD_TIMEOUT,
+#    and each attempt as a whole after DOWNLOAD_DEADLINE, so a source that trickles bytes
+#    gives way like one that is silent.
 #    A download is retried, with a growing wait, through a reset connection, a timeout or
 #    another network failure (a URLError that is no 4xx response); any other error, or
 #    the last attempt's failure, moves on to the next source.
@@ -43,11 +45,16 @@ CAIRO_SHA256 = "243a0736b978a33dee29f9cca7521733b78a65b5418206fef7bd1c3d4cf10b64
 
 # Attempts at each source, and the wait before the second; it doubles after each.
 # With every source silent, the download gives up after about
-# len(CAIRO_SOURCES) * (DOWNLOAD_ATTEMPTS * DOWNLOAD_TIMEOUT + DOWNLOAD_WAIT) seconds.
+# len(CAIRO_SOURCES) * (DOWNLOAD_ATTEMPTS * DOWNLOAD_TIMEOUT + DOWNLOAD_WAIT) seconds,
+# about 3.3 minutes; with every source trickling, after about
+# len(CAIRO_SOURCES) * (DOWNLOAD_ATTEMPTS * DOWNLOAD_DEADLINE + DOWNLOAD_WAIT) seconds,
+# about 9 minutes. Name resolution is outside both: the resolver's own timeout applies.
 DOWNLOAD_ATTEMPTS = 2
 DOWNLOAD_WAIT = 5.0
 # Seconds a connection or a read may wait for the server.
 DOWNLOAD_TIMEOUT = 30.0
+# Seconds one attempt may take in all, from before connecting to the last byte.
+DOWNLOAD_DEADLINE = 90.0
 
 VENV_NAME = "meson-venv"
 BUILD_DIR = "build"
@@ -82,11 +89,13 @@ def download_cairo(path, sources=CAIRO_SOURCES, sha256sum=CAIRO_SHA256, **retry)
     raise Exception("Every source of cairo failed:\n  " + "\n  ".join(failures))
 
 
-def download_file(url, path, *, attempts=DOWNLOAD_ATTEMPTS, wait=DOWNLOAD_WAIT, sleep=time.sleep):
+def download_file(
+    url, path, *, attempts=DOWNLOAD_ATTEMPTS, wait=DOWNLOAD_WAIT, sleep=time.sleep, clock=time.monotonic
+):
     for attempt in range(1, attempts + 1):
         logger.info(f"Downloading {url} to {path} (attempt {attempt} of {attempts})")
         try:
-            _fetch(url, path)
+            _fetch(url, path, clock)
             return
         except (urllib.error.URLError, ConnectionResetError, TimeoutError) as error:
             if not _retried(error) or attempt == attempts:
@@ -96,14 +105,17 @@ def download_file(url, path, *, attempts=DOWNLOAD_ATTEMPTS, wait=DOWNLOAD_WAIT, 
             wait *= 2
 
 
-def _fetch(url, path):
+def _fetch(url, path, clock=time.monotonic):
     block_size = 1024 * 1024
+    deadline = clock() + DOWNLOAD_DEADLINE
     with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response, open(path, "wb") as file:
         while True:
             data = response.read(block_size)
             if not data:
                 break
             file.write(data)
+            if clock() > deadline:
+                raise TimeoutError(f"the download took longer than {DOWNLOAD_DEADLINE:.0f} s")
 
 
 def verify_sha256sum(path, sha256sum):
