@@ -55,16 +55,16 @@ def _centre(state, node_id):
 
 def test_every_rate_bakes_the_same_worlds_and_calls_once_per_tick(opened):
     """A closed world added before an open one whose force reads it: at 4,
-    15, 30 and 60 fps one content key per world, one declaration, the same
-    callback calls (one per new tick) and the same bodies where the grids
-    meet.
+    15, 24, 30 and 60 fps one content key per world, one declaration, the
+    same callback calls (one per new tick) and the same bodies where the
+    grids meet: the start, a frame inside the first play (1 s), the end.
     """
     found = {}
-    for fps in (4, 15, 30, 60):
+    for fps in (4, 15, 24, 30, 60):
         session = opened("ClosedThenOpen", fps=fps)
         bakes, occurrences = _occurrences(session)
         calls = list(session.module.CALLS)
-        states = {t: session.state_at(t) for t in (0, 1)}
+        states = {t: session.state_at(t) for t in (0, 1, 2)}
         found[fps] = (
             [
                 (o.content, o.declaration, o.closed, o.first_tick, o.last_tick)
@@ -79,11 +79,24 @@ def test_every_rate_bakes_the_same_worlds_and_calls_once_per_tick(opened):
     first = found[4]
     assert len(first[0]) == 2
     assert [closed for _, _, closed, _, _ in first[0]] == [True, False]
-    assert all(o[3:] == (0, 90) for o in first[0])
-    # One call per new tick: ticks 1 to 90 step from the state at 0 to 89.
-    assert first[1] == list(range(90))
-    for fps in (15, 30, 60):
+    assert all(o[3:] == (0, 120) for o in first[0])
+    # One call per new tick: ticks 1 to 120 step from the state at 0 to 119.
+    assert first[1] == list(range(120))
+    for fps in (15, 24, 30, 60):
         assert found[fps] == first, fps
+
+
+def test_a_frame_between_ticks_shows_the_last_tick_before_it(opened):
+    """At 24 fps every other frame falls between two ticks: 25/24 s is tick
+    62.5, and shows tick 62.
+    """
+    session = opened("ClosedThenOpen", fps=24)
+    bakes, (closed, _) = _occurrences(session)
+    pose = bakes.contents[closed.content].channels["pose"].values
+    ball = [b for b in closed.bindings if b.channel == "pose"][1]
+    centre = _centre(session.state_at(Fraction(25, 24)), ball.id)
+    assert centre == pytest.approx(pose[62, 1, :2].astype(float), abs=1e-5)
+    assert centre != pytest.approx(pose[63, 1, :2].astype(float), abs=1e-5)
 
 
 def test_a_render_s_occurrence_holds_every_tick(opened):
@@ -225,6 +238,157 @@ def test_a_body_in_a_3d_world_moves_rigidly(opened):
     assert not np.allclose(pose[60, 0, 3:], pose[0, 0, 3:])
 
 
+def _spans(session):
+    return [(o.first_tick, o.last_tick) for o in session.record.bakes.occurrences]
+
+
+def test_a_remove_and_an_add_with_no_time_between_are_one_stay(opened):
+    """Between plays no scene time passes: the world never left. Bringing it
+    to the front or the back of the scene is no leave either.
+    """
+    assert _spans(opened("Blinked")) == [(0, 60)]
+
+
+@pytest.mark.parametrize("fps", [15, 60])
+def test_a_world_removed_between_frames_ends_at_that_tick(opened, fps):
+    """Removed at tick 19, which no 15 fps frame reads: the closed world is
+    computed through it, at every rate alike.
+    """
+    session = opened("LeftBetweenFrames", fps=fps)
+    bakes, (occurrence,) = _occurrences(session)
+    assert (occurrence.first_tick, occurrence.last_tick) == (0, 19)
+    pose = bakes.contents[occurrence.content].channels["pose"].values
+    assert pose[19, 0, 0] == pytest.approx(19 / 60, rel=1e-5)
+
+
+def test_a_world_away_is_never_computed_on(opened):
+    session = opened("ReadWhileAway")
+    found = session.module.FOUND
+    assert "reached" in found["ahead"]
+    assert "in the scene" in found["away"]
+    assert _spans(session) == [(0, 30)]
+    bakes, (occurrence,) = _occurrences(session)
+    assert bakes.contents[occurrence.content].ticks == 31
+    assert bakes.row(occurrence.ordinal, 31) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "spans"),
+    [
+        ("Grouped", [(0, 30), (60, 90)]),
+        ("Replaced", [(0, 30), (60, 90)]),
+        ("Assigned", [(0, 30)]),
+    ],
+)
+def test_every_way_into_and_out_of_the_scene_makes_the_stays(opened, name, spans):
+    assert _spans(opened(name)) == spans
+
+
+def test_a_world_leaving_by_an_unknown_path_mid_play_is_refused(opened):
+    with pytest.raises(ValueError, match="instant it did is not"):
+        opened("AssignedDuringAPlay")
+
+
+def test_an_animation_s_copies_of_a_world_are_inert(opened):
+    """FadeIn copies the worlds it fades and runs the copies' updaters: they
+    begin no stay and call no callback.
+    """
+    session = opened("FadedIn")
+    assert _spans(session) == [(0, 60), (0, 60)]
+    assert list(range(60)) == session.module.CALLS
+
+
+def test_resuming_updating_calls_no_callback(opened):
+    session = opened("Resumed")
+    assert list(range(30)) == session.module.CALLS
+    assert _spans(session) == [(0, 30)]
+
+
+def test_a_change_mid_play_takes_effect_at_its_tick_at_every_rate(opened):
+    """A force law added by a ``dt`` updater at tick 19 acts from tick 20,
+    whether or not a frame reads tick 19.
+    """
+    found = []
+    for fps in (15, 60):
+        session = opened("SteeredMidPlay", fps=fps)
+        bakes, (occurrence,) = _occurrences(session)
+        velocity = bakes.contents[occurrence.content].channels["velocity"].values
+        assert velocity[19, 0, 0] == 0.0
+        assert velocity[20, 0, 0] == pytest.approx(3 / 60, rel=1e-5)
+        found.append((occurrence.content, occurrence.declaration))
+    assert found[0] == found[1]
+
+
+def test_a_jointed_world_away_and_back_moves_as_if_it_stayed(opened):
+    """A pin with limits and a slide with a motor keep their declared frames
+    across a stay: the world that was away from 0.5 s to 1 s moves on from
+    where it left as the world that stayed moved on from there.
+    """
+    session = opened("Hinged")
+    bakes, (steady, left, back) = _occurrences(session)
+    assert [(o.first_tick, o.last_tick) for o in (steady, left, back)] == [
+        (0, 90),
+        (0, 30),
+        (60, 90),
+    ]
+    channels = {o.ordinal: bakes.contents[o.content].channels for o in (steady, back)}
+    for channel in ("pose", "velocity"):
+        assert (
+            channels[back.ordinal][channel].values.tobytes()
+            == channels[steady.ordinal][channel].values[30:61].tobytes()
+        )
+
+
+def test_the_declaration_keeps_the_order_across_kinds(opened):
+    first = _occurrences(opened("GravityFirst"))[1][0].declaration
+    after = _occurrences(opened("BodyFirst"))[1][0].declaration
+    assert first != after
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [("PushedOutOfPlane", "plane of a 2D world"), ("PushedNotANumber", "finite")],
+)
+def test_a_push_out_of_the_plane_is_refused(opened, name, message):
+    with pytest.raises(ValueError, match=message):
+        opened(name)
+
+
+def test_a_body_whose_class_overrides_the_family_walk_is_placed_whole(opened):
+    session = opened("DrawnByAnOverride")
+    bakes, (occurrence,) = _occurrences(session)
+    pose = bakes.contents[occurrence.content].channels["pose"].values
+    world = next(
+        m
+        for m in session.record.plays[-1].samples[-1].roots
+        if type(m).__name__ == "World"
+    )
+    (drawn,) = world.submobjects
+    assert drawn.points.mean(axis=0)[:2] == pytest.approx(
+        pose[30, 0, :2].astype(float), abs=1e-5
+    )
+
+
+def test_a_callback_closing_over_a_world_is_refused():
+    from arachne import Dot, World
+
+    world, other = World(), World()
+    body = world.body(Dot(), shape=None, mass=1.0)
+    there = other.body(Dot(), shape=None, mass=1.0)
+
+    def reads_the_world(state):
+        return {body: other.at_tick(state.tick).position(there)}
+
+    with pytest.raises(RaisedFinding) as raised:
+        world.add_force(reads_the_world)
+    assert raised.value.detail["names"] == ["other"]
+
+    def reads_the_handle(state):
+        return {body: state.position(there) - state.position(body)}
+
+    world.add_force(reads_the_handle)
+
+
 def test_a_callback_that_reads_a_mobject_is_refused_as_declared():
     from arachne import Dot, World
 
@@ -279,3 +443,60 @@ def test_a_world_routes_its_integrator_by_what_it_holds():
 
 
 RIGHT_UNIT = (1.0, 0.0, 0.0)
+
+
+def test_a_body_whose_class_replaces_its_points_is_refused():
+    from arachne import Circle, World
+
+    class Drawn(Circle):
+        @property
+        def points(self):
+            return super().points
+
+        @points.setter
+        def points(self, value):
+            Circle.points.fset(self, value)
+
+    with pytest.raises(TypeError, match="Drawn replaces them"):
+        World().body(Drawn())
+
+
+def test_a_world_holds_no_callable_of_the_scene():
+    """The callback lives apart from the world's mobject, which holds only
+    its name: nothing a capture keeps runs the scene's code.
+    """
+    import dataclasses
+
+    from arachne import Dot, World
+
+    world = World()
+    body = world.body(Dot(), shape=None, mass=1.0)
+    seen: list[int] = []
+
+    def push(state):
+        seen.append(state.tick)
+        return {body: (1.0, 0.0)}
+
+    world.add_force(push)
+
+    def callables(value, depth=0):
+        if callable(value) and not isinstance(value, type):
+            yield value
+        if depth > 6:
+            return
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            for field in dataclasses.fields(value):
+                yield from callables(getattr(value, field.name), depth + 1)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                yield from callables(item, depth + 1)
+
+    held = {
+        name: list(callables(value))
+        for name, value in vars(world).items()
+        if name != "updaters"
+    }
+    assert not any(held.values()), held
+    assert [item.name for item in world._declaration.callbacks] == [
+        "test_a_world_holds_no_callable_of_the_scene.<locals>.push"
+    ]

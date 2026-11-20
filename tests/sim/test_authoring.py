@@ -197,3 +197,29 @@ def test_an_open_stay_s_rows_are_read_before_it_is_sealed():
     assert occurrence.ordinal == stay.ordinal
     assert bakes.row(stay.ordinal, 1)["x"].tolist() == [1.5]
     assert bakes.contents[occurrence.content].ticks == 2
+
+
+@pytest.mark.parametrize(
+    ("given", "error", "message"),
+    [
+        ((1.0, 0.0, 1.0), ValueError, "plane of a 2D world"),
+        ((1.0, 0.0, float("nan")), ValueError, "finite"),
+        ((1.0, float("inf")), ValueError, "finite"),
+        (("1.0", 0.0), TypeError, "is a number"),
+        ((True, 0.0), TypeError, "is a number"),
+        ((1.0,), ValueError, "takes 2 numbers"),
+    ],
+)
+def test_a_vector_a_scene_gives_is_checked_before_any_arithmetic(given, error, message):
+    from arachne.simulation.declaration import given_vector
+
+    with pytest.raises(error, match=message):
+        given_vector(given, 2, "A pushed force")
+
+
+def test_a_checked_vector_keeps_the_scene_s_numbers():
+    from arachne.simulation.declaration import given_angular, given_vector
+
+    assert given_vector((0.1, 2, 0.0), 2, "v") == (0.1, 2.0)
+    assert given_vector(np.array([1.0, 2.0, 3.0]), 3, "v") == (1.0, 2.0, 3.0)
+    assert given_angular(0.5, 2, "w") == (0.5,)

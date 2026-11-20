@@ -47,7 +47,7 @@ __all__ = [
 ]
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from numbers import Real
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -103,6 +103,52 @@ def stored_vector(values: Any, dimension: int, what: str) -> tuple[float, ...]:
             f" {len(numbers)}."
         )
     return tuple(stored(number, what) for number in numbers)
+
+
+def given_number(value: Any, what: str) -> float:
+    """``value``, a finite real number a scene gives (not a bool, not a
+    string), as a Python float: what the authoring layer computes with before
+    the one conversion.
+    """
+    if isinstance(value, bool) or not isinstance(value, (Real, np.floating)):
+        raise TypeError(f"{what} is a number, not {value!r}.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{what} is a finite number, not {number!r}.")
+    return number
+
+
+def given_vector(values: Any, dimension: int, what: str) -> tuple[float, ...]:
+    """A vector a scene gives, its numbers checked before any arithmetic, as
+    ``dimension`` Python floats: a 2D world takes two numbers, or three whose
+    last is zero (a scene's vectors are three-dimensional).
+    """
+    numbers = [
+        given_number(number, what)
+        for number in np.asarray(values, dtype=object).ravel()
+    ]
+    if dimension == 2 and len(numbers) == 3:
+        if numbers[2] != 0.0:
+            raise ValueError(
+                f"{what} lies in the plane of a 2D world: its third number is"
+                f" zero, not {numbers[2]!r}."
+            )
+        numbers = numbers[:2]
+    if len(numbers) != dimension:
+        raise ValueError(
+            f"{what} takes {dimension} numbers in a {dimension}D world, not"
+            f" {len(numbers)}."
+        )
+    return tuple(numbers)
+
+
+def given_angular(value: Any, dimension: int, what: str) -> tuple[float, ...]:
+    """An angular quantity a scene gives, checked: one number in 2D, a
+    vector of three in 3D.
+    """
+    if dimension == 2:
+        return (given_number(value, what),)
+    return given_vector(value, 3, what)
 
 
 def stored_angular(value: Any, dimension: int, what: str) -> tuple[float, ...]:
@@ -415,17 +461,21 @@ class ForceItem:
 
 @dataclass(frozen=True, slots=True)
 class CallbackItem:
-    """A callback force: the scene's function, called once for each new tick
-    with the world's state at the tick before.
+    """A callback force, by its function's name: the function itself, called
+    once for each new tick with the world's state at the tick before, is held
+    apart from the world's mobject (:data:`.stay.CALLBACKS`).
     """
 
-    function: Callable[..., Any]
+    name: str
 
 
 @dataclass(frozen=True, slots=True)
 class Declaration:
-    """Everything a world was given, in order. ``integrator`` is the one it
-    was declared with, or once its first stay began the one it took.
+    """Everything a world was given. ``integrator`` is the one it was
+    declared with, or once its first stay began the one it took. ``order``
+    is the kind of each body, joint and force law (``"body"``, ``"joint"``,
+    ``"force"``) in the order they were declared, across kinds: the order the
+    solver is given them in.
     """
 
     dimension: int
@@ -434,6 +484,7 @@ class Declaration:
     joints: tuple[JointItem, ...] = ()
     forces: tuple[ForceItem, ...] = ()
     callbacks: tuple[CallbackItem, ...] = ()
+    order: tuple[str, ...] = ()
 
     @property
     def open(self) -> bool:

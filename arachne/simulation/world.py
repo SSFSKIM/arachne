@@ -12,12 +12,14 @@ the ``dt`` it is handed: each asks the scene clock for the tick
 (:mod:`.stay`). Naming ``dt`` is what keeps a ``wait`` over a world from
 being a held frame.
 
-Adding a world to the scene starts a stay; it ends at the last tick at or
-before the world leaves (its updater no longer runs: removed, or its
-updating suspended), and a world added again starts a new stay, and a new
-occurrence, from the state it was left in. A body is a handle
+A world's stays are its membership in the scene (:mod:`.stay`): one
+begins where it enters the family of the scene's mobjects and ends at the
+last tick at or before it leaves, a leave and an entry with no scene time
+between are one stay, and a world added again later starts a new stay, and
+a new occurrence, from the state it was left in. A body is a handle
 (:class:`Body`), not a mobject: a callback force reads bodies by handle from
-the :class:`WorldState` it is handed, never from a displayed mobject.
+the :class:`WorldState` it is handed, another world's bodies included,
+never from a displayed mobject.
 """
 
 from __future__ import annotations
@@ -33,9 +35,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from arachne.mobject.mobject import Mobject
-from arachne.mobject.values import FrozenPoints, freeze
 
-from . import inputs
+from . import inputs, stay
 from .declaration import (
     Attraction,
     BallJoint,
@@ -60,17 +61,19 @@ from .declaration import (
     Spring,
     SpringJoint,
     WeldJoint,
+    given_vector,
     measure,
     stored,
     stored_angular,
     stored_vector,
 )
-from .stay import closed_world, live_stay, open_world
+from .stay import CALLBACKS, closed_world, crate_of, live_stay, open_world
 
 if TYPE_CHECKING:
-    from arachne.timeline.bake import BakeRef
+    from fractions import Fraction
 
-    from .stay import Stay
+    from arachne.scene.scene import Scene
+    from arachne.timeline.bake import BakeRef
 
 #: What :meth:`World.body` takes a body's shape from by default.
 AUTO = "auto"
@@ -103,7 +106,9 @@ class WorldState:
     """A world's bodies at one tick, read-only, as the solver stored them:
     what a callback force is handed (the tick before the step it pushes) and
     what :meth:`World.at_tick` answers. ``tick`` is the scene's tick and
-    ``time`` its instant in seconds (``tick / 60``).
+    ``time`` its instant in seconds (``tick / 60``). A body of another world
+    in the scene is read at the same tick, from that world's own rows: how a
+    callback force reads another world.
     """
 
     __slots__ = ("_pose", "_velocity", "tick", "time", "world")
@@ -117,36 +122,45 @@ class WorldState:
         self._pose = pose
         self._velocity = velocity
 
-    def _row(self, body: Body) -> int:
-        if not isinstance(body, Body) or body.world is not self.world:
-            raise ValueError(f"{body!r} is not a body of this world.")
-        return body.index
+    def _of(self, body: Body) -> WorldState:
+        """The state ``body`` is read from: this one, or its own world's at
+        this tick.
+        """
+        if not isinstance(body, Body):
+            raise ValueError(f"{body!r} is not a body.")
+        if body.world is self.world:
+            return self
+        return body.world.at_tick(self.tick)
 
     def position(self, body: Body) -> np.ndarray:
         """``body``'s position, a point of the scene (``z`` 0 in 2D)."""
-        row = self._pose[self._row(body)]
-        return _point(row[:2] if self.world.dimension == 2 else row[:3])
+        state = self._of(body)
+        row = state._pose[body.index]
+        return _point(row[:2] if state.world.dimension == 2 else row[:3])
 
     def rotation(self, body: Body) -> float | np.ndarray:
         """``body``'s angle from its declared pose (2D), or its rotation from
         it as a unit quaternion ``x, y, z, w`` (3D).
         """
-        row = self._pose[self._row(body)]
-        if self.world.dimension == 2:
+        state = self._of(body)
+        row = state._pose[body.index]
+        if state.world.dimension == 2:
             return float(row[2])
         return _frozen(row[3:7].astype(float))
 
     def velocity(self, body: Body) -> np.ndarray:
         """``body``'s velocity (``z`` 0 in 2D)."""
-        row = self._velocity[self._row(body)]
-        return _point(row[:2] if self.world.dimension == 2 else row[:3])
+        state = self._of(body)
+        row = state._velocity[body.index]
+        return _point(row[:2] if state.world.dimension == 2 else row[:3])
 
     def angular_velocity(self, body: Body) -> float | np.ndarray:
         """``body``'s angular velocity: about the axis out of the plane (2D),
         or a vector (3D).
         """
-        row = self._velocity[self._row(body)]
-        if self.world.dimension == 2:
+        state = self._of(body)
+        row = state._velocity[body.index]
+        if state.world.dimension == 2:
             return float(row[2])
         return _frozen(row[3:6].astype(float))
 
@@ -182,6 +196,11 @@ class World(Mobject):
     ``state_at``'s declared quantities and :meth:`at_tick`, never from its
     mobjects.
 
+    A body's mobject is drawn by the engine's own points: a member of its
+    family whose class replaces the engine's ``points`` or the placement of
+    its points is refused, since the world places each member's points
+    itself.
+
     Without the engine's ``sim`` extra, making a world raises an
     :class:`ImportError` that names it.
     """
@@ -209,6 +228,25 @@ class World(Mobject):
         self.add_updater(closed_world)  # type: ignore[arg-type]
         if gravity is not None:
             self.add_force(Gravity(gravity))
+
+    def __deepcopy__(self, clone_from_id: dict[int, Any]) -> World:
+        """A copy is a world declared alike that never entered the scene:
+        its callback forces are this world's, and its stays its own.
+        """
+        copied = super().__deepcopy__(clone_from_id)
+        copied._bake = None
+        callbacks = CALLBACKS.get(self)
+        if callbacks is not None:
+            CALLBACKS[copied] = callbacks
+        return copied
+
+    def _scene_membership(
+        self, scene: Scene, present: bool, at: Fraction | None
+    ) -> None:
+        """The scene's notice that the world entered or left its mobjects'
+        family at ``at`` (``Scene._membership_changed``).
+        """
+        stay.membership(self, scene, present, at)
 
     # What it was given
 
@@ -272,6 +310,20 @@ class World(Mobject):
                 "A body joins a world before the world first enters the scene:"
                 " declare it with the world's other bodies, or in another world."
             )
+        refused = sorted(
+            {
+                type(member).__qualname__
+                for member in stay.drawn_members(mobject)
+                if not stay.placeable(member)
+            }
+        )
+        if refused:
+            raise TypeError(
+                "A body's mobject is drawn by the engine's own points:"
+                f" {', '.join(refused)} replaces them or their placement, which"
+                " the world cannot vouch for. Draw the body with a mobject of"
+                " another class."
+            )
         dimension = self.dimension
         centre = np.asarray(mobject.get_center(), dtype=float)
         position = stored_vector(centre[:dimension], dimension, "A body's position")
@@ -326,15 +378,12 @@ class World(Mobject):
             mass=point_mass,
             gravity_scale=stored(gravity_scale, "A body's gravity scale"),
             shapes=shapes,
-            rest=tuple(
-                freeze(member.points, FrozenPoints)
-                for member in mobject.family_members_with_points()
-            ),
+            rest=stay.rest_points(mobject),
         )
-        self._declare(
-            dataclasses.replace(
-                self._declaration, bodies=(*self._declaration.bodies, body)
-            )
+        self._declaration = dataclasses.replace(
+            self._declaration,
+            bodies=(*self._declaration.bodies, body),
+            order=(*self._declaration.order, "body"),
         )
         self._body_mobjects = (*self._body_mobjects, mobject)
         self.add(mobject)
@@ -375,25 +424,25 @@ class World(Mobject):
         """Join two of the world's bodies. Declared while the world is in the
         scene, it holds from the next tick.
         """
+        if self._declaration.integrator == "point_masses":
+            raise ValueError(
+                "A world of point masses has no joints: declare the world with"
+                ' integrator="solver".'
+            )
+        crate = self._crate_now()
         item = self._joint_item(joint)
         inputs.check_feature(f"joint.{item.kind}")
         if item.limits is not None:
             inputs.check_feature(f"joint.{item.kind}.limits")
         if item.motor is not None:
             inputs.check_feature(f"joint.{item.kind}.motor")
-        if self._declaration.integrator == "point_masses":
-            raise ValueError(
-                "A world of point masses has no joints: declare the world with"
-                ' integrator="solver".'
-            )
-        stay = self._live()
-        self._declare(
-            dataclasses.replace(
-                self._declaration, joints=(*self._declaration.joints, item)
-            )
+        if crate is not None:
+            stay.add_joint(crate, item)
+        self._declaration = dataclasses.replace(
+            self._declaration,
+            joints=(*self._declaration.joints, item),
+            order=(*self._declaration.order, "joint"),
         )
-        if stay is not None:
-            stay.add_joint(item)
 
     def add_force(self, force: Any) -> None:
         """Add a force law (:class:`Gravity`, :class:`Attraction`,
@@ -402,25 +451,26 @@ class World(Mobject):
         for each new tick with the :class:`WorldState` of the tick before,
         which returns what it pushes: a mapping from body to a force vector
         or a :class:`.Push` (a force and a torque). A callback makes the
-        world open; it reads bodies only from the state it is handed, and
-        another world through its :meth:`at_tick` (``sim.force_input``). A
-        force law declared while the world is in the scene acts from the next
-        tick; a callback joins a world before it enters the scene.
+        world open; it reads bodies only from the state it is handed, another
+        world's by their handles too, and holds no mobject, scene or world
+        (``sim.force_input``). A force law declared while the world is in the
+        scene acts from the next tick, at every frame rate; a callback joins a
+        world before it enters the scene.
         """
         if isinstance(
             force,
             (Gravity, Attraction, Spring, LinearDrag, QuadraticDrag, ConstantForce),
         ):
+            crate = self._crate_now()
             item = self._force_item(force)
             inputs.check_feature(f"force.{item.kind}")
-            stay = self._live()
-            self._declare(
-                dataclasses.replace(
-                    self._declaration, forces=(*self._declaration.forces, item)
-                )
+            if crate is not None:
+                stay.add_force(crate, item)
+            self._declaration = dataclasses.replace(
+                self._declaration,
+                forces=(*self._declaration.forces, item),
+                order=(*self._declaration.order, "force"),
             )
-            if stay is not None:
-                stay.add_force(item)
             return
         inputs.check_force(force)
         if self._bake is not None:
@@ -428,11 +478,11 @@ class World(Mobject):
                 "A callback force joins a world before the world first enters the"
                 " scene: declare it with the world's other forces."
             )
-        self._declare(
-            dataclasses.replace(
-                self._declaration,
-                callbacks=(*self._declaration.callbacks, CallbackItem(force)),
-            )
+        CALLBACKS[self] = (*CALLBACKS.get(self, ()), force)
+        name = getattr(force, "__qualname__", type(force).__qualname__)
+        self._declaration = dataclasses.replace(
+            self._declaration,
+            callbacks=(*self._declaration.callbacks, CallbackItem(str(name))),
         )
         if closed_world in self.updaters:
             self.remove_updater(closed_world)
@@ -440,56 +490,56 @@ class World(Mobject):
 
     def at_tick(self, tick: int) -> WorldState:
         """The world's bodies at the scene's tick ``tick`` (``t * 60``) of its
-        stay now: a closed world is advanced to it; an open world's tick must
-        have been stepped. The tick-indexed read of another world a callback
-        force makes; such a world is added to the scene before the world
-        whose force reads it.
+        stay now, a tick the scene has reached: a closed world is computed to
+        it; an open world's tick must have been stepped. A callback force
+        reads another world through the state it is handed instead.
         """
-        stay = self._live()
-        if stay is None:
+        live = live_stay(self)
+        if live is None:
             raise LookupError(
-                "World.at_tick reads a world while it is in the scene: add it to"
-                " the scene before the world whose force reads it."
+                "A world is read while it is in the scene: add it to the scene"
+                " before the world whose force reads it."
             )
-        return stay.state(tick)
+        return live.state(tick)
 
     # Internal
 
-    def _live(self) -> Stay | None:
-        return live_stay(self)
+    def _crate_now(self) -> Any | None:
+        """The world's solver's world in the running scene, computed through
+        the scene's tick if the world is in the scene: where a change
+        declared now takes effect.
+        """
+        live = live_stay(self)
+        if live is not None:
+            live.compute_through(live.now_tick())
+        return crate_of(self)
 
-    def _declare(self, declaration: Declaration) -> None:
-        stay = self._live()
-        if stay is not None:
-            stay.check_change()
-        self._declaration = declaration
+    def _pose(self, index: int) -> tuple[np.ndarray, np.ndarray]:
+        """Body ``index``'s centre and rotation as it stands now: at its
+        solver's latest row, or as declared.
+        """
+        crate = crate_of(self)
+        if crate is None:
+            item = self._declaration.bodies[index]
+            return _pose_point(item.position), np.eye(3)
+        row = crate.pose(crate.rows - 1, crate.rows)[0][index]
+        return stay.centre(row, self.dimension), stay.turn(row, self.dimension)
 
     def _local(self, index: int, point: Any, what: str) -> tuple[float, ...]:
         """The scene point ``point`` in body ``index``'s frame, as the body
-        stands now: declared, or at the current row of its stay.
+        stands now.
         """
         dimension = self.dimension
-        given = np.zeros(3)
-        values = np.asarray(point, dtype=float).ravel()
-        given[: len(values)] = values
-        stay = self._live()
-        if stay is not None:
-            centre, turn = stay.pose_now(index)
-        else:
-            item = self._declaration.bodies[index]
-            centre, turn = _pose_point(item.position), np.eye(3)
+        given = _pose_point(given_vector(point, dimension, what))
+        centre, turn = self._pose(index)
         local = turn.T @ (given - centre)
         return stored_vector(local[:dimension], dimension, what)
 
     def _axis(self, index: int, axis: Any, what: str) -> tuple[float, ...]:
         """The scene direction ``axis`` in body ``index``'s frame, as now."""
         dimension = self.dimension
-        given = np.zeros(3)
-        values = np.asarray(axis, dtype=float).ravel()
-        given[: len(values)] = values
-        stay = self._live()
-        turn = stay.pose_now(index)[1] if stay is not None else np.eye(3)
-        local = turn.T @ given
+        given = _pose_point(given_vector(axis, dimension, what))
+        local = self._pose(index)[1].T @ given
         return stored_vector(local[:dimension], dimension, what)
 
     def _extended(self, index: int, what: str) -> None:
@@ -505,10 +555,7 @@ class World(Mobject):
         return body.index
 
     def _centre(self, index: int) -> np.ndarray:
-        stay = self._live()
-        if stay is not None:
-            return stay.pose_now(index)[0]
-        return _pose_point(self._declaration.bodies[index].position)
+        return self._pose(index)[0]
 
     def _joint_item(self, joint: Any) -> JointItem:
         dimension = self.dimension
@@ -681,13 +728,13 @@ def _shape_of(mobject: Mobject, centre: np.ndarray, dimension: int) -> Any:
         and (dimension == 2 or math.isclose(width, mobject.depth, rel_tol=1e-9))
     ):
         return BallShape(width / 2)
-    members = mobject.family_members_with_points()
+    members = stay.drawn_members(mobject)
     if not members:
         raise ValueError(
             "A body's mobject has no points to take a shape from: declare its shape,"
             " or shape=None for a point."
         )
-    points = np.concatenate([member.points for member in members])
+    points = np.concatenate([stay.own_points(member) for member in members])
     return HullShape(points[:, :dimension] - centre[:dimension])
 
 

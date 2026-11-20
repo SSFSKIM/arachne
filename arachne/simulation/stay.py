@@ -1,41 +1,55 @@
 """A world's stays in the scene, each computed by the solver and kept as a
 bake occurrence (:mod:`arachne.timeline.bake`).
 
-A world advances by the tick of the scene clock, never by the ``dt`` its
-updater is handed (which is zero at a play's start, for the lint's entry
-state and after a play). Its updater, :func:`closed_world` or
-:func:`open_world`, finds the world's stay through the running recorder's
-record, whose bakes hold what computes it (:class:`Stay`, never the world's
-mobject), and there:
+**A stay is the world's membership in the scene.** The scene tells a world
+when it enters or leaves the family of the scene's mobjects
+(``Scene._membership_changed``, which calls :func:`membership`): a stay
+begins where the world enters, and ends where it leaves, at the last tick at
+or before the instant it left. A world that leaves and enters again with no
+scene time between (``bring_to_front``, a ``remove`` and an ``add`` between
+plays) stays once. A world that left while scene time passed has its stay
+sealed, and one added again later starts a new stay, and a new occurrence,
+from the state it was left in. A copy of a world (an animation's) is never
+told: its updater finds no stay and does nothing.
 
-- begins a stay where the world enters the scene: the solver's world is built
-  from the declaration, from the state the last stay left it in if it had
-  one, and the record reserves the stay's occurrence;
-- ends the stay that was open when the world was away (its updater did not
-  run since an earlier play, and time passed): sealed at the last tick at or
-  before it left;
-- computes the rows through the current tick: a closed world in one call; an
-  open one a step at a time, calling its callbacks once for each new tick
-  with the state at the tick before;
-- places each moving body's mobject at the current row: its drawing as
-  declared under the body's rigid motion since, so a frame between ticks
-  shows the last tick at or before it.
+**One solver's world per world per run**, held by the run's record
+(:data:`_RUNS`), never by a mobject: built from the declaration where the
+world first enters, in the order its bodies, joints and forces were
+declared, and continued by every later stay, so a joint's frames, a slide's
+origin and a pin's angle zero are the ones declared, whatever the world did
+in between. A change declared while the world is in the scene is made at
+the scene's tick: the world is first computed through that tick, at every
+frame rate. One declared while it is away acts from its next stay's first
+step.
+
+A world advances by the tick of the scene clock, never by the ``dt`` its
+updater is handed. Its updater (:func:`closed_world`, :func:`open_world`)
+computes the rows through the current tick, a closed world in one call, an
+open one a step at a time, calling its callbacks once for each new tick with
+the state at the tick before, and places each moving body's mobject at the
+current row: its drawing as declared under the body's rigid motion since,
+so a frame between ticks shows the last tick at or before it. An evaluation
+with ``dt == 0`` (a play's start, the lint's entry state, the evaluation
+after a play, ``resume_updating``) steps no open world and calls no
+callback; a closed world's rows are the solver's alone, and it is computed
+to the tick a frame reads at any evaluation.
 
 A stay still open when the scene's script has ended is sealed when the
-record's bakes are first read (:meth:`Stay.settle`): a world still in the
-scene at the end has been advanced to the scene's last tick. Before that, the
-stay's computed rows through its latest tick are readable through the bakes
-as a sealed occurrence's are (:meth:`Stay.row`), so a lint's forward run
-reads them while the script runs.
+record's bakes are first read (:meth:`Stay.settle`), through the scene's
+last tick. Before that, its computed rows are readable through the bakes as
+a sealed occurrence's are (:meth:`Stay.row`).
 """
 
 from __future__ import annotations
 
-__all__ = ["Stay", "closed_world", "live_stay", "open_world"]
+__all__ = ["Stay", "closed_world", "live_stay", "membership", "open_world"]
 
+import dataclasses
 import hashlib
+import inspect
 import math
-from collections.abc import Mapping
+import weakref
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -43,7 +57,7 @@ import numpy as np
 
 from arachne.mobject.mobject import Mobject
 from arachne.mobject.placement import Placement
-from arachne.mobject.values import FrozenPoints
+from arachne.mobject.values import FrozenPoints, freeze
 from arachne.timeline import recorder as _recorder
 from arachne.timeline.bake import (
     BakeContent,
@@ -57,15 +71,48 @@ from arachne.timeline.bake import (
 )
 from arachne.timeline.clock import TICK_RATE
 
-from .declaration import Declaration, ForceItem, JointItem, Push, stored
+from .declaration import (
+    BodyItem,
+    Declaration,
+    ForceItem,
+    JointItem,
+    Push,
+    given_angular,
+    given_vector,
+    stored,
+)
 
 if TYPE_CHECKING:
     from fractions import Fraction
 
+    from arachne.scene.scene import Scene
     from arachne.timeline.record import Record
     from arachne.timeline.recorder import Recorder
 
     from .world import World, WorldState
+
+
+class _Run:
+    """A world's part in one run: its solver's world and its open stay."""
+
+    __slots__ = ("crate", "stay")
+
+    def __init__(self, crate: Any) -> None:
+        self.crate = crate
+        self.stay: Stay | None = None
+
+
+#: Each run's worlds, by the record of the run: what computes them.
+_RUNS: weakref.WeakKeyDictionary[Record, weakref.WeakKeyDictionary[World, _Run]] = (
+    weakref.WeakKeyDictionary()
+)
+
+#: Each world's callback forces, in the order declared: the scene's
+#: functions, held apart from the world's mobject, which holds a reference to
+#: each (:class:`.declaration.CallbackItem`).
+CALLBACKS: weakref.WeakKeyDictionary[World, tuple[Callable[..., Any], ...]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def closed_world(world: World, dt: float) -> None:
@@ -74,62 +121,105 @@ def closed_world(world: World, dt: float) -> None:
     only at the ticks a frame reads (:mod:`arachne.timeline.ticking`): the
     solver computes the ticks between in one call.
     """
-    reach(world)
+    reach(world, stepping=True)
 
 
 def open_world(world: World, dt: float) -> None:
-    """An open world's updater. It reads ``dt`` (and nothing of it), so a
-    ticked play runs it at every tick, where it calls the world's callbacks
-    for that tick.
+    """An open world's updater. It reads ``dt``, so a ticked play runs it at
+    every tick, where it calls the world's callbacks for that tick; at an
+    evaluation with ``dt == 0`` it calls none.
     """
-    _every_tick = dt
-    reach(world)
+    reach(world, stepping=dt != 0)
+
+
+def _run_of(world: World) -> _Run | None:
+    """``world``'s part in the run of the scene running now, if it has one."""
+    recorder = _recorder.running()
+    if recorder is None or recorder.record is None:
+        return None
+    worlds = _RUNS.get(recorder.record)
+    return None if worlds is None else worlds.get(world)
 
 
 def live_stay(world: World) -> Stay | None:
-    """``world``'s open stay in the record of the scene running now, if any."""
-    ref = world._bake
-    recorder = _recorder.running()
-    if ref is None or recorder is None or recorder.record is None:
-        return None
-    bakes = recorder.record.bakes
-    if bakes is None:
-        return None
-    try:
-        stay = bakes.live(ref.ordinal)
-    except KeyError:
-        return None
-    if isinstance(stay, Stay) and stay.world is world and stay.recorder is recorder:
-        return stay
-    return None
+    """``world``'s stay in the scene running now, while it is in the scene."""
+    run = _run_of(world)
+    stay = None if run is None else run.stay
+    return stay if stay is not None and stay.left_at is None else None
 
 
-def reach(world: World) -> None:
-    """Bring ``world`` to the scene clock's tick: its stay begun or ended as
-    it entered or left the scene, its rows computed through the tick, its
-    bodies placed there.
+def crate_of(world: World) -> Any | None:
+    """``world``'s solver's world in the run of the scene running now, once
+    it has entered the scene.
     """
-    recorder = _recorder.running()
-    if recorder is None:
-        return
-    record = recorder.ensure_record()
-    now = recorder.scene.time
-    tick = math.floor(now * TICK_RATE)
-    play = len(record.plays) - 1
+    run = _run_of(world)
+    return None if run is None else run.crate
+
+
+def reach(world: World, *, stepping: bool) -> None:
+    """Bring ``world``, while it is in the scene, to the scene clock's tick:
+    its rows computed through the tick (an open world's only when
+    ``stepping``), its bodies placed at the last row computed.
+    """
     stay = live_stay(world)
-    if stay is not None and not stay.continues(play, now):
-        stay.seal()
-        stay = None
     if stay is None:
-        stay = Stay.begin(world, recorder, record, tick, now)
-    stay.reach(tick, play, now)
-    stay.place(tick)
+        return
+    tick = stay.now_tick()
+    if stepping or not stay.crate.open:
+        stay.compute_through(tick)
+    stay.place(min(tick, stay.computed_tick))
+
+
+def membership(world: World, scene: Scene, present: bool, at: Fraction | None) -> None:
+    """``world`` entered (``present``) or left the family of ``scene``'s
+    mobjects at the scene's instant ``at``: its stay begins, or ends there.
+    """
+    recorder = scene._arachne_timeline
+    if recorder is not _recorder.running():
+        return
+    if at is None:
+        raise ValueError(
+            f"A world {'entered' if present else 'left'} the scene during a play"
+            " other than through the scene's methods (a group's add or remove, or"
+            " an assignment to the scene's mobjects): the instant it did is not"
+            " known, so neither is its stay. Add and remove it with Scene.add and"
+            " Scene.remove, or between plays."
+        )
+    record = recorder.ensure_record()
+    worlds = _RUNS.setdefault(record, weakref.WeakKeyDictionary())
+    run = worlds.get(world)
+    stay = None if run is None else run.stay
+    if not present:
+        if stay is not None and stay.left_at is None:
+            stay.leave(at)
+        return
+    if stay is not None:
+        if stay.left_at is None:
+            return
+        if stay.left_at == at:
+            stay.left_at = None
+            stay.left_declaration = None
+            return
+        stay.seal()
+    if run is None:
+        declaration = world._declaration
+        if declaration.integrator is None:
+            declaration = world._declaration = dataclasses.replace(
+                declaration, integrator=declaration.routed()
+            )
+        if len(CALLBACKS.get(world, ())) != len(declaration.callbacks):
+            raise ValueError(
+                "An open world's callback forces are not held for it: make the"
+                " world in the scene that runs it."
+            )
+        run = worlds[world] = _Run(build(declaration))
+    run.stay = Stay.begin(world, recorder, record, run, at)
 
 
 class Stay:
-    """One stay of a world in the scene while it is open: the solver's world
-    that computes it, held by the record's bakes under its ordinal, never by
-    a mobject.
+    """One stay of a world in the scene: the rows of its solver's world from
+    the state the stay began in, held by the record's bakes under its
+    ordinal while it is open.
     """
 
     def __init__(
@@ -137,20 +227,26 @@ class Stay:
         world: World,
         recorder: Recorder,
         record: Record,
-        crate: Any,
+        run: _Run,
         first_tick: int,
-        now: Fraction,
     ) -> None:
         self.world = world
         self.recorder = recorder
         self.record = record
-        self.crate = crate
+        self.run = run
+        self.crate = run.crate
+        #: The solver's row of the stay's first tick.
+        self.base: int = int(self.crate.rows) - 1
         self.first_tick = first_tick
         self.ordinal = -1
-        #: The play and instant the world was last brought to.
-        self.last_play: int | None = None
-        self.last_time = now
-        #: The row the bodies were last placed at.
+        #: The instant the world left the scene, while it may enter again
+        #: with no scene time between.
+        self.left_at: Fraction | None = None
+        #: The declaration's bytes as it left, which a change while it is
+        #: away does not reach.
+        self.left_declaration: bytes | None = None
+        self.sealed = False
+        #: The solver's row the bodies were last placed at.
         self._placed = -1
 
     @classmethod
@@ -159,56 +255,55 @@ class Stay:
         world: World,
         recorder: Recorder,
         record: Record,
-        tick: int,
-        now: Fraction,
+        run: _Run,
+        at: Fraction,
     ) -> Stay:
-        """Begin ``world``'s stay at ``tick``: from the state its last stay
-        left it in, if it had one.
+        """Begin ``world``'s stay at the instant ``at``: from the state its
+        last stay left it in, if it had one, else as declared.
         """
-        bakes = bakes_of(record)
-        start = None
-        if world._bake is not None:
-            occurrence = bakes.occurrence(world._bake.ordinal)
-            if occurrence is not None:
-                start = bakes.row(occurrence.ordinal, occurrence.last_tick)
-        declaration = world._declaration
-        if declaration.integrator is None:
-            declaration = world._declaration = _fixed(declaration)
-        stay = cls(world, recorder, record, build(declaration, start), tick, now)
-        stay.ordinal = bakes.begin(stay)
+        if run.crate.rows == 0:
+            run.crate.advance_to(0)
+        stay = cls(world, recorder, record, run, math.floor(at * TICK_RATE))
+        stay.ordinal = bakes_of(record).begin(stay)
         world._bake = BakeRef(stay.ordinal)
         return stay
 
-    def continues(self, play: int, now: Fraction) -> bool:
-        """Whether the world stayed in the scene since it was last brought
-        to the clock: in the same play, or at the same instant (between
-        plays no time passes). Otherwise it was away while time passed.
-        """
-        return play == self.last_play or now == self.last_time
+    def now_tick(self) -> int:
+        """The scene clock's tick."""
+        return math.floor(self.recorder.scene.time * TICK_RATE)
+
+    @property
+    def computed_tick(self) -> int:
+        """The latest tick the solver has computed for the stay."""
+        return self.first_tick + int(self.crate.rows) - 1 - self.base
 
     @property
     def last_tick(self) -> int:
-        """The stay's latest tick: the last at or before its latest instant."""
-        return math.floor(self.last_time * TICK_RATE)
+        """The stay's last tick: the one at or before the instant it left,
+        else the latest computed.
+        """
+        if self.left_at is not None:
+            return math.floor(self.left_at * TICK_RATE)
+        return self.computed_tick
 
-    def reach(self, tick: int, play: int, now: Fraction) -> None:
-        """Compute the rows through ``tick``."""
-        index = tick - self.first_tick
+    def _solver_row(self, tick: int) -> int:
+        return self.base + tick - self.first_tick
+
+    def compute_through(self, tick: int) -> None:
+        """Compute the rows through ``tick``: a closed world's in one call,
+        an open world's a step at a time.
+        """
         crate = self.crate
         if not crate.open:
-            crate.advance_to(index)
-        else:
-            if crate.rows == 0:
-                crate.advance_to(0)
-            while crate.rows <= index:
-                self._step(crate.rows)
-        self.last_play = play
-        self.last_time = now
+            crate.advance_to(self._solver_row(tick))
+            return
+        while self.computed_tick < tick:
+            self._step(crate.rows)
 
     def _step(self, row: int) -> None:
-        """Compute an open world's row ``row``: call each callback once,
-        in declaration order, with the state of the row before, and step
-        under what they push.
+        """Compute an open world's solver row ``row``: call each callback
+        once, in declaration order, with the state of the row before, and
+        step under what they push.
         """
         world, crate = self.world, self.crate
         dimension = world.dimension
@@ -217,121 +312,104 @@ class Stay:
         state = self._state_of(row - 1)
         forces = [[0.0] * dimension for _ in range(count)]
         torques = [[0.0] * angular for _ in range(count)]
-        for callback in world._declaration.callbacks:
-            pushed = callback.function(state)
-            for body, push in _pushes(pushed, world):
+        for callback in CALLBACKS[world]:
+            for body, push in _pushes(callback(state), world):
                 force, torque = (
                     (push.force, push.torque)
                     if isinstance(push, Push)
                     else (push, None)
                 )
                 if force is not None:
-                    _add(forces[body.index], force, dimension, "A pushed force")
+                    _add(
+                        forces[body.index],
+                        given_vector(force, dimension, "A pushed force"),
+                    )
                 if torque is not None:
-                    _add(torques[body.index], torque, angular, "A pushed torque")
+                    _add(
+                        torques[body.index],
+                        given_angular(torque, dimension, "A pushed torque"),
+                    )
         crate.step(
             _floats(forces, "A pushed force"), _floats(torques, "A pushed torque")
         )
 
-    def _state_of(self, index: int) -> WorldState:
+    def _state_of(self, row: int) -> WorldState:
         from .world import WorldState
 
         crate = self.crate
         return WorldState(
             self.world,
-            self.first_tick + index,
-            crate.pose(index, index + 1)[0],
-            crate.velocity(index, index + 1)[0],
+            self.first_tick + row - self.base,
+            crate.pose(row, row + 1)[0],
+            crate.velocity(row, row + 1)[0],
         )
 
     def state(self, tick: int) -> WorldState:
-        """The world's bodies at the scene's ``tick``: a closed world is
-        advanced to it, an open world's must have been stepped.
+        """The world's bodies at the scene's ``tick`` of the stay: a closed
+        world is computed to it; an open world's must have been stepped.
         """
-        index = tick - self.first_tick
-        crate = self.crate
-        if index < 0:
+        if tick < self.first_tick:
             raise LookupError(
                 f"The world's stay began at tick {self.first_tick}, after tick {tick}."
             )
-        if not crate.open:
-            crate.advance_to(index)
-        elif index >= crate.rows:
+        if tick > self.now_tick():
             raise LookupError(
-                f"An open world has stepped to tick {self.first_tick + crate.rows - 1},"
-                f" not yet to tick {tick}: read it at a tick it has reached."
+                f"The scene is at tick {self.now_tick()}, before tick {tick}: a"
+                " world is read at a tick the scene has reached."
             )
-        return self._state_of(index)
-
-    def pose_now(self, body: int) -> tuple[np.ndarray, np.ndarray]:
-        """Body ``body``'s centre and rotation matrix at the stay's latest
-        tick.
-        """
-        index = self.last_tick - self.first_tick
-        pose = self.crate.pose(index, index + 1)[0][body]
-        return _centre(pose, self.world.dimension), _turn(pose, self.world.dimension)
+        if self.left_at is not None and tick > self.last_tick:
+            raise LookupError(
+                f"The world left the scene after tick {self.last_tick}; its stay"
+                f" holds no tick {tick}."
+            )
+        if not self.crate.open:
+            self.compute_through(tick)
+        elif tick > self.computed_tick:
+            raise LookupError(
+                f"An open world has stepped to tick {self.computed_tick}, not yet"
+                f" to tick {tick}: read it at a tick it has reached."
+            )
+        return self._state_of(self._solver_row(tick))
 
     def place(self, tick: int) -> None:
         """Place each moving body's mobject at the row of ``tick``."""
-        index = tick - self.first_tick
-        if index == self._placed:
+        row = self._solver_row(tick)
+        if row == self._placed:
             return
-        self._placed = index
+        self._placed = row
         world = self.world
-        dimension = world.dimension
-        pose = self.crate.pose(index, index + 1)[0]
-        declaration = world._declaration
+        pose = self.crate.pose(row, row + 1)[0]
         for number, (item, mobject) in enumerate(
-            zip(declaration.bodies, world._body_mobjects, strict=True)
+            zip(world._declaration.bodies, world._body_mobjects, strict=True)
         ):
-            if item.fixed:
-                continue
-            row = pose[number]
-            turn = _turn(row, dimension)
-            linear = turn.T
-            declared = np.zeros(3)
-            declared[:dimension] = item.position
-            offset = _centre(row, dimension) - declared @ linear
-            _place(mobject, item.rest, linear, offset)
+            if not item.fixed:
+                _place_body(mobject, item, pose[number], world.dimension)
 
-    def check_change(self) -> None:
-        """Refuse a change to the world when rows past the scene's tick
-        exist: a read ahead (another world's force) computed them without it.
+    def leave(self, at: Fraction) -> None:
+        """The world left the scene at ``at``: its stay is computed through
+        the tick at or before it, and holds no later one.
         """
-        now = math.floor(self.recorder.scene.time * TICK_RATE)
-        computed = self.first_tick + self.crate.rows - 1
-        if computed > now:
-            raise ValueError(
-                f"The world has computed rows to tick {computed}, past the scene's"
-                f" tick {now} (another world's force read it ahead): change it"
-                " before that read, or between plays where nothing reads ahead."
-            )
-
-    def add_joint(self, item: JointItem) -> None:
-        _add_joint(self.crate, item)
-
-    def add_force(self, item: ForceItem) -> None:
-        _add_force(self.crate, item)
+        self.compute_through(math.floor(at * TICK_RATE))
+        self.left_at = at
+        self.left_declaration = self.crate.declaration_bytes()
 
     # The record's side
 
     def row(self, tick: int) -> Row | None:
-        """The stay's row at ``tick`` while it is open: through its latest
-        tick, else ``None``.
+        """The stay's row at ``tick`` while it is open: through its last
+        tick, of the rows computed, else ``None``.
         """
-        index = tick - self.first_tick
-        if not 0 <= index <= self.last_tick - self.first_tick:
+        if not self.first_tick <= tick <= min(self.last_tick, self.computed_tick):
             return None
-        if index >= self.crate.rows:
-            return None
+        row = self._solver_row(tick)
         crate = self.crate
         return Row(
-            index,
+            tick - self.first_tick,
             tick,
             MappingProxyType(
                 {
-                    "pose": crate.pose(index, index + 1)[0],
-                    "velocity": crate.velocity(index, index + 1)[0],
+                    "pose": crate.pose(row, row + 1)[0],
+                    "velocity": crate.velocity(row, row + 1)[0],
                 }
             ),
         )
@@ -342,16 +420,22 @@ class Stay:
             self.seal()
 
     def seal(self) -> None:
-        """Seal the stay through its latest tick: its rows as the bake's
-        content, each body's mobject bound to its rows.
+        """Seal the stay through its last tick (a world still in the scene
+        is computed to the scene's): its rows as the bake's content, each
+        body's mobject bound to its rows.
         """
+        if self.left_at is None:
+            self.compute_through(self.now_tick())
         crate = self.crate
         count = self.last_tick - self.first_tick + 1
+        start, stop = self.base, self.base + count
         producer, version, solver, solver_version, integrator, build, features = (
             crate.identity()
         )
         pose_unit, velocity_unit = crate.units()
-        contacts = np.asarray(crate.contacts())
+        contacts = crate.contacts()
+        events = contacts[(contacts[:, 0] >= start) & (contacts[:, 0] < stop)].copy()
+        events[:, 0] -= start
         content = BakeContent(
             BakeIdentity(
                 producer,
@@ -364,97 +448,85 @@ class Stay:
             ),
             count,
             {
-                "pose": Channel("f32", pose_unit, crate.pose(0, count)),
-                "velocity": Channel("f32", velocity_unit, crate.velocity(0, count)),
+                "pose": Channel("f32", pose_unit, crate.pose(start, stop)),
+                "velocity": Channel("f32", velocity_unit, crate.velocity(start, stop)),
             },
-            {"contact": EventTable(contacts[contacts[:, 0] < count])},
+            {"contact": EventTable(events)},
         )
         bindings = []
         for number, mobject in enumerate(self.world._body_mobjects):
             body = self.record.origin(mobject).id
             bindings.append(Binding(body, "pose", number))
             bindings.append(Binding(body, "velocity", number))
+        declared = (
+            crate.declaration_bytes()
+            if self.left_declaration is None
+            else self.left_declaration
+        )
+        self.sealed = True
+        if self.run.stay is self:
+            self.run.stay = None
         bakes_of(self.record).seal(
             self.ordinal,
             content,
             first_tick=self.first_tick,
             closed=not crate.open,
-            declaration=hashlib.blake2b(
-                crate.declaration_bytes(), digest_size=16
-            ).digest(),
+            declaration=hashlib.blake2b(declared, digest_size=16).digest(),
             bindings=tuple(bindings),
         )
 
 
-def _fixed(declaration: Declaration) -> Declaration:
-    """``declaration`` with the integrator it takes, fixed from its first
-    stay on.
-    """
-    import dataclasses
-
-    return dataclasses.replace(declaration, integrator=declaration.routed())
-
-
-def build(declaration: Declaration, start: Row | None) -> Any:
-    """The solver's world for a stay of ``declaration``: each body as
-    declared, or as ``start`` (the last row of the stay before) holds it.
+def build(declaration: Declaration) -> Any:
+    """The solver's world for ``declaration``: its bodies, joints and force
+    laws added in the order they were declared.
     """
     import arachne_sim
 
-    dimension = declaration.dimension
     crate = arachne_sim.World(
-        dimension, integrator=declaration.routed(), open=declaration.open
+        declaration.dimension,
+        integrator=declaration.routed(),
+        open=declaration.open,
     )
-    left = 0 if start is None else len(start["pose"])
-    if start is not None and any(
-        joint.limits is not None or joint.motor is not None
-        for joint in declaration.joints
-    ):
-        raise ValueError(
-            "A world with a joint that has limits or a motor is in the scene for one"
-            " stay: their angles count from the pose it was declared in. Keep it in"
-            " the scene, or declare a new world."
-        )
-    for number, body in enumerate(declaration.bodies):
-        if number < left:
-            assert start is not None
-            pose, velocity = start["pose"][number], start["velocity"][number]
-            position = pose[:dimension]
-            rotation = pose[dimension:]
-            linear, turning = velocity[:dimension], velocity[dimension:]
+    bodies, joints, forces = (
+        iter(declaration.bodies),
+        iter(declaration.joints),
+        iter(declaration.forces),
+    )
+    for kind in declaration.order:
+        if kind == "body":
+            add_body(crate, next(bodies))
+        elif kind == "joint":
+            add_joint(crate, next(joints))
         else:
-            position = _f32(body.position)
-            rotation = _f32(body.rotation)
-            linear = _f32(body.velocity)
-            turning = _f32(body.angular_velocity)
-        crate.add_body(
-            position=np.ascontiguousarray(position, dtype=np.float32),
-            rotation=np.ascontiguousarray(rotation, dtype=np.float32),
-            velocity=np.ascontiguousarray(linear, dtype=np.float32),
-            angular_velocity=np.ascontiguousarray(turning, dtype=np.float32),
-            mass=np.float32(body.mass),
-            gravity_scale=np.float32(body.gravity_scale),
-            fixed=body.fixed,
-        )
-        for shape in body.shapes:
-            crate.add_shape(
-                number,
-                shape.kind,
-                _f32(shape.size),
-                position=_f32(shape.position),
-                rotation=_f32(shape.rotation),
-                density=np.float32(shape.density),
-                friction=np.float32(shape.friction),
-                restitution=np.float32(shape.restitution),
-            )
-    for joint in declaration.joints:
-        _add_joint(crate, joint)
-    for force in declaration.forces:
-        _add_force(crate, force)
+            add_force(crate, next(forces))
     return crate
 
 
-def _add_joint(crate: Any, joint: JointItem) -> None:
+def add_body(crate: Any, body: BodyItem) -> None:
+    number = crate.bodies
+    crate.add_body(
+        position=_f32(body.position),
+        rotation=_f32(body.rotation),
+        velocity=_f32(body.velocity),
+        angular_velocity=_f32(body.angular_velocity),
+        mass=np.float32(body.mass),
+        gravity_scale=np.float32(body.gravity_scale),
+        fixed=body.fixed,
+    )
+    for shape in body.shapes:
+        crate.add_shape(
+            number,
+            shape.kind,
+            _f32(shape.size),
+            position=_f32(shape.position),
+            rotation=_f32(shape.rotation),
+            density=np.float32(shape.density),
+            friction=np.float32(shape.friction),
+            restitution=np.float32(shape.restitution),
+        )
+
+
+def add_joint(crate: Any, joint: JointItem) -> None:
     numbers = {name: np.float32(value) for name, value in joint.numbers}
     number = crate.add_joint(
         joint.kind,
@@ -478,7 +550,7 @@ def _add_joint(crate: Any, joint: JointItem) -> None:
         )
 
 
-def _add_force(crate: Any, force: ForceItem) -> None:
+def add_force(crate: Any, force: ForceItem) -> None:
     numbers = {name: _numbers(values) for name, values in force.numbers}
     if force.kind == "gravity":
         crate.add_gravity(numbers["acceleration"])
@@ -517,15 +589,10 @@ def _floats(rows: list[list[float]], what: str) -> np.ndarray:
     )
 
 
-def _add(into: list[float], given: Any, count: int, what: str) -> None:
-    """Add a pushed vector (a 2D world's may carry a zero ``z``) to ``into``."""
-    values = np.asarray(given, dtype=float).ravel()
-    if len(values) == 3 and count == 2:
-        values = values[:2]
-    if len(values) != count:
-        raise ValueError(f"{what} takes {count} numbers, not {len(values)}.")
-    for k in range(count):
-        into[k] += float(values[k])
+def _add(into: list[float], given: tuple[float, ...]) -> None:
+    """Add a pushed vector, its numbers already checked, to ``into``."""
+    for k, value in enumerate(given):
+        into[k] += value
 
 
 def _pushes(pushed: Any, world: World) -> list[tuple[Any, Any]]:
@@ -549,13 +616,14 @@ def _pushes(pushed: Any, world: World) -> list[tuple[Any, Any]]:
     return found
 
 
-def _centre(row: np.ndarray, dimension: int) -> np.ndarray:
+def centre(row: np.ndarray, dimension: int) -> np.ndarray:
+    """A row's position, as a point of the scene."""
     point = np.zeros(3)
     point[:dimension] = row[:dimension]
     return point
 
 
-def _turn(row: np.ndarray, dimension: int) -> np.ndarray:
+def turn(row: np.ndarray, dimension: int) -> np.ndarray:
     """The rotation a row's pose holds, as a matrix acting on column
     vectors: by its angle (2D), or by its quaternion ``x, y, z, w`` (3D,
     normalised; a product of its numbers, no trigonometry).
@@ -587,28 +655,76 @@ def _turn(row: np.ndarray, dimension: int) -> np.ndarray:
     )
 
 
-def _place(
-    mobject: Mobject,
-    rest: tuple[FrozenPoints, ...],
-    linear: np.ndarray,
-    offset: np.ndarray,
-) -> None:
-    """Place each member of ``mobject``'s family that has points: its points
-    as declared, under ``points @ linear + offset``.
+# A body's drawing is read and placed through the engine's own walk of its
+# family and its own placement of each member's points, which no subclass of
+# the body's mobject overrides; World.body refuses a drawing whose members'
+# class replaces the engine's points or its placement.
+
+
+def family(mobject: Mobject) -> list[Mobject]:
+    """``mobject``'s family, through the submobject lists its members hold."""
+    found: list[Mobject] = []
+    seen: set[int] = set()
+    stack = [mobject]
+    while stack:
+        member = stack.pop()
+        if id(member) in seen:
+            continue
+        seen.add(id(member))
+        found.append(member)
+        stack.extend(reversed(member.__dict__.get("submobjects", ())))
+    return found
+
+
+def own_points(member: Mobject) -> np.ndarray:
+    """``member``'s points, as the engine reads them."""
+    points: np.ndarray = Mobject.points.fget(member)  # type: ignore[attr-defined]
+    return points
+
+
+def drawn_members(mobject: Mobject) -> list[Mobject]:
+    """The members of ``mobject``'s family that have points."""
+    return [member for member in family(mobject) if len(own_points(member))]
+
+
+def placeable(member: Mobject) -> bool:
+    """Whether the engine places ``member``'s points itself: its class keeps
+    the engine's ``points`` and places them.
     """
-    members = mobject.family_members_with_points()
-    if len(members) != len(rest):
+    kind = type(member)
+    return (
+        all(
+            inspect.getattr_static(kind, name) is Mobject.__dict__[name]
+            for name in ("points", "_points")
+        )
+        and inspect.getattr_static(kind, "_places_points") is True
+    )
+
+
+def rest_points(mobject: Mobject) -> tuple[FrozenPoints, ...]:
+    """The drawing a body moves, as declared."""
+    return tuple(freeze(own_points(m), FrozenPoints) for m in drawn_members(mobject))
+
+
+def _place_body(
+    mobject: Mobject, item: BodyItem, row: np.ndarray, dimension: int
+) -> None:
+    """Place each member of a body's drawing: its points as declared, under
+    the body's rigid motion since (``points @ linear + offset``).
+    """
+    members = drawn_members(mobject)
+    if len(members) != len(item.rest):
         raise ValueError(
             "A body's mobject has other members with points than when it was"
             " declared: declare a body once its drawing is complete."
         )
+    linear = turn(row, dimension).T
+    declared = np.zeros(3)
+    declared[:dimension] = item.position
+    offset = centre(row, dimension) - declared @ linear
     linear.flags.writeable = False
     offset.flags.writeable = False
-    for member, points in zip(members, rest, strict=True):
-        placement = Placement(points, linear, offset)
-        if member._places_points and type(member).points is Mobject.points:
-            own = member.__dict__
-            own["_placement"] = placement
-            own.pop("_points", None)
-        else:
-            member.points = placement.points
+    for member, points in zip(members, item.rest, strict=True):
+        own = member.__dict__
+        own["_placement"] = Placement(points, linear, offset)
+        own.pop("_points", None)

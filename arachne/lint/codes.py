@@ -416,9 +416,9 @@ _TABLE = (
         " frames a displayed mobject holds the last frame's values, not the"
         " tick's, so a force computed from one changes with the frame rate;"
         " raised as the force is declared",
-        "Read each body from the world state the callback is handed, by its"
-        " handle, and another world through its at_tick; keep mobjects and the"
-        " scene out of the callback's closure, defaults and globals.",
+        "Read each body, another world's too, by its handle from the world"
+        " state the callback is handed; keep mobjects, worlds and the scene out"
+        " of the callback's closure, defaults and globals.",
         ("force", "names"),
     ),
     Code(

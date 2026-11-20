@@ -3,19 +3,19 @@ a displayed object (``sim.force_input``), and a solver feature that is
 withheld (``sim.withheld``).
 
 **A callback force reads the state it is handed.** It is called once for
-each new tick with the world's state at the tick before, by body handle, and
-reads another world through that world's :meth:`~.World.at_tick`. A
-displayed mobject is a different clock: between two frames it holds the last
-frame's values (:mod:`arachne.timeline.ticking`), so a force computed from
-one changes with the frame rate. So a callback whose code can reach a
-mobject or the scene directly is refused as it is declared: through its
-closure, its defaults, the globals its code loads (its own and its nested
-functions'), a bound method's object, a ``functools.partial``'s arguments,
-a callable object's attributes, and the lists, tuples, sets and dicts any of
-these hold. A world is not refused (its :meth:`~.World.at_tick` is
-tick-indexed), nor is a body handle. What the check cannot see, a mobject
-reached through an attribute of another object, is not supported: it reads
-the last frame's value at a tick no frame reads.
+each new tick with the world's state at the tick before, and reads every
+body by its handle there, another world's included (that world's own rows at
+the same tick). A displayed mobject is a different clock: between two frames
+it holds the last frame's values (:mod:`arachne.timeline.ticking`), so a
+force computed from one changes with the frame rate. So a callback whose
+code can reach a mobject (a world among them) or the scene directly is
+refused as it is declared: through its closure, its defaults, the globals its
+code loads (its own and its nested functions'), a bound method's object, a
+``functools.partial``'s arguments, a callable object's attributes, and the
+lists, tuples, sets and dicts any of these hold. A body handle is not
+refused. What the check cannot see, a mobject reached through an attribute
+of another object, is not supported: it reads the last frame's value at a
+tick no frame reads.
 
 **A withheld feature** is one whose arithmetic is not yet the same on every
 machine: :data:`WITHHELD` names each, with the reason. Declaring one raises
@@ -130,18 +130,12 @@ def _global_names(code: types.CodeType) -> Iterator[str]:
 
 
 def _displayed(value: Any, depth: int) -> bool:
-    """Whether ``value`` is, or directly holds, a mobject (a world aside) or a
-    scene.
-    """
+    """Whether ``value`` is, or directly holds, a mobject or a scene."""
     from arachne.mobject.mobject import Mobject
     from arachne.scene.scene import Scene
 
-    from .world import World
-
-    if isinstance(value, Scene):
+    if isinstance(value, (Scene, Mobject)):
         return True
-    if isinstance(value, Mobject):
-        return not isinstance(value, World)
     if depth <= 0:
         return False
     if isinstance(value, dict):
