@@ -30,10 +30,12 @@ if TYPE_CHECKING:
 class ChargedParticle(VGroup):
     """A disc of ``radius`` bearing a plus (``charge > 0``), a minus
     (``charge < 0``) or nothing: point charges, ions in solution, ions at a
-    membrane. ``charge`` is kept as a plain number (a whole one as an
-    ``int``, any other as a ``float``); its sign picks the sign drawn and,
-    unless ``color`` is given, the colour. Style keywords go to the disc;
-    the sign keeps its own.
+    membrane. ``charge`` is kept as a plain number (an integral input as an
+    ``int``, any other as a ``float``), and the particle is drawn from what
+    is kept: its sign picks the sign drawn and, unless ``color`` is given,
+    the colour. A charge that is not finite, or whose sign no ``float``
+    keeps (a nonzero fraction too small for one), is refused. Style
+    keywords go to the disc; the sign keeps its own.
     """
 
     def __init__(
@@ -47,16 +49,15 @@ class ChargedParticle(VGroup):
     ) -> None:
         style = take_style(kwargs)
         super().__init__(**kwargs)
-        self.charge: int | float = (
-            int(charge) if isinstance(charge, numbers.Integral) else float(charge)
-        )
+        self.charge: int | float = _kept_charge(charge)
+        kept = self.charge
         shade = (
             color
             if color is not None
             else RED
-            if charge > 0
+            if kept > 0
             else BLUE
-            if charge < 0
+            if kept < 0
             else GREY
         )
         self.disc = Circle(radius=radius, color=shade, fill_opacity=fill_opacity)
@@ -64,13 +65,30 @@ class ChargedParticle(VGroup):
         self.sign = VMobject(color=sign_color, stroke_width=max(2.0, 12 * radius))
         bar = radius * 0.55
         strokes = []
-        if charge != 0:
+        if kept != 0:
             strokes.append(line(np.array([-bar, 0.0, 0.0]), np.array([bar, 0.0, 0.0])))
-        if charge > 0:
+        if kept > 0:
             strokes.append(line(np.array([0.0, -bar, 0.0]), np.array([0.0, bar, 0.0])))
         if strokes:
             self.sign.set_points(np.concatenate(strokes))
         self.add(self.disc, self.sign)
+
+
+def _kept_charge(charge: float) -> int | float:
+    """``charge`` as a plain ``int`` or ``float`` of the same sign."""
+    if isinstance(charge, numbers.Integral):
+        return int(charge)
+    kept = float(charge)
+    if (
+        not math.isfinite(kept)
+        or (kept > 0) != (charge > 0)
+        or ((kept < 0) != (charge < 0))
+    ):
+        raise ValueError(
+            f"a particle's charge is a finite number a float holds with its sign,"
+            f" not {charge!r}"
+        )
+    return kept
 
 
 class Particles(VGroup):

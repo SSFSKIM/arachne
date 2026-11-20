@@ -98,3 +98,30 @@ def test_a_charge_is_kept_as_a_plain_number(given, kept):
     assert ion.charge == kept
     assert type(ion.charge) is type(kept)
     keyed(ion, "charge")
+
+
+@pytest.mark.parametrize(
+    "given",
+    [Fraction(1, 10**400), Fraction(-1, 10**400), float("nan"), float("inf")],
+    ids=["tiny-positive", "tiny-negative", "nan", "inf"],
+)
+def test_a_charge_no_plain_number_holds_is_refused(given):
+    # As a float the tiny fractions are 0: the sign drawn and the number
+    # declared would not be the charge given.
+    with pytest.raises(ValueError, match="charge"):
+        ChargedParticle(given)
+
+
+@pytest.mark.parametrize(
+    ("given", "strokes", "shade"),
+    [(np.float32(-0.5), 1, "blue"), (Fraction(3, 2), 2, "red"), (0, 0, "grey")],
+    ids=["negative", "positive", "neutral"],
+)
+def test_a_particle_draws_its_kept_charge(given, strokes, shade):
+    from arachne import BLUE, GREY, RED
+
+    ion = ChargedParticle(given)
+    # Each stroke of the sign is one straight segment of four points.
+    assert len(ion.sign.points) == 4 * strokes
+    want = {"blue": BLUE, "grey": GREY, "red": RED}[shade]
+    assert ion.disc.get_color().to_hex() == want.to_hex()
