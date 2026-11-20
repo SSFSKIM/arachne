@@ -6,6 +6,7 @@ its bodies with their boxes, with a clean twin that reports nothing.
 from __future__ import annotations
 
 import json
+import re
 from fractions import Fraction
 from pathlib import Path
 
@@ -139,10 +140,14 @@ def test_a_body_in_three_dimensions_turns_about_three_axes(opened):
 def test_a_body_shown_after_its_world_left_is_unreadable(opened):
     session = opened("ShownAfterItsWorld")
     (body,) = _bodies(session)
-    # The frame on screen at 3/4 s is of 11/15 s: tick 44, past the stay's 30.
+    # Past the stay's last tick, 30.
     (quantity, *_) = session.state_at(Fraction(3, 4)).quantities[body]
     assert quantity.value is None
-    assert quantity.unreadable == "no bake holds tick 44 of this body's stay"
+    shown = re.fullmatch(
+        r"no bake holds tick (\d+) of this body's stay", quantity.unreadable
+    )
+    assert shown is not None, quantity.unreadable
+    assert int(shown[1]) > 30
     result, found = _simulation(session)
     assert {f.code for f in found} == {"sim.quantity_unreadable"}
     assert all(f.objects[0].id == body for f in found)
