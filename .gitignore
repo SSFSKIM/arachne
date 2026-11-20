@@ -124,7 +124,11 @@ dmypy.json
 .vs
 *.xml
 *.iml
+# A scene's output directory, wherever a render writes one; not the media package
+# or its tests.
 media
+!arachne/mobject/media/
+!tests/media/
 .eggs/
 build/
 dist/
