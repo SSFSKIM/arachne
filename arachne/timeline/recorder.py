@@ -29,7 +29,7 @@ import numpy as np
 from arachne._config import config, logger
 from arachne.camera.projection import configured_home
 
-from . import rebuilds
+from . import hooks, rebuilds
 from .admission import (
     PlayIdentity,
     admit,
@@ -1161,6 +1161,7 @@ class Recorder:
         plan.release()
         scene.renderer.time = run.end
         if not play.held:
+            hooks.before_animations(scene)
             for animation in scene.animations or []:
                 animation.finish()
                 animation.clean_up_from_scene(scene)

@@ -41,10 +41,13 @@ __all__ = [
     "update_self",
 ]
 
+import weakref
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from arachne.scene.scene import Scene
 
     from .events import EventPlan
@@ -141,6 +144,42 @@ class FrameInstant:
                 )
 
 
+#: Engine work a scene runs before its play's animations write, by the
+#: scene's id: at each evaluated instant, before the animations and every
+#: updater, and as the play ends, before the animations finish. Each entry
+#: holds its scene weakly and runs only for that very scene, so a scene's
+#: own hash or equality is never asked and a later scene at the same
+#: address finds nothing; it goes with its scene. Registered only by the
+#: stepped-timing clock (:mod:`arachne.assets.timing`), which puts back what
+#: is true there; a scene with none does one lookup.
+BEFORE_ANIMATIONS: dict[int, tuple[weakref.ref[Scene], Callable[[Scene], None]]] = {}
+
+
+def before_animations(scene: Scene) -> None:
+    """Run ``scene``'s engine work before its animations write, if any."""
+    entry = BEFORE_ANIMATIONS.get(id(scene))
+    if entry is not None and entry[0]() is scene:
+        entry[1](scene)
+
+
+def run_before_animations(scene: Scene, run: Callable[[Scene], None]) -> None:
+    """Have :func:`before_animations` call ``run(scene)`` until ``scene``
+    goes. ``run`` must hold nothing of the scene.
+    """
+    key = id(scene)
+    entry = BEFORE_ANIMATIONS.get(key)
+    if entry is None or entry[0]() is not scene:
+        weakref.finalize(scene, _forget, key)
+    BEFORE_ANIMATIONS[key] = (weakref.ref(scene), run)
+
+
+def _forget(key: int) -> None:
+    """Drop the entry of a scene that went, if no later scene took its id."""
+    entry = BEFORE_ANIMATIONS.get(key)
+    if entry is not None and entry[0]() is None:
+        del BEFORE_ANIMATIONS[key]
+
+
 def animate(
     scene: Scene, plan: EventPlan, start: Fraction, instant: Fraction, dt: float
 ) -> None:
@@ -149,6 +188,7 @@ def animate(
     CE, then the composition events.
     """
     plan.begin_instant(instant)
+    before_animations(scene)
     local = instant - start
     for animation in scene.animations or []:
         animation.update_mobjects(dt)
