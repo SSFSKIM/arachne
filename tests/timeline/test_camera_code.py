@@ -258,7 +258,9 @@ def test_the_places_that_put_functions_in_display_funcs_are_the_ones_known():
         for path in root.rglob("*.py")
         if assign.search(path.read_text())
     }
-    assert found == {"camera/camera.py", "frame_ir/live.py"}
+    # compose/stack.py gives a window's camera of its own size the camera's
+    # own painters, rebound to it, and installs no wrapper.
+    assert found == {"camera/camera.py", "compose/stack.py", "frame_ir/live.py"}
 
 
 def test_the_detector_imports_no_core():
