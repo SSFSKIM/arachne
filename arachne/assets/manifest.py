@@ -518,18 +518,24 @@ class _Reader:
         return name
 
     def carried(self, member: str, name: str, value: float | str, unit: str) -> None:
-        """Refuse at ``member`` what a declared quantity cannot carry:
-        ``value`` as the quantity ``name`` in ``unit``, by the declared
-        quantities' own check (:mod:`arachne.quantities`). A unit no loaded
-        asset has registered yet is checked as the plain unit ``1``: an
-        asset's units are registered when it loads, and, but for the unit
-        ``name`` (always registered), a number's rules do not depend on its
-        unit.
+        """Refuse at ``member`` what the quantity ``name``, valued ``value`` in
+        ``unit``, cannot carry. The name and the unit are asked of
+        :func:`arachne.quantities.carriable`. Two rules are this reader's own,
+        so that no admitted rig answers a read as unreadable: a drawing name,
+        the value of a slot's quantity, holds 1 to
+        :data:`~arachne.quantities.MAX_NAME_BYTES` bytes, and a parameter, a
+        number, is not in the unit ``name``.
         """
-        # The declared quantities' internals, until they offer a public validator.
-        known = unit in quantities._UNITS
-        probe = quantities.Quantity(name, value, unit if known else DEFAULT_UNIT)
-        why = quantities._check(probe).unreadable
+        why = quantities.carriable(name, unit)
+        if why is None and isinstance(value, str):
+            size = len(value.encode("utf-8"))
+            if not 1 <= size <= quantities.MAX_NAME_BYTES:
+                why = (
+                    f"a name value holds 1 to {quantities.MAX_NAME_BYTES} bytes,"
+                    f" not {size}"
+                )
+        elif why is None and unit == "name":
+            why = "a value with unit 'name' is a name"
         if why is not None:
             self.invalid(member, f"a declared quantity cannot carry it ({why})")
 
