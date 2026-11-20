@@ -67,7 +67,10 @@ pub enum JointKind {
     },
 }
 
-/// A joint between two bodies, at an anchor in each body's frame.
+/// A joint between two bodies, at an anchor in each body's frame. Its frame is one frame in the
+/// world as the bodies are posed when it is declared: at the first anchor, with its x axis along
+/// `axis`. A pin's angle and a slide's offset (what limits and a motor act on) are measured from
+/// that pose, zero as declared.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Joint {
     pub kind: JointKind,
@@ -75,7 +78,8 @@ pub struct Joint {
     pub body2: u32,
     pub anchor1: Vec<f32>,
     pub anchor2: Vec<f32>,
-    /// A pin's axis in 3D and a slide's axis, in the first body's frame; empty otherwise.
+    /// A pin's axis in 3D and a slide's axis, in the first body's frame, of any length but zero
+    /// (only its direction counts); empty otherwise.
     pub axis: Vec<f32>,
     /// A pin's angle or a slide's offset kept within `[min, max]`.
     pub limits: Option<[f32; 2]>,
@@ -91,8 +95,12 @@ pub enum Force {
     /// Every pair of the bodies attracts by the inverse square of its distance:
     /// `strength * m_a * m_b / r^2`, along the line between their origins.
     Attraction { strength: f32, bodies: Vec<u32> },
-    /// A damped spring between an anchor on each body: along the line between the anchors,
-    /// `stiffness * (length - rest) + damping * (rate at which the anchors separate)`.
+    /// A damped spring between an anchor on each body, along the line between the anchors:
+    /// `stiffness * (length - rest) + damping * (rate at which the anchors separate)`. At a rest
+    /// length of 0 its elastic part is `stiffness * d`, `d` the second anchor's offset from the
+    /// first, which needs no direction. For a tick at which the anchors coincide, where the line
+    /// is undefined, it is zero (at rest length 0 its elastic part is zero there anyway, and its
+    /// damping has no line to act along).
     Spring {
         body_a: u32,
         anchor_a: Vec<f32>,
@@ -112,8 +120,9 @@ pub enum Force {
         force: Vec<f32>,
         torque: Vec<f32>,
     },
-    /// Drives a pin's angle or a slide's offset toward `position` and its rate toward
-    /// `velocity`: a force `stiffness * (position - x) + damping * (velocity - dx/dt)`.
+    /// Drives a pin's angle or a slide's offset (zero as the joint was declared) toward
+    /// `position` and its rate toward `velocity`: a force (a torque for a pin)
+    /// `stiffness * (position - x) + damping * (velocity - dx/dt)`, whatever the bodies' masses.
     Motor {
         joint: u32,
         position: f32,

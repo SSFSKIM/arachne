@@ -1,5 +1,7 @@
 //! The 3D solver world: `solver.rs` compiled with 3D types, and what differs between dimensions.
 
+use rapier3d::parry::bounding_volume::{Aabb, BoundingVolume};
+use rapier3d::parry::query;
 use rapier3d::prelude::*;
 
 use crate::encode::Settings;
@@ -21,6 +23,8 @@ fn apply_settings(p: &mut IntegrationParameters, s: &Settings) {
     p.num_internal_stabilization_iterations = s.stabilization_iterations as usize;
     p.max_ccd_substeps = s.ccd_substeps as usize;
     p.normalized_max_linear_velocity = s.max_linear_velocity;
+    p.normalized_allowed_linear_error = s.allowed_linear_error;
+    p.normalized_prediction_distance = s.prediction_distance;
     p.contact_recycling = s.contact_recycling;
     p.normalized_contact_recycle_distance = s.recycle_distance;
     p.contact_clustering = s.contact_clustering;
@@ -65,15 +69,8 @@ fn hull(points: &[f32]) -> Option<ColliderBuilder> {
     ColliderBuilder::convex_hull(&points)
 }
 
-fn pin(axis: &[f32]) -> RevoluteJointBuilder {
-    RevoluteJointBuilder::new(vector(axis))
-}
-
-fn ball_joint(anchor1: Vector, anchor2: Vector) -> GenericJoint {
-    SphericalJointBuilder::new()
-        .local_anchor1(anchor1)
-        .local_anchor2(anchor2)
-        .into()
+fn ball_joint() -> GenericJoint {
+    GenericJointBuilder::new(JointAxesMask::LOCKED_SPHERICAL_AXES).build()
 }
 
 /// `x, y, z` and the unit quaternion `qx, qy, qz, qw`.

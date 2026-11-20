@@ -289,8 +289,13 @@ impl World {
             matches!(j.kind, JointKind::Slide) || (self.dim == 3 && j.kind == JointKind::Pin);
         if axis {
             self.vector(&j.axis, "A joint's axis")?;
-            if j.axis.iter().all(|&x| x == 0.0) {
-                return error("A joint's axis is not zero.");
+            // Normalized by the solver: its squared length is a positive finite number.
+            let squared: f32 = j.axis.iter().map(|x| x * x).sum();
+            if !(squared > 0.0 && squared.is_finite()) {
+                return error(
+                    "A joint's axis is a direction: not zero, and of a length whose square the \
+                     stored type holds.",
+                );
             }
         } else if !j.axis.is_empty() {
             return error("Only a slide, and a pin in 3D, take an axis.");
@@ -557,7 +562,11 @@ impl World {
     }
 
     /// The contacts that began and ended: `[row, a, b, kind]`, `a < b` bodies by number, kind 1
-    /// for began and 0 for ended, sorted. A contact is between two bodies, whatever shapes of
+    /// for began and 0 for ended, sorted. A contact between two bodies begins at the first row
+    /// (row 0 included) at which a shape of each is at most the allowed linear error apart
+    /// (touching or overlapping; 0.005 units, in the declaration's settings), and ends at the
+    /// first later row at which no two are; two fixed bodies, and two bodies a joint keeps from
+    /// colliding, have none. A contact is between two bodies, whatever shapes of
     /// theirs touch.
     pub fn contacts(&self) -> &[[u32; 4]] {
         &self.events
@@ -581,8 +590,8 @@ impl World {
                     },
                     SOLVER_VERSION,
                     format!(
-                        "rapier/{} substeps, {} with a joint",
-                        self.settings.solver_iterations, self.settings.joint_solver_iterations
+                        "rapier/{} substeps, {} in a component with a joint",
+                        self.settings.solver_iterations, self.settings.jointed_substeps
                     ),
                     if self.settings.block_solver {
                         &["block-solver", "enhanced-determinism", "f32"]

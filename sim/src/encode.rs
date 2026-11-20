@@ -79,14 +79,23 @@ pub(crate) struct Settings {
     pub dt: f32,
     pub length_unit: f32,
     pub solver_iterations: u32,
-    /// The solver's substeps in a world with a joint: the solver's pass that removes its
-    /// position corrections' velocity takes energy from a swinging joint in proportion to the
-    /// substep, so a jointed world takes more of them (the closed-form swings' energy line).
-    pub joint_solver_iterations: u32,
+    /// The solver's substeps for the bodies connected (by joints and contacts) to a joint: its
+    /// pass that removes its position corrections' velocity takes energy from a swinging joint in
+    /// proportion to the substep, so a jointed component takes more of them (the closed-form
+    /// swings' energy line). Every dynamic body a joint joins asks for them, and the solver
+    /// steps each connected component at the most any of its bodies asks; the others keep
+    /// `solver_iterations`.
+    pub jointed_substeps: u32,
     pub pgs_iterations: u32,
     pub stabilization_iterations: u32,
     pub ccd_substeps: u32,
     pub max_linear_velocity: f32,
+    /// The solver's geometric slop, and the distance at or under which two shapes touch: a
+    /// contact event begins at the first row at which a point of the pair is this close or
+    /// overlapping, and ends at the first row at which none is.
+    pub allowed_linear_error: f32,
+    /// The distance under which the solver prepares a contact before the shapes touch.
+    pub prediction_distance: f32,
     pub contact_recycling: bool,
     pub recycle_distance: f32,
     pub contact_clustering: bool,
@@ -98,6 +107,10 @@ pub(crate) struct Settings {
     pub block_solver: bool,
     pub sleeping: bool,
     pub fast_rotation: bool,
+    /// A motor's model: 1, its coefficients are a force (or torque) per unit of offset and of
+    /// rate, whatever the bodies' masses (the solver's force-based model; its default scales them
+    /// by mass).
+    pub motor_model: u8,
     /// The point-mass integrator's substeps per tick.
     pub point_substeps: u32,
 }
@@ -108,11 +121,13 @@ impl Settings {
             dt: 1.0 / 60.0,
             length_unit: 1.0,
             solver_iterations: 4,
-            joint_solver_iterations: 128,
+            jointed_substeps: 128,
             pgs_iterations: 1,
             stabilization_iterations: 1,
             ccd_substeps: 1,
             max_linear_velocity: 400.0,
+            allowed_linear_error: 0.005,
+            prediction_distance: 0.02,
             contact_recycling: true,
             recycle_distance: 0.05,
             contact_clustering: true,
@@ -123,6 +138,7 @@ impl Settings {
             block_solver: dimension == 2,
             sleeping: false,
             fast_rotation: false,
+            motor_model: 1,
             point_substeps: 8,
         }
     }
@@ -131,11 +147,13 @@ impl Settings {
         w.f32(self.dt);
         w.f32(self.length_unit);
         w.u32(self.solver_iterations);
-        w.u32(self.joint_solver_iterations);
+        w.u32(self.jointed_substeps);
         w.u32(self.pgs_iterations);
         w.u32(self.stabilization_iterations);
         w.u32(self.ccd_substeps);
         w.f32(self.max_linear_velocity);
+        w.f32(self.allowed_linear_error);
+        w.f32(self.prediction_distance);
         w.bool(self.contact_recycling);
         w.f32(self.recycle_distance);
         w.bool(self.contact_clustering);
@@ -145,6 +163,7 @@ impl Settings {
         w.bool(self.block_solver);
         w.bool(self.sleeping);
         w.bool(self.fast_rotation);
+        w.u8(self.motor_model);
         w.u32(self.point_substeps);
     }
 }

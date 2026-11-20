@@ -274,7 +274,8 @@ impl PyWorld {
 
     /// Declares a joint; returns its number. ``kind`` is ``"pin"``, ``"slide"``, ``"weld"``,
     /// ``"ball"`` (3D), ``"rope"`` (``length``) or ``"spring"`` (``rest``, ``stiffness``,
-    /// ``damping``).
+    /// ``damping``). ``axis`` (a slide's, a 3D pin's) is in the first body's frame, of any
+    /// length but zero; the joint's angle or offset is zero as the bodies are posed now.
     #[pyo3(signature = (
         kind, body1, body2, *, anchor1=None, anchor2=None, axis=None, limits=None, length=None,
         rest=None, stiffness=None, damping=None, contacts=false
@@ -348,7 +349,8 @@ impl PyWorld {
         self.add(Force::Attraction { strength, bodies })
     }
 
-    /// Declares a damped spring between an anchor on each of two bodies.
+    /// Declares a damped spring between an anchor on each of two bodies, acting along the line
+    /// between the anchors (zero for a tick at which they coincide).
     #[pyo3(signature = (
         body_a, body_b, *, stiffness, rest, damping=None, anchor_a=None, anchor_b=None
     ))]
@@ -403,8 +405,9 @@ impl PyWorld {
         self.add(force)
     }
 
-    /// Declares a motor on a pin or a slide, driving its angle or offset toward ``position``
-    /// and its rate toward ``velocity``.
+    /// Declares a motor on a pin or a slide, driving its angle or offset (zero as declared)
+    /// toward ``position`` and its rate toward ``velocity``, by a force (a torque for a pin) of
+    /// ``stiffness`` per unit of offset and ``damping`` per unit of rate, whatever the masses.
     #[pyo3(signature = (joint, *, position=None, velocity=None, stiffness=None, damping=None))]
     fn add_motor(
         &self,

@@ -120,11 +120,10 @@ impl Points {
                 } => {
                     // Anchored at the origins (the crate refuses other anchors here).
                     let (a, b) = (*body_a as usize, *body_b as usize);
-                    let d = sub(x[b], x[a]);
-                    let length = dot(d, d).sqrt();
-                    let n = scale(d, 1.0 / length);
-                    let separating = dot(sub(v[b], v[a]), n);
-                    let f = scale(n, stiffness * (length - rest) + damping * separating);
+                    let (d, dv) = (sub(x[b], x[a]), sub(v[b], v[a]));
+                    let Some(f) = spring_force(d, dv, *stiffness, *damping, *rest) else {
+                        continue;
+                    };
                     add(&mut out[a], f);
                     add(&mut out[b], scale(f, -1.0));
                 }
@@ -192,6 +191,25 @@ impl Points {
             }
         }
     }
+}
+
+/// A spring's force on its first body, from the second's offset `d` and relative velocity
+/// `dv`, as the solver's worlds compute it (`solver.rs`, `spring_force`): along the line between
+/// the bodies, `k d` (rest length 0) or `k (|d| - rest) n` and `c (dv . n) n`; none for a tick at
+/// which they coincide.
+fn spring_force(d: [f32; 3], dv: [f32; 3], k: f32, c: f32, rest: f32) -> Option<[f32; 3]> {
+    let length = dot(d, d).sqrt();
+    if length == 0.0 {
+        return None;
+    }
+    let n = scale(d, 1.0 / length);
+    let mut f = if rest == 0.0 {
+        scale(d, k)
+    } else {
+        scale(n, k * (length - rest))
+    };
+    add(&mut f, scale(n, c * dot(dv, n)));
+    Some(f)
 }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {

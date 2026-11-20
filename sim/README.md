@@ -19,8 +19,40 @@ which enter its declaration.
 
 Two integrators, named in a bake's identity: the solver, for contacts, joints and rotation; and
 velocity Verlet in 8 substeps per tick, for worlds of point masses (no shape, no joint: springs,
-orbits, N bodies, damped oscillators), whose energy stays within 1% at the periods a lesson uses
-where the solver's, which holds an applied force through the tick, does not.
+orbits, N bodies, damped oscillators, projectiles), whose energy stays within 1% at the periods a
+lesson uses where the solver's, which holds an applied force through the tick, does not. The
+solver's semi-implicit Euler also drifts a projectile's energy at first order: under uniform
+gravity a body falls `g h t / 2` too far by time `t`, `h` its substep, about `g^2 h t / v0^2` of a
+launch's energy (1.2% over a one-second flight at 4 substeps, 12% over 10 s), and velocity
+Verlet is exact there but for rounding.
+
+What the numbers mean where the solver leaves a choice:
+
+- **Substeps.** The solver steps a world in 4 substeps per tick, and the bodies connected to a
+  joint (through joints and contacts, fixed bodies not connecting) in 128: each dynamic body a
+  joint joins asks for them, and the solver takes, per connected component, the most its bodies
+  ask. Its pass that removes its position corrections' velocity takes energy from a swinging
+  joint in proportion to the substep; at 4 a swing of 2 rad loses 15% of its energy in 10 s, at
+  128 under 1%, and a component with no joint keeps the cost of 4.
+- **A joint's frame** is one frame in the world as its bodies are posed when it is declared, at
+  the first anchor, its x axis along the joint's axis (given in the first body's frame, at any
+  length but zero), seen from each body. A pin's angle and a slide's offset (what limits and a
+  motor act on) are zero as declared: a slide's offset is its anchors' separation along the axis
+  less the separation they have when it is declared.
+- **A motor** takes force coefficients: its stiffness is a force (a torque, for a pin) per unit
+  of offset and its damping one per unit of rate, whatever the masses it drives (the solver's
+  force-based model, in the declaration's settings; its default scales them by mass).
+- **A spring force** acts along the line between its anchors, `k (|d| - rest) + c (dv . n)`, `d`
+  the second anchor's offset from the first, `n` its direction and `dv` their relative velocity;
+  at a rest length of 0 its elastic part is `k d`, which needs no direction. For a tick at which
+  the anchors coincide, where the line is undefined, it is zero.
+- **A contact** between two bodies begins at the first row, row 0 included, at which a shape of
+  each is at most the allowed linear error apart (touching or overlapping: 0.005 units, in the
+  declaration's settings), and ends at the first later row at which none is. It is found at each
+  row by the solver's geometric query, not read from its contact pairs, which hold pairs within
+  the prediction distance (0.02) and points computed before the step's motion. Two fixed bodies,
+  and two bodies a joint keeps from colliding, have none. The query looks at every pair of shapes
+  whose boxes overlap, so its cost grows with the square of the shapes.
 
 | Path | What it is |
 | --- | --- |
@@ -119,7 +151,9 @@ The solver defaults read at the pin, each of which the crate sets explicitly:
   `normalized_contact_recycle_distance` (0.05, set explicitly) keeps its previous contact points,
   so contact data can be stale by up to that distance.
 - **Contact clustering** (3D, default on), **joint warm-starting** (off), **friction in the bias
-  pass** (off), 4 solver iterations, 1 internal and 1 stabilization iteration, a step of 1/60 s.
+  pass** (off), 4 solver iterations (128 for a component with a joint, above), 1 internal and 1
+  stabilization iteration, a step of 1/60 s, an allowed linear error of 0.005 and a prediction
+  distance of 0.02, and the motors' force-based model.
 - **`block-solver`** is a compile-time feature, on by default in 2D only; **precision** is the
   crate's choice of `rapier2d`/`rapier3d` (`f32`) over the `-f64` crates.
 

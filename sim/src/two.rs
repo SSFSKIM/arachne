@@ -1,5 +1,7 @@
 //! The 2D solver world: `solver.rs` compiled with 2D types, and what differs between dimensions.
 
+use rapier2d::parry::bounding_volume::{Aabb, BoundingVolume};
+use rapier2d::parry::query;
 use rapier2d::prelude::*;
 
 use crate::encode::Settings;
@@ -21,6 +23,8 @@ fn apply_settings(p: &mut IntegrationParameters, s: &Settings) {
     p.num_internal_stabilization_iterations = s.stabilization_iterations as usize;
     p.max_ccd_substeps = s.ccd_substeps as usize;
     p.normalized_max_linear_velocity = s.max_linear_velocity;
+    p.normalized_allowed_linear_error = s.allowed_linear_error;
+    p.normalized_prediction_distance = s.prediction_distance;
     p.contact_recycling = s.contact_recycling;
     p.normalized_contact_recycle_distance = s.recycle_distance;
     p.contact_clustering = s.contact_clustering;
@@ -60,11 +64,7 @@ fn hull(points: &[f32]) -> Option<ColliderBuilder> {
     ColliderBuilder::convex_hull(&points)
 }
 
-fn pin(_axis: &[f32]) -> RevoluteJointBuilder {
-    RevoluteJointBuilder::new()
-}
-
-fn ball_joint(_anchor1: Vector, _anchor2: Vector) -> GenericJoint {
+fn ball_joint() -> GenericJoint {
     unreachable!("a ball joint is refused in 2D before it reaches the solver")
 }
 

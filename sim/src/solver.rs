@@ -12,9 +12,15 @@ pub(crate) struct Solver {
     bodies: Vec<RigidBodyHandle>,
     /// Each body's mass: its point mass plus its shapes', fixed bodies included (for attraction).
     mass: Vec<f32>,
+    fixed: Vec<bool>,
+    /// Each shape and the body it is on, in declaration order.
+    shapes: Vec<(ColliderHandle, u32)>,
     joints: Vec<ImpulseJointHandle>,
+    /// The pairs of bodies (the smaller first) a joint keeps from colliding.
+    apart: Vec<(u32, u32)>,
     forces: Vec<Force>,
-    joint_iterations: usize,
+    /// The substeps a jointed component takes beyond the world's (Settings::jointed_substeps).
+    jointed_extra: usize,
 }
 
 impl Solver {
@@ -26,9 +32,14 @@ impl Solver {
             world,
             bodies: Vec::new(),
             mass: Vec::new(),
+            fixed: Vec::new(),
+            shapes: Vec::new(),
             joints: Vec::new(),
+            apart: Vec::new(),
             forces: Vec::new(),
-            joint_iterations: settings.joint_solver_iterations as usize,
+            jointed_extra: settings
+                .jointed_substeps
+                .saturating_sub(settings.solver_iterations) as usize,
         }
     }
 
@@ -54,6 +65,7 @@ impl Solver {
         }
         self.bodies.push(self.world.insert_body(builder));
         self.mass.push(b.mass);
+        self.fixed.push(b.fixed);
     }
 
     /// Fails when a convex hull's points span no area (2D) or volume (3D).
@@ -77,49 +89,70 @@ impl Solver {
         let body = s.body as usize;
         let handle = self.world.insert_collider(builder, Some(self.bodies[body]));
         self.mass[body] += self.world.colliders[handle].mass();
+        self.shapes.push((handle, s.body));
         Ok(())
     }
 
     pub fn add_joint(&mut self, j: &Joint) {
         let (h1, h2) = (self.bodies[j.body1 as usize], self.bodies[j.body2 as usize]);
-        let (a1, a2) = (vector(&j.anchor1), vector(&j.anchor2));
         let mut joint: GenericJoint = match j.kind {
-            JointKind::Pin => pin(&j.axis).local_anchor1(a1).local_anchor2(a2).into(),
-            JointKind::Slide => PrismaticJointBuilder::new(vector(&j.axis))
-                .local_anchor1(a1)
-                .local_anchor2(a2)
-                .into(),
-            JointKind::Weld => {
-                // The relative rotation the two bodies have now, kept.
-                let r1 = *self.world.bodies[h1].rotation();
-                let r2 = *self.world.bodies[h2].rotation();
-                FixedJointBuilder::new()
-                    .local_frame1(Pose::from_parts(a1, r1.inverse() * r2))
-                    .local_frame2(Pose::from_parts(a2, Rotation::IDENTITY))
-                    .into()
+            JointKind::Pin => GenericJointBuilder::new(JointAxesMask::LOCKED_REVOLUTE_AXES).build(),
+            JointKind::Slide => {
+                GenericJointBuilder::new(JointAxesMask::LOCKED_PRISMATIC_AXES).build()
             }
-            JointKind::Ball => ball_joint(a1, a2),
-            JointKind::Rope { length } => RopeJointBuilder::new(length)
-                .local_anchor1(a1)
-                .local_anchor2(a2)
-                .into(),
+            JointKind::Weld => GenericJointBuilder::new(JointAxesMask::LOCKED_FIXED_AXES).build(),
+            JointKind::Ball => ball_joint(),
+            JointKind::Rope { length } => RopeJointBuilder::new(length).into(),
             JointKind::Spring {
                 rest,
                 stiffness,
                 damping,
-            } => SpringJointBuilder::new(rest, stiffness, damping)
-                .local_anchor1(a1)
-                .local_anchor2(a2)
-                .into(),
+            } => SpringJointBuilder::new(rest, stiffness, damping).into(),
         };
+        // One frame in the world, at the first anchor with its x axis along the joint's axis (in
+        // the first body's frame, as declared), seen from each body as the bodies are now: the
+        // frames' axes match, so a pin's angle is zero as declared.
+        let axis = if j.axis.is_empty() {
+            Rotation::IDENTITY
+        } else {
+            let a = vector(&j.axis);
+            GenericJoint::complete_ang_frame(a / a.dot(a).sqrt())
+        };
+        let (p1, p2) = (
+            *self.world.bodies[h1].position(),
+            *self.world.bodies[h2].position(),
+        );
+        let (r1, r2) = (p1.rotation, p2.rotation);
+        let mut anchor2 = vector(&j.anchor2);
+        if j.kind == JointKind::Slide {
+            // A slide's offset is the anchors' separation along the axis, zero as declared: the
+            // second anchor moves along the axis (its free direction, which no lock reads) by
+            // the separation the declared anchors have now.
+            let along = r1 * (axis * Vector::X);
+            let apart =
+                (p2.transform_point(anchor2) - p1.transform_point(vector(&j.anchor1))).dot(along);
+            anchor2 -= r2.inverse() * (along * apart);
+        }
+        joint.set_local_frame1(Pose::from_parts(vector(&j.anchor1), axis));
+        joint.set_local_frame2(Pose::from_parts(anchor2, r2.inverse() * r1 * axis));
         joint.set_contacts_enabled(j.contacts);
         if let Some(limits) = j.limits {
             joint.set_limits(free_axis(&j.kind), limits);
         }
         self.joints
             .push(self.world.insert_impulse_joint(h1, h2, joint));
-        // From its first joint on, the world steps in finer substeps (Settings).
-        self.world.integration_parameters.num_solver_iterations = self.joint_iterations;
+        if !j.contacts {
+            let pair = (j.body1.min(j.body2), j.body1.max(j.body2));
+            self.apart.push(pair);
+        }
+        // Each dynamic body it joins asks for the jointed substeps, which its whole connected
+        // component then takes (Settings::jointed_substeps).
+        for h in [h1, h2] {
+            let body = &mut self.world.bodies[h];
+            if body.is_dynamic() {
+                body.set_additional_solver_iterations(self.jointed_extra);
+            }
+        }
     }
 
     pub fn add_force(&mut self, f: &Force, joint_kinds: &[JointKind]) {
@@ -135,7 +168,10 @@ impl Solver {
                 let axis = free_axis(&joint_kinds[*joint as usize]);
                 let handle = self.joints[*joint as usize];
                 if let Some(j) = self.world.impulse_joints.get_mut(handle, true) {
+                    // Force coefficients (Settings::motor_model), not the solver's default,
+                    // which scales them by mass.
                     j.data
+                        .set_motor_model(axis, MotorModel::ForceBased)
                         .set_motor(axis, *position, *velocity, *stiffness, *damping);
                 }
             }
@@ -186,12 +222,10 @@ impl Solver {
                     let pa = bodies[ha].position().transform_point(vector(anchor_a));
                     let pb = bodies[hb].position().transform_point(vector(anchor_b));
                     let d = pb - pa;
-                    let length = d.dot(d).sqrt();
-                    let n = d / length;
-                    let separating = (bodies[hb].velocity_at_point(pb)
-                        - bodies[ha].velocity_at_point(pa))
-                    .dot(n);
-                    let f = n * (stiffness * (length - rest) + damping * separating);
+                    let dv = bodies[hb].velocity_at_point(pb) - bodies[ha].velocity_at_point(pa);
+                    let Some(f) = spring_force(d, dv, *stiffness, *damping, *rest) else {
+                        continue;
+                    };
                     bodies[ha].add_force_at_point(f, pa, false);
                     bodies[hb].add_force_at_point(-f, pb, false);
                 }
@@ -228,28 +262,80 @@ impl Solver {
     }
 
     /// Each body's pose and velocity now, and the pairs of bodies (by number, the smaller first,
-    /// sorted) whose shapes are in contact.
+    /// sorted) that touch now (`touching`).
     pub fn record(&self, pose: &mut Vec<f32>, velocity: &mut Vec<f32>) -> Vec<(u32, u32)> {
         for &h in &self.bodies {
             let body = &self.world.bodies[h];
             write_pose(body, pose);
             write_velocity(body, velocity);
         }
-        let mut pairs: Vec<(u32, u32)> = self
-            .world
-            .contact_pairs()
-            .filter(|p| p.has_any_active_contact())
-            .map(|p| {
-                let a = self.world.colliders[p.collider1].user_data as u32;
-                let b = self.world.colliders[p.collider2].user_data as u32;
-                (a.min(b), a.max(b))
+        self.touching()
+    }
+
+    /// The pairs of bodies two of whose shapes are, at their poses now, at a distance at most the
+    /// allowed linear error (touching or overlapping; Settings::allowed_linear_error), found by
+    /// the solver's geometric query rather than read from its contact pairs: those include pairs
+    /// within the prediction distance, and pairs whose points were computed before the step's
+    /// motion. Pairs the solver never lets collide are left out: two fixed bodies, and two
+    /// bodies a joint keeps from colliding.
+    fn touching(&self) -> Vec<(u32, u32)> {
+        let reach = self.world.integration_parameters.allowed_linear_error();
+        let placed: Vec<(Pose, Aabb, u32)> = self
+            .shapes
+            .iter()
+            .map(|&(handle, body)| {
+                let shape = &self.world.colliders[handle];
+                let on = self.world.bodies[self.bodies[body as usize]].position();
+                let pose = *on * *shape.position_wrt_parent().expect("a shape is on a body");
+                let aabb = shape.shape().compute_aabb(&pose).loosened(reach);
+                (pose, aabb, body)
             })
-            .filter(|(a, b)| a != b)
             .collect();
+        let mut pairs = Vec::new();
+        for (i, (pose1, aabb1, a)) in placed.iter().enumerate() {
+            for (k, (pose2, aabb2, b)) in placed.iter().enumerate().skip(i + 1) {
+                if a == b
+                    || (self.fixed[*a as usize] && self.fixed[*b as usize])
+                    || !aabb1.intersects(aabb2)
+                {
+                    continue;
+                }
+                let pair = ((*a).min(*b), (*a).max(*b));
+                if self.apart.contains(&pair) {
+                    continue;
+                }
+                let shape1 = self.world.colliders[self.shapes[i].0].shape();
+                let shape2 = self.world.colliders[self.shapes[k].0].shape();
+                // Zero when they overlap.
+                let distance = query::distance(pose1, shape1, pose2, shape2);
+                if matches!(distance, Ok(d) if d.distance <= reach) {
+                    pairs.push(pair);
+                }
+            }
+        }
         pairs.sort_unstable();
         pairs.dedup();
         pairs
     }
+}
+
+/// A spring's force on its first anchor, from the second anchor's offset `d` and relative
+/// velocity `dv`, along the line between the anchors: an elastic term `k d` at rest length 0
+/// (no direction needed) and `k (|d| - rest) n` otherwise, `n` the line's direction, and a
+/// damping term `c (dv . n) n`. None (`None`) for a tick at which the anchors coincide and the
+/// line is undefined; at rest length 0 the elastic term is zero there too.
+fn spring_force(d: Vector, dv: Vector, k: f32, c: f32, rest: f32) -> Option<Vector> {
+    let length = d.dot(d).sqrt();
+    if length == 0.0 {
+        return None;
+    }
+    let n = d / length;
+    let elastic = if rest == 0.0 {
+        d * k
+    } else {
+        n * (k * (length - rest))
+    };
+    Some(elastic + n * (c * dv.dot(n)))
 }
 
 /// The joint's one free axis, which a limit or a motor acts on.
