@@ -2,6 +2,7 @@
 
 use rapier2d::parry::bounding_volume::{Aabb, BoundingVolume};
 use rapier2d::parry::query;
+use rapier2d::parry::shape::Shape as Geometry;
 use rapier2d::prelude::*;
 
 use crate::encode::Settings;
@@ -77,4 +78,15 @@ fn write_pose(body: &RigidBody, out: &mut Vec<f32>) {
 fn write_velocity(body: &RigidBody, out: &mut Vec<f32>) {
     let v = body.linvel();
     out.extend_from_slice(&[v.x, v.y, body.angvel()]);
+}
+
+/// The turn from `from` to `to`: its angle, in (-pi, pi] (from the pure-Rust libm).
+fn turn(from: Rotation, to: Rotation) -> AngVector {
+    let r = to * from.inverse();
+    libm::atan2f(r.im, r.re)
+}
+
+/// A turn's angle.
+fn angle_of(turn: AngVector) -> f32 {
+    turn.abs()
 }

@@ -190,6 +190,19 @@ class World(Mobject):
     has no joint takes ``point_masses``, and any other takes ``"solver"``.
     :attr:`integrator` says which it takes, and the record's bake names it.
 
+    ``speed_limit`` (units per second) and ``angular_speed_limit`` (radians
+    per second) are the speeds above which a body is unstable: the lint
+    reports ``sim.unstable`` for a body that rises above one, and for a body
+    whose state went non-finite. Each is positive and below the solver's own
+    cap (400 u/s; 45 degrees a tick, about 47.1 rad/s), above which the
+    solver would scale the motion down; by default 200 u/s and 40 rad/s.
+    ``continuous_collision`` (on by default) has the solver sweep a fast body
+    against the fixed ones, so it cannot pass through a thin one; two bodies
+    that pass through each other in a tick are reported as
+    ``sim.tunnelled``. Each body's mobject declares its position, velocity,
+    angular velocity and contacts (``sim.*`` in ``state_at``'s quantities,
+    :mod:`.measures`).
+
     Declare bodies with :meth:`body`, then joints with :meth:`add_joint` and
     force laws with :meth:`add_force`, and add the world to the scene: it
     moves its bodies' mobjects, its submobjects, while it is there. A
@@ -255,6 +268,9 @@ class World(Mobject):
         *,
         gravity: Any = None,
         integrator: str | None = None,
+        speed_limit: float | None = None,
+        angular_speed_limit: float | None = None,
+        continuous_collision: bool = True,
         **kwargs: Any,
     ) -> None:
         _require_extension()
@@ -265,9 +281,23 @@ class World(Mobject):
                 'A world\'s integrator is "solver" or "point_masses", not'
                 f" {integrator!r}."
             )
+        if not isinstance(continuous_collision, bool):
+            raise TypeError(
+                "A world's continuous_collision is True or False, not"
+                f" {continuous_collision!r}."
+            )
+        limits = _limits(speed_limit, angular_speed_limit)
         super().__init__(**kwargs)
         self._callbacks: tuple[Any, ...] = ()
-        self._declare(Declaration(dimension, integrator))
+        self._declare(
+            Declaration(
+                dimension,
+                integrator,
+                speed_limit=limits[0],
+                angular_speed_limit=limits[1],
+                continuous_collision=continuous_collision,
+            )
+        )
         self._body_mobjects: tuple[Mobject, ...] = ()
         self._bake: BakeRef | None = None
         #: Whether an animation holds the world's drawing (its updating
@@ -787,6 +817,33 @@ class World(Mobject):
                 ("torque", stored_angular(force.torque, dimension, "A constant torque"))
             )
         return ForceItem("constant", (self._index(force.body),), tuple(numbers))
+
+
+def _limits(
+    speed: float | None, angular: float | None
+) -> tuple[float | None, float | None]:
+    """A world's declared speed limits, stored: each positive and strictly
+    below the solver's own cap; ``None`` for the solver's default.
+    """
+    import arachne_sim
+
+    found: list[float | None] = []
+    for given, cap, what, unit in (
+        (speed, arachne_sim.SPEED_CAP, "speed_limit", "u/s"),
+        (angular, arachne_sim.ANGULAR_SPEED_CAP, "angular_speed_limit", "rad/s"),
+    ):
+        if given is None:
+            found.append(None)
+            continue
+        limit = stored(given, f"A world's {what}")
+        if not 0 < limit < cap:
+            raise ValueError(
+                f"A world's {what} is a positive number below the solver's own cap"
+                f" of {cap:.4g} {unit}, above which the solver scales a body's"
+                f" motion down; not {given!r}."
+            )
+        found.append(limit)
+    return found[0], found[1]
 
 
 def _take_membership_notice(world: World) -> None:

@@ -11,6 +11,13 @@ determinism feature on.
     or the lock file holds a git source. Prints which crates are built with their ``std``
     feature.
 
+``tree_check.py patches``
+    Fails unless every local change to a vendored crate's sources, recorded as
+    ``vendor/<directory>-<what>.patch`` with its paths under ``vendor/<directory>/``
+    (``vendor/VENDORED.md``), is in those sources: the patch applies to them in reverse. A move
+    of the pin applies each patch to the new sources (``git apply --directory=...``), and this
+    check fails until it has.
+
 Run from ``sim/``.
 """
 
@@ -159,7 +166,47 @@ def check_vendored(metadata: dict[str, Any], lock: str, vendor: Path) -> list[st
     return problems
 
 
+def check_patches(vendor: Path) -> list[str]:
+    """Each ``<directory>-<what>.patch`` in ``vendor`` applies in reverse to the sources under
+    ``vendor/<directory>/``: they hold the change it records.
+    """
+    problems = []
+    root = vendor.parents[1]
+    for patch in sorted(vendor.glob("*.patch")):
+        directory = patch.name.split("-", 1)[0]
+        if not (vendor / directory).is_dir():
+            problems.append(f"{patch.name}: no vendored directory {directory}/")
+            continue
+        under = (vendor / directory).relative_to(root).as_posix()
+        done = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--check",
+                "--reverse",
+                f"--directory={under}",
+                str(patch),
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if done.returncode:
+            problems.append(
+                f"{patch.name}: the sources under {under}/ do not hold it:"
+                f" {done.stderr.strip()}"
+            )
+    return problems
+
+
 def main() -> None:
+    if sys.argv[1:] == ["patches"]:
+        problems = check_patches(SIM / "vendor")
+        for problem in problems:
+            print(f"FAIL: {problem}")
+        if not problems:
+            print("patches: every recorded change is in the vendored sources")
+        sys.exit(1 if problems else 0)
     if sys.argv[1:] != ["deps"]:
         sys.exit(__doc__)
     problems = check_deps()

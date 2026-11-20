@@ -8,6 +8,10 @@
 //! A **closed** world advances by itself. An **open** world's bodies also feel forces its caller
 //! computes at each tick (a callback of the scene): it advances one step at a time, given those
 //! forces, which enter its declaration.
+//!
+//! Beside its rows a world records what it found at each one ([`World::findings`]): a body whose
+//! state went non-finite, a body above the world's speed limits, and two bodies that passed
+//! through each other. They are not part of the trace bytes.
 
 use crate::encode::{self, Identity, Settings, Writer};
 use crate::points::Points;
@@ -31,6 +35,73 @@ impl Integrator {
         }
     }
 }
+
+/// What a world is given beside its bodies: the limits above which a body is unstable, and
+/// whether its solver sweeps fast bodies against fixed ones. All enter the declaration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Options {
+    /// The speed, units per second, above which a body is unstable; `None` for
+    /// [`crate::SPEED_LIMIT`]. Positive and strictly below the solver's cap
+    /// ([`World::speed_cap`]).
+    pub speed_limit: Option<f32>,
+    /// The angular speed, radians per second, above which a body is unstable; `None` for
+    /// [`crate::ANGULAR_SPEED_LIMIT`]. Positive and strictly below the solver's cap
+    /// ([`World::angular_speed_cap`]).
+    pub angular_speed_limit: Option<f32>,
+    /// Whether the solver's continuous collision detection sweeps a fast body against the fixed
+    /// ones, so that it cannot pass through a thin one (on by default).
+    pub continuous_collision: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            speed_limit: None,
+            angular_speed_limit: None,
+            continuous_collision: true,
+        }
+    }
+}
+
+/// The kinds of what a world finds at a row ([`World::findings`]).
+pub mod finding {
+    /// A body's state went non-finite: the solver set it back to its last finite pose and
+    /// stopped it (its quarantine), or a point mass's numbers are not finite.
+    pub const NON_FINITE: u32 = 1;
+    /// A body's speed went above the world's speed limit, as its row shows.
+    pub const SPEED: u32 = 2;
+    /// A body's angular speed went above the world's angular speed limit, as its row shows.
+    pub const ANGULAR_SPEED: u32 = 3;
+    /// Two bodies may have passed through each other in the step to the row: seen penetrating
+    /// each other (the finding's value is minus the depth seen), within the allowed linear error
+    /// of each other, which could not be told from a crossing (the closest distance measured),
+    /// or not shown apart (NaN).
+    pub const TUNNELLED: u32 = 4;
+    /// The solver scaled a body's speed down to its cap in the step to the row: the speed
+    /// reached at least the cap, above the world's limit, whatever the row shows.
+    pub const SPEED_CAPPED: u32 = 5;
+    /// The same of a body's angular speed and the solver's angular cap.
+    pub const ANGULAR_SPEED_CAPPED: u32 = 6;
+}
+
+/// What a step's engine reports with a row: the pairs of bodies touching, the bodies its solver
+/// stopped for a non-finite state, the pairs that may have passed through each other in the
+/// step (with the closest the sweep saw them), and
+/// whether the solver scaled each body's speed, and its angular speed, down to its caps during
+/// the step (empty where the engine has no caps).
+#[derive(Default)]
+pub(crate) struct Recorded {
+    pub touching: Vec<(u32, u32)>,
+    pub quarantined: Vec<u32>,
+    pub tunnelled: Vec<((u32, u32), f32)>,
+    pub capped: Vec<(bool, bool)>,
+}
+
+/// A body's flags as of the last row: which of the unstable conditions hold for it.
+const ABOVE_SPEED: u8 = 1;
+const ABOVE_ANGULAR_SPEED: u8 = 2;
+/// Once set, kept: a body whose state went non-finite is found once.
+const NON_FINITE: u8 = 4;
 
 enum Engine {
     Two(Box<two::Solver>),
@@ -57,15 +128,47 @@ pub struct World {
     velocity: Vec<f32>,
     in_contact: Vec<(u32, u32)>,
     events: Vec<[u32; 4]>,
+    /// Each body's flags as of the last row (`ABOVE_SPEED`, ...).
+    flags: Vec<u8>,
+    findings: Vec<[u32; 4]>,
+    /// The value of each finding, in order: the speed or angular speed found above its limit;
+    /// NaN for the others.
+    finding_values: Vec<f32>,
 }
 
 impl World {
-    /// A world in `dimension` (2 or 3) dimensions.
+    /// A world in `dimension` (2 or 3) dimensions, with the default [`Options`].
     pub fn new(dimension: usize, integrator: Integrator, open: bool) -> Result<Self, Error> {
+        World::with_options(dimension, integrator, open, Options::default())
+    }
+
+    /// A world in `dimension` (2 or 3) dimensions, given `options`.
+    pub fn with_options(
+        dimension: usize,
+        integrator: Integrator,
+        open: bool,
+        options: Options,
+    ) -> Result<Self, Error> {
         if dimension != 2 && dimension != 3 {
             return error(format!("A world has 2 or 3 dimensions, not {dimension}."));
         }
-        let settings = Settings::of(dimension);
+        let mut settings = Settings::of(dimension);
+        if let Some(limit) = options.speed_limit {
+            below(limit, settings.speed_cap(), "A world's speed limit", "u/s")?;
+            settings.speed_limit = limit;
+        }
+        if let Some(limit) = options.angular_speed_limit {
+            below(
+                limit,
+                settings.angular_speed_cap(),
+                "A world's angular speed limit",
+                "rad/s",
+            )?;
+            settings.angular_speed_limit = limit;
+        }
+        if !options.continuous_collision {
+            settings.ccd_substeps = 0;
+        }
         let engine = match (integrator, dimension) {
             (Integrator::PointMasses, _) => {
                 Engine::Points(Points::new(dimension, settings.dt, settings.point_substeps))
@@ -87,7 +190,35 @@ impl World {
             velocity: Vec::new(),
             in_contact: Vec::new(),
             events: Vec::new(),
+            flags: Vec::new(),
+            findings: Vec::new(),
+            finding_values: Vec::new(),
         })
+    }
+
+    /// The speed, units per second, above which a body is unstable.
+    pub fn speed_limit(&self) -> f32 {
+        self.settings.speed_limit
+    }
+
+    /// The angular speed, radians per second, above which a body is unstable.
+    pub fn angular_speed_limit(&self) -> f32 {
+        self.settings.angular_speed_limit
+    }
+
+    /// The solver's own cap on a body's speed, units per second: a speed limit is below it.
+    pub fn speed_cap(&self) -> f32 {
+        self.settings.speed_cap()
+    }
+
+    /// The solver's own cap on a body's angular speed, radians per second.
+    pub fn angular_speed_cap(&self) -> f32 {
+        self.settings.angular_speed_cap()
+    }
+
+    /// Whether the solver sweeps fast bodies against fixed ones ([`Options`]).
+    pub fn continuous_collision(&self) -> bool {
+        self.settings.ccd_substeps > 0
     }
 
     pub fn dimension(&self) -> usize {
@@ -507,6 +638,7 @@ impl World {
                 ));
             }
         }
+        self.flags = vec![0; self.bodies.len()];
         self.record();
         Ok(())
     }
@@ -521,15 +653,17 @@ impl World {
     }
 
     fn record(&mut self) {
-        let pairs = match &self.engine {
+        let recorded = match &mut self.engine {
             Engine::Two(e) => e.record(&mut self.pose, &mut self.velocity),
             Engine::Three(e) => e.record(&mut self.pose, &mut self.velocity),
             Engine::Points(p) => {
                 p.record(&mut self.pose, &mut self.velocity);
-                Vec::new()
+                Recorded::default()
             }
         };
         let row = self.rows as u32;
+        self.find(row, &recorded);
+        let pairs = recorded.touching;
         // Merge the sorted pair lists: a pair in one only began or ended at this row.
         let (old, new) = (&self.in_contact, &pairs);
         let (mut i, mut j) = (0, 0);
@@ -559,6 +693,105 @@ impl World {
     pub fn velocity(&self, start: usize, stop: usize) -> &[f32] {
         let w = self.bodies.len() * self.velocity_width();
         &self.velocity[start * w..stop * w]
+    }
+
+    /// What was found at the last row: for each moving body, a non-finite state (once, at the
+    /// row it began), and a speed or an angular speed above the world's limit (at each row at
+    /// which it rises above, after a row at which it did not), as the row shows it or as the
+    /// solver's cap scaled it down during the step (the cap is above the limit); and each pair
+    /// that may have passed through each other in the step to the row.
+    fn find(&mut self, row: u32, recorded: &Recorded) {
+        let n = self.bodies.len();
+        let (pw, vw) = (self.pose_width(), self.velocity_width());
+        let pose = &self.pose[self.pose.len() - n * pw..];
+        let velocity = &self.velocity[self.velocity.len() - n * vw..];
+        let (limit, angular_limit) = (self.settings.speed_limit, self.settings.angular_speed_limit);
+        let caps = (self.settings.speed_cap(), self.settings.angular_speed_cap());
+        let mut found: Vec<([u32; 4], f32)> = Vec::new();
+        for (b, &fixed) in self.bodies.iter().enumerate() {
+            if fixed {
+                continue;
+            }
+            let v = &velocity[b * vw..(b + 1) * vw];
+            let finite = !recorded.quarantined.contains(&(b as u32))
+                && pose[b * pw..(b + 1) * pw]
+                    .iter()
+                    .chain(v)
+                    .all(|x| x.is_finite());
+            let mut now = self.flags[b] & NON_FINITE;
+            // The kind and value each signal is found with, when it is.
+            let mut speed = (finding::SPEED, f32::NAN);
+            let mut angular = (finding::ANGULAR_SPEED, f32::NAN);
+            if !finite {
+                now |= NON_FINITE;
+            } else if now == 0 {
+                let (linear, turning) = speeds(v, self.dim);
+                let (linear_capped, turning_capped) =
+                    recorded.capped.get(b).copied().unwrap_or((false, false));
+                speed = if linear_capped {
+                    (finding::SPEED_CAPPED, linear.max(caps.0))
+                } else {
+                    (finding::SPEED, linear)
+                };
+                angular = if turning_capped {
+                    (finding::ANGULAR_SPEED_CAPPED, turning.max(caps.1))
+                } else {
+                    (finding::ANGULAR_SPEED, turning)
+                };
+                if speed.1 > limit {
+                    now |= ABOVE_SPEED;
+                }
+                if angular.1 > angular_limit {
+                    now |= ABOVE_ANGULAR_SPEED;
+                }
+            }
+            for (flag, (kind, value)) in [
+                (NON_FINITE, (finding::NON_FINITE, f32::NAN)),
+                (ABOVE_SPEED, speed),
+                (ABOVE_ANGULAR_SPEED, angular),
+            ] {
+                if now & flag != 0 && self.flags[b] & flag == 0 {
+                    found.push(([row, kind, b as u32, b as u32], value));
+                }
+            }
+            self.flags[b] = now;
+        }
+        found.extend(
+            recorded
+                .tunnelled
+                .iter()
+                .map(|&((a, b), closest)| ([row, finding::TUNNELLED, a, b], closest)),
+        );
+        found.sort_unstable_by_key(|&(key, _)| key);
+        for (key, value) in found {
+            self.findings.push(key);
+            self.finding_values.push(value);
+        }
+    }
+
+    /// What was found, by row: `[row, kind, a, b]` (kind one of [`finding`]), sorted. A body's
+    /// finding names it as both `a` and `b`; a pair's names its bodies, `a < b`. A non-finite
+    /// state is found at the row it began, once for the body; a speed above a limit at each row
+    /// it rises above it. Two bodies may have passed through each other in a step when neither
+    /// touched the other at the step's start or end, the solver held no contact between them in
+    /// the step, and the two, swept through the step's motion (each body's centre of mass along
+    /// a line and its turn about it at a constant rate), came within the allowed linear error of
+    /// each other; it is found at the step's last row. The sweep's margin covers rounding while
+    /// the shapes stay within about 1000 units of the origin; beyond that nothing is claimed.
+    /// Fixed bodies, two bodies a joint keeps from colliding, and a body found non-finite are
+    /// not checked. None of it is in the trace bytes.
+    pub fn findings(&self) -> &[[u32; 4]] {
+        &self.findings
+    }
+
+    /// The value of each of [`World::findings`], in order: for `SPEED` and `ANGULAR_SPEED`
+    /// the row's speed (units per second) or angular speed (radians per second); for
+    /// `SPEED_CAPPED` and `ANGULAR_SPEED_CAPPED` a lower bound, the larger of the row's and the
+    /// cap; for `TUNNELLED` minus the depth the sweep saw the two penetrating, else the closest
+    /// distance it measured within the allowed linear error, or NaN when it could not show them
+    /// apart; NaN for a non-finite state.
+    pub fn finding_values(&self) -> &[f32] {
+        &self.finding_values
     }
 
     /// The contacts that began and ended: `[row, a, b, kind]`, `a < b` bodies by number, kind 1
@@ -665,6 +898,30 @@ impl std::fmt::Debug for World {
             .field("rows", &self.rows)
             .finish_non_exhaustive()
     }
+}
+
+/// A body's speed and angular speed from its velocity row (`vx, vy, w` or
+/// `vx, vy, vz, wx, wy, wz`).
+fn speeds(v: &[f32], dimension: usize) -> (f32, f32) {
+    if dimension == 2 {
+        ((v[0] * v[0] + v[1] * v[1]).sqrt(), v[2].abs())
+    } else {
+        (
+            (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(),
+            (v[3] * v[3] + v[4] * v[4] + v[5] * v[5]).sqrt(),
+        )
+    }
+}
+
+/// A limit: a positive number strictly below `cap`.
+fn below(limit: f32, cap: f32, what: &str, unit: &str) -> Result<(), Error> {
+    if limit.is_finite() && limit > 0.0 && limit < cap {
+        return Ok(());
+    }
+    error(format!(
+        "{what} is a positive number below the solver's own cap of {cap} {unit}, above which \
+         the solver scales a body's motion down; not {limit}."
+    ))
 }
 
 /// `count` finite numbers.

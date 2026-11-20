@@ -477,7 +477,10 @@ class Declaration:
     declared with, or once its first stay began the one it took. ``order``
     is the kind of each body, joint and force law (``"body"``, ``"joint"``,
     ``"force"``) in the order they were declared, across kinds: the order the
-    solver is given them in.
+    solver is given them in. ``speed_limit`` and ``angular_speed_limit`` are
+    the stored limits it was declared with (``None``: the solver's default),
+    and ``continuous_collision`` whether its solver sweeps fast bodies
+    against fixed ones.
     """
 
     dimension: int
@@ -487,6 +490,9 @@ class Declaration:
     forces: tuple[ForceItem, ...] = ()
     callbacks: tuple[CallbackItem, ...] = ()
     order: tuple[str, ...] = ()
+    speed_limit: float | None = None
+    angular_speed_limit: float | None = None
+    continuous_collision: bool = True
 
     @property
     def open(self) -> bool:

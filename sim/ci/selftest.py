@@ -409,6 +409,29 @@ def test_tree_a_vendored_crate_missing_or_twice_fails() -> None:
     ]
 
 
+def test_tree_a_recorded_patch_must_be_in_the_vendored_sources() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        vendor = root / "sim" / "vendor"
+        source = vendor / "rapier" / "src"
+        source.mkdir(parents=True)
+        (vendor / "rapier-local.patch").write_text(
+            "A note above the diff.\n\n"
+            "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,2 @@\n one\n+two\n"
+        )
+        (source / "x.rs").write_text("one\ntwo\n")
+        assert tree_check.check_patches(vendor) == []
+        (source / "x.rs").write_text("one\n")
+        (problem,) = tree_check.check_patches(vendor)
+        assert problem.startswith(
+            "rapier-local.patch: the sources under sim/vendor/rapier/"
+        )
+        (vendor / "nothing-local.patch").write_text("")
+        assert "nothing-local.patch: no vendored directory nothing/" in (
+            tree_check.check_patches(vendor)
+        )
+
+
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
