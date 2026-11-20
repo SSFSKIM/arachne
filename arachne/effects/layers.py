@@ -80,13 +80,16 @@ def set_depth(mobject: Mobject, depth: float | None) -> None:
 
 
 def clear_effects(mobject: Mobject) -> None:
-    """Remove every effect of ``mobject``: it is no longer a layer of its
-    own, and the GPU-only capabilities its effects declared are withdrawn.
-    The object's rows are one set, owned by no one: a row of another id that
-    the object declared itself stays, but one of the same id as an effect's
-    is withdrawn with it.
+    """Remove every effect of ``mobject``: its blur, mask and depth, and the
+    GPU-only capabilities they declared. A window keeps what it shows, which
+    is what the window is and not an effect added to it; any other object is
+    no longer a layer of its own. The object's rows are one set, owned by no
+    one: a row of another id that the object declared itself stays, but one
+    of the same id as an effect's is withdrawn with it.
     """
-    seam.set_layer(mobject, None)
+    spec = layer_of(mobject)
+    shown = None if spec is None else spec.window
+    seam.set_layer(mobject, None if shown is None else LayerSpec(window=shown))
 
 
 def set_focus(scene: Any, depth: float, aperture: float) -> None:
