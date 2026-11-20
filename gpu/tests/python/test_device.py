@@ -5,7 +5,9 @@ door. A test about a machine with no GPU makes that machine for itself in a chil
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import tomllib
@@ -77,6 +79,78 @@ def test_the_ordinary_door_refuses_a_machine_with_no_vulkan_loader(tmp_path):
     assert report["ordinary"]["seen"] == []
     assert "no Vulkan adapter was found" in report["ordinary"]["message"]
     assert isinstance(report["software"], str)
+
+
+FORK = """
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import arachne_gpu, conftest
+from arachne_gpu import Frame
+from gpu_helpers import CLEAR
+
+def outcome(call):
+    try:
+        call()
+        return "ran"
+    except Exception as error:
+        return {"class": type(error).__name__, "runtime": isinstance(error, RuntimeError),
+                "message": str(error)}
+
+def in_a_fork(*calls):
+    read, write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read)
+        os.write(write, json.dumps([outcome(call) for call in calls]).encode())
+        os._exit(0)
+    os.close(write)
+    answer = b""
+    while chunk := os.read(read, 1 << 16):
+        answer += chunk
+    os.waitpid(pid, 0)
+    return json.loads(answer)
+
+def draws():
+    conftest.checked_compositor(16, 16).draw(Frame(CLEAR, []))
+
+report = {"before": in_a_fork(draws)}
+draws()
+report["after"] = in_a_fork(arachne_gpu.adapters, draws)
+report["parent"] = outcome(draws)
+print(json.dumps(report))
+"""
+
+
+def test_a_process_forked_after_first_use_is_refused_and_one_forked_before_draws():
+    here = str(Path(__file__).parent)
+    # The helper leads a process group of its own, so a timeout ends the children it forked too:
+    # a child that hangs on what it inherited is the failure this test exists to catch.
+    helper = subprocess.Popen(
+        [sys.executable, "-c", FORK, here],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        out, err = helper.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        os.killpg(helper.pid, signal.SIGKILL)
+        helper.communicate()
+        raise
+    assert helper.returncode == 0, err
+    report = json.loads(out.splitlines()[-1])
+    # Forked before this process first used the build: the child opens Vulkan of its own.
+    assert report["before"] == ["ran"]
+    # Forked after: its Vulkan state is the parent's, and both calls refuse before touching it.
+    for refused in report["after"]:
+        assert refused != "ran", report
+        assert refused["class"] == "ForkedProcessError", refused
+        assert refused["runtime"], refused
+        assert "spawn" in refused["message"], refused
+        assert "exec" in refused["message"], refused
+        assert "no gpu" not in refused["message"].lower()
+    assert report["parent"] == "ran"
 
 
 def test_adapters_lists_what_the_machine_offers():

@@ -42,7 +42,7 @@ pub mod testing;
 mod python;
 
 pub use compositor::{Compositor, DrawError, OpenError};
-pub use device::{AdapterSummary, NoGpu, Pin, adapters};
+pub use device::{AdapterSummary, ForkedProcess, NoGpu, Pin, adapters};
 pub use frame::{Blur, Focus, Frame, Layer, NEAREST, SoftMask, Source};
 pub use keys::{Key, PAINTED_TAG, image_key, painted_from_straight, painted_key};
 pub use object_map::Footprint;

@@ -89,13 +89,16 @@ fn compositors_on_several_threads_draw_at_once_and_each_draws_what_one_alone_dra
     let (w, h) = FRAME;
     let expected = Arc::new(draw_and_map(&mut compositor(w, h)));
     // Every thread opens its own compositor at the same time as the others, then all draw at once.
+    // Every thread reaches the barrier whether its open succeeded or not, so a failed open is
+    // reported by its own thread instead of leaving the others waiting.
     let start = Arc::new(Barrier::new(THREADS));
     let threads: Vec<_> = (0..THREADS)
         .map(|thread| {
             let (start, expected) = (Arc::clone(&start), Arc::clone(&expected));
             std::thread::spawn(move || {
-                let mut c = compositor(w, h);
+                let opened = std::panic::catch_unwind(|| compositor(w, h));
                 start.wait();
+                let mut c = opened.unwrap_or_else(|failed| std::panic::resume_unwind(failed));
                 for round in 0..ROUNDS {
                     let drawn = draw_and_map(&mut c);
                     assert!(

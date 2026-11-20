@@ -113,12 +113,22 @@ names the device that draws: `adapter`, `backend`, `driver` (the version string 
 reports) and `wgpu` (the locked version, also `arachne_gpu.__wgpu_version__`). `adapters()` lists
 what the machine offers.
 
-A process opens Vulkan once and one device for each door, at the first compositor through it, and
-keeps them: every later compositor of that door draws on the same device, with textures, working
-textures and a read-back buffer of its own, so a process may open, drop and keep as many
-compositors as it likes, and draw with several on several threads at once. A device that is lost
-is replaced at the next open. A process forked after it first used this build must not use it in
-the child: the child would hold its parent's Vulkan objects.
+**One device per door, per process.** A process makes one Vulkan instance, at its first
+`adapters()` or compositor, and opens one device for each door at that door's first compositor. It
+keeps both for its life. Every later compositor of a door, of any size, draws on the same device,
+with textures, pipelines, working textures and a read-back buffer of its own. So a process may
+open, drop and keep as many compositors as it likes, and draw with several on several threads at
+once. A Vulkan driver may bound what it gives one process: on one card's driver, an instance and a
+device for each compositor stopped the card being seen after 18 opened and dropped, and refused the
+64th device kept open. A device that is lost is replaced at the next open.
+
+**Forked processes are refused.** A child forked after its parent first used this build inherits
+the parent's instance and devices, but not the threads that hold the driver's state. In such a
+child, `Compositor(...)`, the testing door and `adapters()` refuse before touching any of it:
+`OpenError::ForkedProcess` from Rust, `ForkedProcessError` (a `RuntimeError`) from Python, never
+`NoGpu`. What the child inherited is neither used nor released, and a compositor it inherited is
+not safe to draw with or to drop. Start GPU work in a process made by spawn or exec, or fork before
+the first use.
 
 ## Building and testing
 
