@@ -13,7 +13,9 @@ runs no scene code as it steps; a callback force makes it open, and reads the
 
 Its declared quantities (:mod:`arachne.quantities`) are named under the
 prefix ``sim.``, which this package owns, in the units it registers here:
-``u`` (a scene unit), ``u/s``, ``rad``, ``rad/s`` and ``s``.
+``u`` (a scene unit), ``u/s``, ``rad``, ``rad/s`` and ``s``. A
+:class:`BodyReadout` (:meth:`World.readout`, :mod:`.readout`) shows one of a
+body's quantities at every frame, and declares which.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from .declaration import (
     SpringJoint,
     WeldJoint,
 )
+from .readout import BodyReadout
 from .world import Body, World, WorldState
 
 __all__ = [
@@ -47,6 +50,7 @@ __all__ = [
     "BallJoint",
     "BallShape",
     "Body",
+    "BodyReadout",
     "BoxShape",
     "CapsuleShape",
     "ConstantForce",

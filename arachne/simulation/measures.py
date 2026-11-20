@@ -30,7 +30,7 @@ the world's allowed linear error, touching or overlapping
 
 from __future__ import annotations
 
-__all__ = ["SimBody", "bind"]
+__all__ = ["SimBody", "bind", "body_quantities"]
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -45,6 +45,7 @@ from arachne.timeline.clock import TICK_RATE
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
+    from arachne.timeline.bake import Bakes
 
 #: Each quantity a body declares, and its unit.
 UNITS: Mapping[str, str] = {
@@ -81,13 +82,24 @@ def bind(mobject: Mobject, ordinal: int, body: int) -> None:
 
 @quantities.source(SimBody)
 def _sim_body(found: SimBody, held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
-    row = None if at.bakes is None else at.bakes.row(found.ordinal, at.tick)
+    return body_quantities(at.bakes, found.ordinal, found.body, at.tick)
+
+
+def body_quantities(
+    bakes: Bakes | None, ordinal: int, body: int, tick: int
+) -> tuple[Quantity, ...]:
+    """The quantities of the body ``body`` of the stay ``ordinal`` at
+    ``tick``, read from ``bakes``: what the body's source answers, and what a
+    readout of it shows (:mod:`.readout`).
+    """
+    row = None if bakes is None else bakes.row(ordinal, tick)
     if row is None:
-        why = f"no bake holds tick {at.tick} of this body's stay"
+        why = f"no bake holds tick {tick} of this body's stay"
         return tuple(
             Quantity(name, None, unit, unreadable=why) for name, unit in UNITS.items()
         )
-    pose, velocity = row["pose"][found.body], row["velocity"][found.body]
+    assert bakes is not None
+    pose, velocity = row["pose"][body], row["velocity"][body]
     planar = len(pose) == 3
     position = (*pose[:2], 0.0) if planar else tuple(pose[:3])
     linear = (*velocity[:2], 0.0) if planar else tuple(velocity[:3])
@@ -95,7 +107,7 @@ def _sim_body(found: SimBody, held: Mapping[str, Any], at: At) -> Iterable[Quant
         float(velocity[2]) if planar else _floats(velocity[3:6])
     )
     first_tick = row.tick - row.index
-    began = _began(at, found, row.index)
+    began = _began(bakes, ordinal, body, row.index)
     times = tuple(
         float(Fraction(first_tick + int(index), TICK_RATE)) for index in began
     )
@@ -113,16 +125,15 @@ def _sim_body(found: SimBody, held: Mapping[str, Any], at: At) -> Iterable[Quant
     )
 
 
-def _began(at: At, found: SimBody, index: int) -> np.ndarray:
-    """The rows of the stay, at or before ``index``, at which a contact of
-    the body began, one per contact, in order.
+def _began(bakes: Bakes, ordinal: int, body: int, index: int) -> np.ndarray:
+    """The rows of the stay ``ordinal``, at or before ``index``, at which a
+    contact of the body ``body`` began, one per contact, in order.
     """
-    assert at.bakes is not None
-    table = at.bakes.events(found.ordinal, "contact")
+    table = bakes.events(ordinal, "contact")
     if table is None or not len(table):
         return np.zeros(0, dtype=np.uint32)
     rows, a, b, kind = table.T
-    mine = (kind == 1) & (rows <= index) & ((a == found.body) | (b == found.body))
+    mine = (kind == 1) & (rows <= index) & ((a == body) | (b == body))
     return np.asarray(rows[mine])
 
 
