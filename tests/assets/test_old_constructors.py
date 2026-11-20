@@ -9,7 +9,9 @@ and refuses its frames (``tests/effects/test_drawn.py`` draws it on a
 device). A scene of media objects runs between them too, and one whose clip
 runs on its clock: here, on a host with no GPU, their states are answered
 and their frames refused (``render.gpu_required``);
-``tests/media/test_drawn.py`` draws them on a device between them.
+``tests/media/test_drawn.py`` draws them on a device between them. So does
+a scene of rigs whose parts are stills, one viewed through a moving camera
+(``tests/media/test_raster_drawn.py`` draws one on a device).
 """
 
 from __future__ import annotations
@@ -111,6 +113,22 @@ class WithClock(Scene):
         self.wait(0.25)
 """
 
+WITH_RASTER = """\
+from arachne import *
+
+
+class WithRaster(MovingCameraScene):
+    def construct(self):
+        ground = Rig("fixture:layered-ground")
+        ground.view_through(self.camera)
+        flap = Rig("fixture:hinged-flap").shift(DOWN)
+        flap.pose(lift=30)
+        flap.show(badge="off")
+        self.add(ground, flap)
+        self.play(self.camera.frame.animate.shift(RIGHT), run_time=0.5)
+        self.wait(0.25)
+"""
+
 #: Opens each old scene, then a scene that used an asset, one with an effect,
 #: one of media objects and one whose clip runs on its clock, then each old
 #: scene again, in one process, on a host with no GPU; prints each opening's
@@ -206,6 +224,7 @@ def clock_answers():
 fresh = {scene: opened("old.py", scene) for scene in ("OldSvg", "OldImage")}
 asset = opened("with_asset.py", "WithAsset")
 effect = refused("with_effect.py", "WithEffect")
+raster = refused("with_raster.py", "WithRaster")
 media = media_answers()
 clock = clock_answers()
 after = {scene: opened("old.py", scene) for scene in ("OldSvg", "OldImage")}
@@ -215,6 +234,7 @@ print(
             "fresh": fresh,
             "asset": asset,
             "effect": effect,
+            "raster": raster,
             "media": media,
             "clock": clock,
             "after": after,
@@ -246,6 +266,7 @@ def _scenes(directory: Path) -> Path:
     (directory / "with_effect.py").write_text(textwrap.dedent(WITH_EFFECT))
     (directory / "with_media.py").write_text(textwrap.dedent(WITH_MEDIA))
     (directory / "with_clock.py").write_text(textwrap.dedent(WITH_CLOCK))
+    (directory / "with_raster.py").write_text(textwrap.dedent(WITH_RASTER))
     return directory
 
 
@@ -269,6 +290,9 @@ def test_an_svg_and_an_image_by_path_draw_the_same_with_or_without_a_manifest(
         assert openings["effect"]["route"] == "gpu"
         assert all(openings["effect"]["states"])
         assert openings["effect"]["frame"] == "render.gpu_required"
+        assert openings["raster"]["route"] == "gpu"
+        assert all(openings["raster"]["states"])
+        assert openings["raster"]["frame"] == "render.gpu_required"
     assert bare["fresh"] == with_manifest["fresh"]
     assert bare["asset"] == with_manifest["asset"]
     assert bare["media"] == {

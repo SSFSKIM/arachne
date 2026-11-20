@@ -1,0 +1,104 @@
+{
+  "manifest_version": "1.1",
+  "name": "hinged-flap",
+  "version": 1,
+  "kind": "parts",
+  "requires": ["raster"],
+  "size": {
+    "scene_units_per_unit": 0.02,
+    "origin": [80, 90],
+    "width": 3.2,
+    "height": 2.8
+  },
+  "parts": [
+    {
+      "name": "body",
+      "file": "pieces/body.png",
+      "digest": "sha256:c97c12b71c38b6b11dda5a290415775359dd0e5fc114b1a51bc9577774ee7a46",
+      "box": [0, 40, 160, 160],
+      "parent": null,
+      "pivot": [80, 160],
+      "order": 0
+    },
+    {
+      "name": "flap",
+      "file": "pieces/flap.png",
+      "digest": "sha256:ebff378f8c7ebd7bfd39f27420ca7df8fea47f4075f53ba94a247cbeae284201",
+      "box": [0, 20, 160, 44],
+      "parent": "body",
+      "pivot": [6, 42],
+      "order": 1
+    }
+  ],
+  "slots": [
+    {
+      "name": "badge",
+      "parent": "body",
+      "pivot": [120, 100],
+      "order": 2,
+      "default": "on",
+      "drawings": [
+        {
+          "name": "on",
+          "file": "pieces/on.png",
+          "digest": "sha256:2279ee6b2627edb1eb3ac25c96b5a927102c585659066ec872bda18ae654795b",
+          "box": [100, 80, 140, 120]
+        },
+        {
+          "name": "off",
+          "file": "pieces/off.png",
+          "digest": "sha256:9fa286f945d91ea1de933bbc3f74f0b471317fe87c05ba1f25d0d79c49acdfcf",
+          "box": [100, 80, 140, 120]
+        }
+      ]
+    }
+  ],
+  "parameters": [
+    {
+      "name": "lift",
+      "min": 0,
+      "max": 80,
+      "default": 0,
+      "unit": "deg",
+      "drives": [
+        {
+          "part": "flap",
+          "kind": "rotate",
+          "unit": "deg",
+          "keys": [{"at": 0, "value": 0}, {"at": 80, "value": 80}]
+        }
+      ]
+    },
+    {
+      "name": "grow",
+      "min": 0.8,
+      "max": 1.2,
+      "default": 1,
+      "drives": [
+        {
+          "part": "badge",
+          "kind": "scale",
+          "keys": [{"at": 0.8, "value": 0.8}, {"at": 1.2, "value": 1.2}]
+        }
+      ]
+    }
+  ],
+  "anchors": [{"name": "tip", "part": "flap", "attach": "interior", "at": [150, 32]}],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:a2acd4c078134554bf1b382d86ce59f39d42f2d792d282e12829d69f07d3ee7d",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true},
+      {"name": "frames_exact", "pass": true}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

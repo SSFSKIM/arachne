@@ -39,7 +39,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from arachne.camera.projection import draw_kind
+from arachne.camera.projection import draw_kind, picture_corners, picture_shows
 from arachne.timeline.origins import origin_of
 
 from .findings import Finding, FindingObject
@@ -211,10 +211,16 @@ def _stroke(mob: Any, label: str, points: np.ndarray) -> Side:
 
 
 def _side(mob: Any, label: str | None) -> Side:
-    leaves = [leaf for leaf in mob.family_members_with_points() if len(leaf.points)]
-    low = mob.get_corner(np.array([-1.0, -1.0, 0.0]))[:2]
-    high = mob.get_corner(np.array([1.0, 1.0, 0.0]))[:2]
-    box: Box = (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
+    held = [leaf for leaf in mob.family_members_with_points() if len(leaf.points)]
+    # A picture no pixel of which shows is drawn by no camera, and the
+    # sweep's parts leave it out: so does a side.
+    leaves = [leaf for leaf in held if not _picture(leaf) or picture_shows(leaf)]
+    if len(leaves) == len(held):
+        low = mob.get_corner(np.array([-1.0, -1.0, 0.0]))[:2]
+        high = mob.get_corner(np.array([1.0, 1.0, 0.0]))[:2]
+        box: Box = (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
+    else:
+        box = _union([_leaf_box(leaf) for leaf in leaves])
     called = label or _called(mob)
     text = _is_text(mob)
     if text or (leaves and all(_filled(leaf) for leaf in leaves)):
@@ -236,11 +242,13 @@ def _side(mob: Any, label: str | None) -> Side:
     side = Side(mob, called, region=False, points=points)
     if len(points):
         side.box = box
+    # A picture is no stroke: a side that holds one rings nothing, whatever
+    # its points' ends.
     side.ends = (
         np.vstack(
             [np.asarray(leaf.points, dtype=float)[[0, -1], :2] for leaf in leaves]
         )
-        if leaves
+        if leaves and not any(_picture(leaf) for leaf in leaves)
         else np.empty((0, 2))
     )
     return side
@@ -260,12 +268,41 @@ def _is_text(mob: Any) -> bool:
     return False
 
 
+def _picture(leaf: Any) -> bool:
+    """Whether a leaf draws a picture: an image, or a leaf that declares its
+    fill a picture.
+    """
+    return draw_kind(leaf) == "image" or bool(getattr(leaf, "fill_is_picture", False))
+
+
+def _corners(leaf: Any) -> np.ndarray:
+    """A picture's corners, CE's image order (upper left, upper right,
+    lower left, lower right), in the scene's x and y
+    (:func:`~arachne.camera.projection.picture_corners`).
+    """
+    found = picture_corners(leaf)
+    assert found is not None, "a leaf with points has corners"
+    return found[:, :2]
+
+
+def _union(boxes: Sequence[Box]) -> Box:
+    if not boxes:
+        return (0.0, 0.0, 0.0, 0.0)
+    found = np.array(boxes, dtype=float)
+    return (
+        float(found[:, 0].min()),
+        float(found[:, 1].min()),
+        float(found[:, 2].max()),
+        float(found[:, 3].max()),
+    )
+
+
 def _filled(leaf: Any) -> bool:
     """Whether a leaf lays a fill: a picture does, wholly (as the sweep's
     parts read an image: opaque over its corners), whatever its fill says;
     so does any leaf that declares its fill a picture.
     """
-    if draw_kind(leaf) == "image" or getattr(leaf, "fill_is_picture", False):
+    if _picture(leaf):
         return True
     opacity = getattr(leaf, "get_fill_opacity", None)
     return opacity is not None and float(opacity()) > 0
@@ -301,6 +338,11 @@ def _samples(leaves: Sequence[Any]) -> np.ndarray:
         points = np.asarray(leaf.points, dtype=float)
         if not len(points):
             continue
+        if _picture(leaf):
+            # A picture's edge, all round: its four sides, never a curve
+            # through its corners.
+            out.append(_perimeter(_corners(leaf)))
+            continue
         per = _per_curve(leaf)
         whole = len(points) - len(points) % per
         if per != 4 or whole < 4:
@@ -320,6 +362,20 @@ def _samples(leaves: Sequence[Any]) -> np.ndarray:
             ]
         )
     return np.vstack(out) if out else np.empty((0, 2))
+
+
+def _perimeter(corners: np.ndarray) -> np.ndarray:
+    """Points about :data:`SPACING` apart along the four sides of a
+    picture with ``corners`` (CE's image order), each side's ends included.
+    """
+    upper_left, upper_right, lower_left, lower_right = corners
+    ring = [upper_left, upper_right, lower_right, lower_left, upper_left]
+    sides = []
+    for start, end in zip(ring, ring[1:], strict=False):
+        n = max(2, int(np.ceil(np.linalg.norm(end - start) / SPACING)) + 1)
+        s = np.linspace(0.0, 1.0, n)[:, None]
+        sides.append(start + s * (end - start))
+    return np.vstack(sides)
 
 
 def _called(mob: Any) -> str:

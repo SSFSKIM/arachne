@@ -17,6 +17,11 @@ the stack draws the frame from them. The objects are cut into runs:
   backdrop; no run mixes two kinds. A layer whose family, or a mask, mixes
   kinds is stacked from its runs, never painted into one array.
 
+A raster member of a rig (:class:`~arachne.assets.raster.RasterPart`) is a
+vector quad in the rig's family that is painted as its picture: an image at
+the quad's four corners, as opaque as the quad's fill, in an image run, in
+the quad's place in the drawing order. Its paint is never drawn.
+
 The camera's background, straight as its colour or image is, is the bottom
 layer: an opaque uniform one is the frame's fill, any other an image.
 Painted "over" is associative, so a frame whose layers carry no effect
@@ -47,7 +52,6 @@ __all__ = ["Stack", "Unsupported"]
 
 import contextlib
 import copy
-import functools
 import math
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
@@ -364,10 +368,14 @@ class Stack:
         painted values), ``"image"`` (blended, straight values) or
         ``"points"`` (written over, straight values); ``None`` not at all.
         """
+        from arachne.assets.raster import RasterPart
         from arachne.mobject.mobject import Mobject
         from arachne.mobject.types.image_mobject import AbstractImageMobject
         from arachne.mobject.types.vectorized_mobject import VMobject
 
+        if isinstance(leaf, RasterPart):
+            # Painted as its picture, an image.
+            return "image"
         kind = self.camera.type_or_raise(leaf)
         if kind is VMobject:
             return "vector"
@@ -384,9 +392,22 @@ class Stack:
         return self._upload(self._painted(run), vector, uploads)
 
     def _painted(self, run: Sequence[Mobject]) -> np.ndarray:
+        from arachne.assets.raster import RasterPart
+
         camera = self.camera
         camera.pixel_array[...] = 0
-        camera.capture_mobjects(list(run), include_submobjects=False)
+        if not any(isinstance(leaf, RasterPart) for leaf in run):
+            camera.capture_mobjects(list(run), include_submobjects=False)
+            return camera.pixel_array.copy()
+        # A run of images holding raster members: each painted in its turn,
+        # as the camera paints a run of images, a member as its picture.
+        for leaf in run:
+            if not isinstance(leaf, RasterPart):
+                camera.capture_mobjects([leaf], include_submobjects=False)
+                continue
+            picture = leaf.picture(self.record.origin(leaf).scene_line)
+            if picture is not None:
+                camera.display_image_mobject(picture, camera.pixel_array)  # type: ignore[arg-type]
         return camera.pixel_array.copy()
 
     def _upload(self, rgba: np.ndarray, painted: bool, uploads: dict) -> bytes:
@@ -488,21 +509,26 @@ def _camera_of_size(camera: Camera, size: tuple[int, int]) -> Camera:
     inner.pixel_array_to_cairo_context = {}
     inner.pixel_array_to_mapping_centre = {}
     inner.background_colored_vmobject_displayer = None
-    inner.adjusted_thickness = functools.partial(_thickness_at_own_size, inner)
+    # One plain function, the same for every window's camera: the factor
+    # depends on no camera's state (below).
+    inner.adjusted_thickness = _thickness_at_own_size
     inner.pixel_array = np.zeros(
         (height, width, camera.n_channels), dtype=camera.pixel_array_dtype
     )
     return inner
 
 
-def _thickness_at_own_size(camera: Camera, thickness: float) -> float:
-    """A point's thickness as ``Camera.adjusted_thickness`` gives it, with
-    ``camera``'s own size where that reads the configured one: a scene
-    configured at the window's size, drawn alone, thickens its points by a
-    factor of 1, and so does the window's camera.
+def _thickness_at_own_size(thickness: float) -> float:
+    """A point's thickness on a window's camera. ``Camera.adjusted_thickness``
+    scales a thickness by the configured frame's size over the camera's own;
+    a scene configured at the window's size and drawn alone has the factor
+    1, and a window's camera, which draws under the frame's configuration,
+    is given that factor itself.
+
+    One module-level function, the same object on every window's camera;
+    it reads no camera.
     """
-    own = camera.pixel_height + camera.pixel_width
-    return 1 + (thickness - 1) * (own / own)
+    return 1 + (thickness - 1) * 1.0
 
 
 def _bound_to(method: Any, owner: Any, other: Any) -> Any:

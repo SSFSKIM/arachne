@@ -5,7 +5,8 @@ structure and numbers equal to within 1e-6. A media asset drawn again is
 admitted on its own and has the committed one's files, manifest (but its
 admission record) and frame digests; its files' bytes, and so its
 admission's digest, move with the PNG encoder's compression library, and are
-not compared.
+not compared. So it is with a rig of stills: each member's frame digest is
+the manifest's, and is its file's.
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ def _drawn_as_committed(drawn: Path, committed: Path) -> None:
 def test_the_pack_is_what_its_sequence_draws(tmp_path):
     draw_fixture_pack.draw(tmp_path)
     assert sorted(p.name for p in FIXTURES.iterdir() if p.is_dir()) == sorted(
-        draw_fixture_pack.NAMES + draw_fixture_pack.MEDIA
+        draw_fixture_pack.NAMES + draw_fixture_pack.MEDIA + draw_fixture_pack.RASTER
     )
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(draw_fixture_pack.NAMES)
     for name in draw_fixture_pack.NAMES:
@@ -101,6 +102,36 @@ def test_the_media_are_what_their_sequence_draws_and_are_admitted_alone(tmp_path
         assert admit(tmp_path / name).passed
         assert admit(FIXTURES / name).passed
         _frames_drawn_as_committed(tmp_path / name, FIXTURES / name)
+
+
+def _members(directory: Path) -> list[dict]:
+    """Every raster member of the rig in ``directory``: its parts, and its
+    slots' drawings.
+    """
+    document = _without_checks(directory)
+    slots = document.get("slots", [])
+    return document["parts"] + [d for slot in slots for d in slot["drawings"]]
+
+
+def test_the_rigs_of_stills_are_what_their_sequence_draws_and_are_admitted_alone(
+    tmp_path,
+):
+    draw_fixture_pack.draw_raster(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        draw_fixture_pack.RASTER
+    )
+    for name in draw_fixture_pack.RASTER:
+        drawn, committed = tmp_path / name, FIXTURES / name
+        assert admit(drawn).passed
+        assert admit(committed).passed
+        assert _files(drawn) == _files(committed)
+        assert _without_checks(drawn) == _without_checks(committed)
+        for member in _members(committed):
+            for root in (drawn, committed):
+                pixels = decode((root / member["file"]).read_bytes())
+                assert frame_digest(pixels) == member["digest"], member["file"]
+        record = json.loads((committed / "manifest.json").read_text())["checks"]
+        assert record["digest"] == read_asset(committed).digest
 
 
 def test_the_planted_media_defects_are_what_their_sequence_draws(tmp_path):

@@ -24,6 +24,7 @@ from arachne import (
     tempconfig,
 )
 from arachne.camera.camera import Camera
+from arachne.compose import stack
 from arachne.compose.layer import layer_of
 from arachne.compose.stack import _camera_of_size, _window_size
 from arachne.server.dispatch import Dispatcher
@@ -119,6 +120,28 @@ def test_a_window_s_camera_draws_what_a_camera_of_its_size_draws(kind):
     # The frame's own camera is left as it was.
     assert (outer.pixel_width, outer.pixel_height) == (96, 54)
     assert np.array_equal(outer.pixel_array, before)
+
+
+def test_every_window_s_camera_carries_one_plain_thickness_function():
+    # What the engine puts on a camera is one module-level function, the
+    # same object for every window's camera, never one made per camera.
+    import types
+
+    outer = Camera(pixel_width=96, pixel_height=54)
+    cameras = [_camera_of_size(outer, size) for size in ((48, 27), (32, 18), (7, 5))]
+    found = {id(vars(camera)["adjusted_thickness"]) for camera in cameras}
+    assert found == {id(stack._thickness_at_own_size)}
+    assert isinstance(stack._thickness_at_own_size, types.FunctionType)
+    assert "adjusted_thickness" not in vars(outer)
+    # A window's camera thickens a point by the factor 1, as a scene
+    # configured at its size does, alone.
+    for camera in cameras:
+        size = {"pixel_width": camera.pixel_width, "pixel_height": camera.pixel_height}
+        with tempconfig(size):
+            alone = Camera(**size)
+            for thickness in (0.5, 1, 4, 4.25):
+                expected = alone.adjusted_thickness(thickness)
+                assert camera.adjusted_thickness(thickness) == expected
 
 
 def test_a_window_shows_its_objects_in_place_of_a_picture_of_its_own():

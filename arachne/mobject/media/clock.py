@@ -30,8 +30,12 @@ updater, run last at every instant the timeline evaluates, that reads
 there. Its updater reads the ``dt`` it is handed and never uses it as time,
 so it runs at every tick, at every frame rate: a clip changes frame, and
 runs past its end, at the instant its program names, whichever instants a
-frame rate reads. A later object joins it through :func:`hold_media`.
-Importing this module reads no asset and builds no object.
+frame rate reads. A later object joins it through :func:`hold_media`. A rig
+viewed through a moving camera (:meth:`~arachne.assets.Rig.view_through`)
+joins it too, and is settled by it at every instant, after the clocks are
+set: the rig's art slides with the camera through plays that animate the
+rig, whose own updater an animation suspends. Importing this module reads
+no asset and builds no object.
 """
 
 from __future__ import annotations
@@ -53,11 +57,12 @@ import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ...timeline.record import DEPENDENCIES
 
 if TYPE_CHECKING:
+    from ...assets.rig import Rig
     from ...scene.scene import Scene
     from ..mobject import Mobject
     from .objects import MediaObject
@@ -166,6 +171,8 @@ class MediaDriver:
         self._scene = weakref.ref(scene)
         #: The objects held, by id, in the order they joined.
         self._held: dict[int, weakref.ref[MediaObject]] = {}
+        #: The viewed rigs held, by id, in the order they joined.
+        self._rigs: dict[int, weakref.ref[Rig]] = {}
 
         def drive_media(dt: float) -> None:
             # Reading dt has the timeline run this at every tick, not only at
@@ -181,20 +188,32 @@ class MediaDriver:
         """The objects held that still exist, in the order they joined."""
         return tuple(o for ref in self._held.values() if (o := ref()) is not None)
 
+    @property
+    def rigs(self) -> tuple[Rig, ...]:
+        """The viewed rigs held that still exist, in the order they joined."""
+        return tuple(r for ref in self._rigs.values() if (r := ref()) is not None)
+
     def holds(self, mobject: Mobject) -> bool:
         """Whether the driver sets ``mobject``."""
-        ref = self._held.get(id(mobject))
+        ref = self._held.get(id(mobject)) or self._rigs.get(id(mobject))
         return ref is not None and ref() is mobject
 
-    def hold(self, mobject: MediaObject) -> None:
-        """Set ``mobject`` from now on."""
-        if not self.holds(mobject):
-            self._held[id(mobject)] = weakref.ref(mobject, self._let_go(id(mobject)))
+    def hold(self, mobject: MediaObject | Rig) -> None:
+        """Set ``mobject`` from now on: a media object's frame, or a viewed
+        rig's art.
+        """
+        from ...assets.rig import Rig
 
-    def _let_go(self, key: int) -> Callable[[weakref.ref[MediaObject]], None]:
-        def gone(ref: weakref.ref[MediaObject]) -> None:
-            if self._held.get(key) is ref:
-                del self._held[key]
+        if self.holds(mobject):
+            return
+        held: dict[int, Any] = self._rigs if isinstance(mobject, Rig) else self._held
+        held[id(mobject)] = weakref.ref(mobject, self._let_go(held, id(mobject)))
+
+    @staticmethod
+    def _let_go(held: dict[int, Any], key: int) -> Callable[[weakref.ref[Any]], None]:
+        def gone(ref: weakref.ref[Any]) -> None:
+            if held.get(key) is ref:
+                del held[key]
 
         return gone
 
@@ -215,6 +234,8 @@ class MediaDriver:
                 past.append(mobject)
             elif runs(mobject._program, now):
                 running.append(mobject)
+        for rig in self.rigs:
+            rig.settle()
         if not (running or past):
             return
         held, read = _shown(scene)
@@ -267,16 +288,19 @@ def media_driver(scene: Scene) -> MediaDriver | None:
     return _DRIVERS.get(scene)
 
 
-def hold_media(scene: Scene, mobject: MediaObject) -> None:
-    """Have ``mobject`` set on ``scene``'s time: by the scene's media
+def hold_media(scene: Scene, mobject: MediaObject | Rig) -> None:
+    """Have ``mobject`` set on ``scene``'s time: a media object's frame, or
+    a rig viewed through a moving camera, settled; by the scene's media
     driver, made and added to the scene's updaters with the first object it
     holds.
     """
+    from ...assets.rig import Rig
     from .objects import MediaObject
 
-    if not isinstance(mobject, MediaObject):
+    if not isinstance(mobject, (MediaObject, Rig)):
         raise TypeError(
-            f"the media driver sets media objects, not a {type(mobject).__name__}"
+            "the media driver sets media objects and viewed rigs, not a"
+            f" {type(mobject).__name__}"
         )
     driver = _DRIVERS.get(scene)
     if driver is None:

@@ -319,6 +319,11 @@ class MorphParts(Animation):
     and neither ``source`` nor any part of the morph; ``source`` itself is
     left as it was, out of the scene.
 
+    A still does not morph: a part or slot that draws a raster member in
+    either rig (:class:`~.raster.RasterPart`) has no counterpart, so its
+    drawing in ``source`` fades out and its drawing in ``destination`` fades
+    in, at its layer in ``destination``.
+
     ``source`` must be in the scene and ``destination`` not.
     """
 
@@ -355,20 +360,40 @@ class MorphParts(Animation):
         scene.replace(source, self._stand_in)
         theirs = dict(destination._members)
         ours = dict(self._stand_in._members)
+        # A name drawn as a still on either side has no counterpart: its
+        # drawing on the other side arrives under a key no name can be.
+        stills = {
+            name
+            for name in ours
+            if name in theirs
+            and (
+                _still(_drawn(self._stand_in, name))
+                or _still(_drawn(destination, name))
+            )
+        }
+        arrives = {
+            name: _ARRIVING + name if name in stills else name for name in theirs
+        }
         self._pairs = [
             (_drawn(self._stand_in, name), _drawn(destination, name))
             for name in ours
-            if name in theirs
+            if name in theirs and name not in stills
         ]
-        self._leaving = [_drawn(self._stand_in, n) for n in ours if n not in theirs]
-        arriving = {n: _drawn(destination, n).copy() for n in theirs if n not in ours}
+        self._leaving = [
+            _drawn(self._stand_in, n) for n in ours if n not in theirs or n in stills
+        ]
+        arriving = {
+            arrives[n]: _arriving(destination, n)
+            for n in theirs
+            if n not in ours or n in stills
+        }
         self._arriving = list(arriving.values())
         if arriving:
             # Each comes in at its layer in the destination, among the parts
             # of the stand-in, and stays there.
             groups = [
                 ours[name] if name in ours else arriving[name]
-                for name in _layered(list(ours), list(theirs))
+                for name in _layered(list(ours), [arrives[n] for n in theirs])
             ]
             self._stand_in.remove(*ours.values())
             self._stand_in.add(*groups)
@@ -424,6 +449,35 @@ def _layered(ours: list[str], theirs: list[str]) -> list[str]:
         else:
             found.append(name)
     return found + pending
+
+
+#: What a destination's drawing of a name drawn as a still on either side
+#: arrives under, beside the source's drawing of that name: no name is
+#: spelt with it.
+_ARRIVING = "\0"
+
+
+def _still(drawn: VMobject) -> bool:
+    """Whether ``drawn`` (a part's group, or a slot's drawing) draws a
+    raster member.
+    """
+    from .raster import RasterPart
+
+    return any(isinstance(shape, RasterPart) for shape in drawn.get_family())
+
+
+def _arriving(rig: Rig, name: str) -> VMobject:
+    """A copy of what ``rig`` draws of ``name``, to fade in, on the layer its
+    part or slot is on (a slot's layer, at its depth, is its group's, which
+    the drawing alone does not carry).
+    """
+    from ..compose.layer import layer_of, set_layer
+
+    copy = _drawn(rig, name).copy()
+    layer = layer_of(rig.part(name))
+    if layer is not None and layer_of(copy) is None:
+        set_layer(copy, layer)
+    return copy
 
 
 def _drawn(rig: Rig, name: str) -> VMobject:

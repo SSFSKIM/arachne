@@ -19,7 +19,16 @@ canvas to the scene that the rig's carrier holds (:mod:`.rig`). For the part
   turns the part counterclockwise as drawn.
 
 Every computation starts from rest, so a pose depends on the values alone,
-never on the poses before it. A slot is placed as a part is (it takes no
+never on the poses before it.
+
+A part or slot with a declared depth ``d`` (its own, else its nearest
+ancestor's) stands, in a rig viewed through a moving camera
+(:meth:`.Rig.view_through`), at ``F`` moved by its **parallax**
+(:func:`parallax`): ``(1 - D / (D + d)) * (c - home)``, ``c`` the camera
+frame's centre now, ``home`` its centre when the view began and ``D`` the
+viewing distance. At home the set stands as its files draw it; as the
+camera moves, a part behind the picture plane (``d > 0``) crosses the frame
+more slowly than the plane does, and one in front of it faster. A slot is placed as a part is (it takes no
 ``warp`` or ``shape``), and its shown drawing is drawn under its ``G``.
 
 A :class:`Model` holds what an asset's rigs share and never write: the rest
@@ -40,6 +49,7 @@ __all__ = [
     "driver_output",
     "model_of",
     "own_transform",
+    "parallax",
     "posed_shapes",
     "posed_with",
     "shape_weight",
@@ -128,6 +138,9 @@ class Model:
     outlines: Mapping[str, tuple[tuple[float, tuple[np.ndarray, ...]], ...]]
     drivers: Mapping[str, tuple[tuple[int, DriverSpec], ...]]
     carrier: tuple[np.ndarray, float]
+    #: Each part's and slot's depth, by name: its own, else its nearest
+    #: ancestor's; one with neither is absent.
+    depths: Mapping[str, float] = MappingProxyType({})
 
     def __copy__(self) -> Model:
         return self
@@ -240,6 +253,13 @@ def _model(asset: Asset) -> Model:
         for slot in manifest.slots
     }
     scale = manifest.size.scene_units_per_unit
+    depths: dict[str, float] = {}
+    for name in order:
+        own, parent = placed[name].depth, placed[name].parent
+        if own is not None:
+            depths[name] = own
+        elif parent is not None and parent in depths:
+            depths[name] = depths[parent]
     model = Model(
         manifest=manifest,
         name=manifest.name,
@@ -253,6 +273,7 @@ def _model(asset: Asset) -> Model:
         outlines=MappingProxyType(outlines),
         drivers=MappingProxyType({k: tuple(v) for k, v in drivers.items()}),
         carrier=(np.zeros(2), CARRIER_WIDTH / scale),
+        depths=MappingProxyType(depths),
     )
     # The carrier stands at the mean of the art's points at the default
     # pose: inside the art's hull wherever an affine map puts it.
@@ -465,6 +486,20 @@ def posed_with(
 # The placement
 
 
+def parallax(
+    depth: float, distance: float, centre: np.ndarray, home: np.ndarray
+) -> np.ndarray:
+    """How far a part at ``depth`` stands from where ``F`` places it, in
+    scene units, while the camera frame's centre is at ``centre`` and the
+    view began with it at ``home``, seen from ``distance``: ``(1 - D / (D
+    + d)) * (c - home)``.
+    """
+    seen = distance / (distance + depth)
+    return (1 - seen) * (
+        np.asarray(centre, dtype=float) - np.asarray(home, dtype=float)
+    )
+
+
 @dataclass(frozen=True)
 class CanvasMap:
     """``F``, an affine map of the canvas into the scene: a canvas point
@@ -477,6 +512,10 @@ class CanvasMap:
     def __call__(self, points: np.ndarray) -> np.ndarray:
         """The scene points of the canvas points ``points``, ``(n, 2)``."""
         return points @ self.linear.T + self.offset
+
+    def shifted(self, by: np.ndarray) -> CanvasMap:
+        """This map, then a move of the scene by ``by``."""
+        return CanvasMap(self.linear, self.offset + np.asarray(by, dtype=float))
 
     def placed_like(self, model: Model, other: Model) -> CanvasMap:
         """``F`` for a rig of ``other`` standing where this map, ``F`` of a

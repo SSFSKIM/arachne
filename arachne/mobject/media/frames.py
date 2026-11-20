@@ -2,7 +2,8 @@
 frame digest, and the process's frame cache.
 
 A frame is 8-bit RGBA pixels, straight: one picture of a clip or a sprite,
-or the one picture of a still. It is stored as one file in an admitted form
+the one picture of a still, or the picture of a raster member of a rig (a
+part or a slot's drawing that is a still, :mod:`arachne.assets.raster`). It is stored as one file in an admitted form
 (:data:`ADMITTED`): a PNG of 8 bits per channel, truecolour with or without
 alpha. A PNG stores its samples without loss, so every conforming decoder
 gives the same pixels; Pillow decodes it, applying no gamma and no colour
@@ -39,6 +40,7 @@ __all__ = [
     "FrameCache",
     "cache",
     "checked_frame",
+    "checked_member",
     "decode",
     "form_of",
     "frame_digest",
@@ -49,7 +51,9 @@ import hashlib
 import io
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 import numpy as np
@@ -194,26 +198,11 @@ def checked_frame(asset: Asset, index: int, line: int | None = None) -> FrozenPi
     or now reached through a link, its form, its size and its pixels
     (``media.inexact``).
     """
-    from ...assets.reader import read_file
-
     media = asset.manifest.media
     if media is None:
         raise ValueError(f"the asset {asset.name} is no media asset")
     spec = media.frames[index]
-    file = normalised(spec.file)
-    try:
-        data = read_file(asset.directory, file, asset.name)
-    except RaisedFinding as refused:
-        raise RaisedFinding(
-            refused.code, refused.what, detail=refused.detail, line=line
-        ) from None
-    found = form_of(data)
-    if isinstance(found, str):
-        _inexact(asset.name, spec.file, "format", EXPECTED_FORM, found, line)
-    try:
-        pixels = decode(data)
-    except ValueError as error:
-        _inexact(asset.name, spec.file, "format", EXPECTED_FORM, str(error), line)
+    pixels = _decoded(asset.directory, asset.name, spec.file, line)
     height, width = pixels.shape[:2]
     if (width, height) != media.pixels:
         # Checked at every decode, before a digest is computed or the frame
@@ -233,18 +222,63 @@ def checked_frame(asset: Asset, index: int, line: int | None = None) -> FrozenPi
                 " it is drawn"
             ),
         )
+    return _digested(pixels, asset.name, spec.file, spec.digest, line)
+
+
+def checked_member(
+    directory: Path, asset: str, file: str, digest: str, line: int | None = None
+) -> FrozenPixels:
+    """The picture of a raster member of a rig: the file ``file`` (as the
+    manifest names it) of the asset named ``asset``, in ``directory``, read
+    from its file now, decoded, and checked against ``digest``, the frame
+    digest its manifest lists, read-only. Every refusal is raised with
+    ``line``, as :func:`checked_frame` raises its own: a member has no
+    declared pixel size, and its digest holds its width and height.
+    """
+    pixels = _decoded(directory, asset, file, line)
+    return _digested(pixels, asset, file, digest, line)
+
+
+def _decoded(directory: Path, asset: str, file: str, line: int | None) -> np.ndarray:
+    """The pixels of the asset's file ``file``, read now and decoded: the
+    file gone, unreadable or reached through a link, and a form the engine
+    does not decode exactly, refused with ``line``.
+    """
+    from ...assets.reader import read_file
+
+    try:
+        data = read_file(directory, normalised(file), asset)
+    except RaisedFinding as refused:
+        raise RaisedFinding(
+            refused.code, refused.what, detail=refused.detail, line=line
+        ) from None
+    found = form_of(data)
+    if isinstance(found, str):
+        _inexact(asset, file, "format", EXPECTED_FORM, found, line)
+    try:
+        return decode(data)
+    except ValueError as error:
+        _inexact(asset, file, "format", EXPECTED_FORM, str(error), line)
+
+
+def _digested(
+    pixels: np.ndarray, asset: str, file: str, listed: str, line: int | None
+) -> FrozenPixels:
+    """``pixels``, decoded from ``file``, read-only, once checked against
+    ``listed``, the frame digest its manifest lists.
+    """
     digest = frame_digest(pixels)
-    if digest != spec.digest:
+    if digest != listed:
         _inexact(
-            asset.name,
-            spec.file,
+            asset,
+            file,
             "digest",
-            spec.digest,
+            listed,
             digest,
             line,
             what=(
-                f"the frame {spec.file} of the asset {asset.name} decodes here to"
-                f" pixels whose digest is {digest}, not the {spec.digest} its"
+                f"the frame {file} of the asset {asset} decodes here to"
+                f" pixels whose digest is {digest}, not the {listed} its"
                 " manifest lists; nothing of it is drawn"
             ),
         )
@@ -286,13 +320,19 @@ class FrameCache:
     the least recently used leaving first; a frame larger than the bound is
     decoded and not kept. Keyed by the asset's digest and the frame file's
     path inside the asset, so two files of one asset are never one entry,
-    and two objects of one asset share their frames.
+    and two objects of one asset share their frames. Each entry holds the
+    frame digest its pixels were checked against, and is given only to a
+    request for that digest: another is refused (``media.inexact``, reason
+    ``digest``) at the requester's line.
     """
 
     def __init__(self, bound: int = CACHE_BYTES) -> None:
         #: The most bytes of frames kept.
         self.bound = bound
-        self._held: OrderedDict[tuple[str, str], FrozenPixels] = OrderedDict()
+        #: Each kept frame and the frame digest it was checked against.
+        self._held: OrderedDict[tuple[str, str], tuple[FrozenPixels, str]] = (
+            OrderedDict()
+        )
         self._bytes = 0
         self._lock = threading.Lock()
 
@@ -311,19 +351,73 @@ class FrameCache:
         media = asset.manifest.media
         if media is None:
             raise ValueError(f"the asset {asset.name} is no media asset")
-        key = (asset.digest, normalised(media.frames[index].file))
+        spec = media.frames[index]
+        key = (asset.digest, normalised(spec.file))
+        return self._kept(
+            key,
+            lambda: checked_frame(asset, index, line),
+            asset=asset.name,
+            file=spec.file,
+            digest=spec.digest,
+            line=line,
+        )
+
+    def member(
+        self,
+        asset_digest: str,
+        directory: Path,
+        asset: str,
+        file: str,
+        digest: str,
+        line: int | None = None,
+    ) -> FrozenPixels:
+        """The picture of a raster member, read-only: the file ``file`` of
+        the asset whose digest is ``asset_digest`` (named ``asset``, in
+        ``directory``), kept, or decoded and checked against ``digest`` now
+        (:func:`checked_member`, whose refusals carry ``line``). Keyed as a
+        media frame is, by the asset's digest and the file's path inside
+        it, so two members of one size never share an entry.
+        """
+        key = (asset_digest, normalised(file))
+        return self._kept(
+            key,
+            lambda: checked_member(directory, asset, file, digest, line),
+            asset=asset,
+            file=file,
+            digest=digest,
+            line=line,
+        )
+
+    def _kept(
+        self,
+        key: tuple[str, str],
+        read: Callable[[], FrozenPixels],
+        *,
+        asset: str,
+        file: str,
+        digest: str,
+        line: int | None,
+    ) -> FrozenPixels:
+        """The frame kept under ``key`` for ``digest``, or ``read()`` now (it
+        checks the pixels against ``digest``) and kept with it. A kept frame
+        checked against another digest is refused, checked and given under
+        one hold of the lock.
+        """
         with self._lock:
             found = self._held.get(key)
             if found is not None:
+                pixels, verified = found
+                if verified != digest:
+                    _unlike(asset, file, digest, verified, line)
                 self._held.move_to_end(key)
-                return found
-        pixels = checked_frame(asset, index, line)
+                return pixels
+        pixels = read()
         with self._lock:
             if key not in self._held and pixels.nbytes <= self.bound:
-                self._held[key] = pixels
+                self._held[key] = (pixels, digest)
                 self._bytes += pixels.nbytes
                 while self._bytes > self.bound:
-                    _, gone = self._held.popitem(last=False)
+                    _, (gone, _) = self._held.popitem(last=False)
                     self._bytes -= gone.nbytes
         return pixels
 
@@ -332,6 +426,26 @@ class FrameCache:
         with self._lock:
             self._held.clear()
             self._bytes = 0
+
+
+def _unlike(
+    asset: str, file: str, asked: str, verified: str, line: int | None
+) -> NoReturn:
+    """Refuse a request for the frame ``file`` of ``asset`` by the digest
+    ``asked``, its kept pixels checked against ``verified``.
+    """
+    _inexact(
+        asset,
+        file,
+        "digest",
+        asked,
+        verified,
+        line,
+        what=(
+            f"the frame {file} of the asset {asset} was checked to the digest"
+            f" {verified}, not the {asked} asked for here; nothing of it is drawn"
+        ),
+    )
 
 
 #: The process's frame cache.

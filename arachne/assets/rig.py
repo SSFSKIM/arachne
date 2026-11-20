@@ -30,6 +30,17 @@ rig for an animation takes its slot choices (:meth:`Rig.align_data`), and a
 play's animations already hold. So a whole-rig animation and a slot switch
 in one play pair each shape with its own copy, in either order.
 
+A raster member (a part or a slot's drawing that is a still) is held as the
+quad of its box (:class:`~.raster.RasterPart`), a vector object like any
+other, whose picture is drawn at its corners. A part or slot with a depth is
+a layer of its own at that depth (:func:`~arachne.compose.set_layer`), so
+the camera's focus blurs it by its depth; and once the rig is viewed
+through a moving camera (:meth:`Rig.view_through`), each such member slides
+by its parallax as the camera moves (:func:`~.pose.parallax`): the scene's
+media driver settles the rig at every instant, after the animations, so the
+art follows the camera through plays that animate the rig too, and an
+anchor's point is computed for the camera as it is when asked.
+
 A rig settles at once when it is posed or shown, from its own updater
 (:func:`keep_settled`: after a play, and after the scene's code moved it),
 and during a play that poses it from the scene's settle (:mod:`.motion`). A
@@ -52,30 +63,49 @@ import difflib
 import math
 import os
 import weakref
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 
 import numpy as np
 
 from .. import quantities
 from ..mobject.types.vectorized_mobject import VectorizedPoint, VGroup, VMobject
-from ..mobject.values import FrozenPoints, adopt
+from ..mobject.values import FrozenArray, FrozenPoints, adopt
 from ..quantities import Quantity
 from ..utils.paths import straight_path
 from .manifest import QUANTITY_PREFIX as PREFIX
 from .manifest import PartSpec, refuse
-from .pose import CanvasMap, Model, RigValues, model_of, posed_with, transforms
+from .pose import (
+    CanvasMap,
+    Model,
+    RigValues,
+    model_of,
+    parallax,
+    posed_with,
+    transforms,
+)
 from .reader import Asset, load_asset
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from typing import Self
 
+    from ..camera.camera import Camera
     from ..mobject.mobject import Mobject
     from ..quantities import At
     from .anchor import Anchor
 
 #: The points of a shape that draws nothing.
 _EMPTY = adopt(np.zeros((0, 3)), FrozenPoints)
+
+
+class ViewThrough(FrozenArray):
+    """How a rig is viewed through a moving camera: the camera frame's
+    centre when the view began (its home, three numbers), then the viewing
+    distance.
+    """
+
+    value_name = "A rig's view through a camera"
+    replacement = "view the rig again with rig.view_through(camera, distance=...)"
 
 
 class CarrierPoint(VectorizedPoint):
@@ -149,6 +179,11 @@ class Rig(VGroup):
     ``VGroup``'s do.
     """
 
+    #: What a content key leaves out: the frame of the camera the rig is
+    #: viewed through, a handle on another object, not content (the view
+    #: itself, its home and distance, is keyed).
+    _content_key_omits: ClassVar[frozenset[str]] = frozenset({"_view_frame"})
+
     def __init__(
         self, asset: Asset | str | os.PathLike[str], **vmobject_kwargs: Any
     ) -> None:
@@ -200,6 +235,13 @@ class Rig(VGroup):
         self._skeleton = tuple(
             (holder, tuple(holder.submobjects)) for holder in holders
         )
+        if model.depths:
+            from ..compose import LayerSpec, set_layer
+
+            for name, group in members:
+                depth = model.depths.get(name)
+                if depth is not None:
+                    set_layer(group, LayerSpec(depth=depth))
         self._values = _values(model.defaults)
         self._shown = ",".join(slot.default for slot in manifest.slots)
         self._settled_from: tuple[Any, ...] | None = None
@@ -208,6 +250,11 @@ class Rig(VGroup):
         self.settle()
 
     def __deepcopy__(self, clone_from_id: dict[int, Any]) -> Self:
+        frame = vars(self).get("_view_frame")
+        if frame is not None:
+            # A copy is viewed through the same camera, never a copy of its
+            # frame, which would stand still.
+            clone_from_id.setdefault(id(frame), frame)
         copied = super().__deepcopy__(clone_from_id)
         _carry(copied)
         return copied
@@ -368,6 +415,89 @@ class Rig(VGroup):
             )
         return Anchor(self, attachment, name)
 
+    # Viewing through a camera
+
+    def view_through(self, camera: Camera, *, distance: float | None = None) -> Self:
+        """View the rig through ``camera``, the running scene's camera, whose
+        frame moves (a ``MovingCameraScene``'s ``self.camera``): from now on
+        each part or slot with a depth ``d`` slides by ``(1 - D / (D + d))``
+        of the camera frame's move from where it is now, its home, with ``D``
+        the viewing distance ``distance`` (the frame's height now, unless
+        given). The scene's media driver settles the rig at every instant
+        from now on, so the scene's plays are evaluated at every tick. Any
+        other camera is a ``ValueError``: the scene records its own camera's
+        frame, and no other.
+
+        ``D`` must be finite and above 0, and ``D + d`` above 0 for every
+        depth: a ``ValueError`` otherwise, checked at each call. Called
+        again, it sets a new home and distance.
+        """
+        from ..camera.moving_camera import MovingCamera
+        from ..mobject.media.clock import hold_media
+        from ..timeline.recorder import running
+
+        if not isinstance(camera, MovingCamera):
+            raise ValueError(
+                f"A rig is viewed through a camera whose frame moves, and"
+                f" {type(camera).__name__} has none: make the scene a"
+                " MovingCameraScene and view the rig through self.camera."
+            )
+        seen = float(camera.frame.height) if distance is None else distance
+        if isinstance(seen, bool) or not isinstance(seen, (int, float)):
+            raise TypeError(f"A viewing distance is a number, not {distance!r}.")
+        seen = float(seen)
+        if not (math.isfinite(seen) and seen > 0):
+            raise ValueError(
+                f"A viewing distance is a finite length above 0, not {distance!r}."
+            )
+        for name, depth in self.model.depths.items():
+            if not seen + depth > 0:
+                raise ValueError(
+                    f"The part {name!r} of the asset {self.asset.name} is at the"
+                    f" depth {depth:g}, which a viewing distance of {seen:g} puts"
+                    f" at or behind the eye: D + d must be above 0, so view it from"
+                    f" farther than {-depth:g}."
+                )
+        recorder = running()
+        if recorder is None:
+            raise RuntimeError(
+                "view_through follows the camera at every instant of the running"
+                " scene: call it inside the scene's construct"
+            )
+        if camera is not getattr(recorder.scene, "camera", None):
+            raise ValueError(
+                "A rig is viewed through the running scene's own camera, whose"
+                " frame the scene records: view it through self.camera, not"
+                " another camera."
+            )
+        home = np.asarray(camera.frame.get_center(), dtype=float)
+        self._view_frame = camera.frame
+        self._view = adopt(np.array([*home, seen], dtype=float), ViewThrough)
+        hold_media(recorder.scene, self)
+        return self.settle()
+
+    def _parallax(self, name: str) -> np.ndarray:
+        """How far the part or slot ``name`` stands, now, from where the
+        rig's placement puts it: its parallax under the camera it is viewed
+        through (:func:`~.pose.parallax`), 0 for a rig not viewed or a
+        member with no depth.
+        """
+        depth = self.model.depths.get(name)
+        view = vars(self).get("_view")
+        if depth is None or view is None:
+            return np.zeros(3)
+        centre = self._view_frame.get_center()
+        return parallax(depth, float(view[3]), centre, view[:3])
+
+    def _viewed_from(self) -> tuple[float, ...] | None:
+        """What the parallax is computed from now: the camera frame's
+        centre, the home and the distance; ``None`` for a rig not viewed.
+        """
+        view = vars(self).get("_view")
+        if view is None:
+            return None
+        return (*map(float, self._view_frame.get_center()), *map(float, view))
+
     # Placement and art
 
     def placement(self) -> CanvasMap | None:
@@ -397,12 +527,14 @@ class Rig(VGroup):
         carrier = tuple(point.points for point in self.carrier.submobjects)
         shapes = self._shapes()
         last = self._settled_from
+        viewed = self._viewed_from()
         if (
             last is not None
             and last[0] is self._values
             and last[1] == self._shown
             and _same(last[2], carrier)
             and _same(last[3], tuple(shape.points for shape in shapes))
+            and last[4:] == (viewed,)
         ):
             return self
         placement = self.placement()
@@ -418,14 +550,17 @@ class Rig(VGroup):
             )
         )
         for name, group in self._members:
+            placed = placement
+            if viewed is not None and name in model.depths:
+                placed = placement.shifted(self._parallax(name))
             if isinstance(model.placed[name], PartSpec):
                 posed = posed_with(model, name, values, affines[name])
-                _write(group.submobjects, posed, placement)
+                _write(group.submobjects, posed, placed)
                 continue
             for drawing in group.submobjects:
                 if drawing.name == choices[name]:
                     posed = posed_with(model, name, values, affines[name], drawing.name)
-                    _write(drawing.submobjects, posed, placement)
+                    _write(drawing.submobjects, posed, placed)
                 else:
                     for shape in drawing.submobjects:
                         shape.points = _EMPTY
@@ -434,6 +569,7 @@ class Rig(VGroup):
             self._shown,
             carrier,
             tuple(shape.points for shape in shapes),
+            viewed,
         )
         return self
 
