@@ -170,14 +170,19 @@ def test_the_quad_s_picture_is_its_member_s_file_checked_against_its_digest():
         assert frame_digest(np.asarray(quad.pixels())) == part.digest
 
 
+def _keyed(mob) -> dict:
+    """Each field of ``mob``'s content key, by its name."""
+    return {key: part for key, part, *_ in content_fields(NodeState.of(mob))}
+
+
 def test_the_quad_s_fields_that_decide_its_picture_are_plain_and_keyed():
     quad = _shown(Rig("fixture:hinged-flap"), "body")
-    keyed = dict(content_fields(NodeState.of(quad)))
+    keyed = _keyed(quad)
     for field in ("_asset_digest", "_file", "_digest"):
         assert isinstance(vars(quad)[field], str)
         before = keyed[field]
         vars(quad)[field] = vars(quad)[field] + "x"
-        assert dict(content_fields(NodeState.of(quad)))[field] != before
+        assert _keyed(quad)[field] != before
     # Where this host keeps the asset is no part of a key.
     assert "_directory" not in keyed
     assert RasterPart._content_key_omits == {"_directory", "_asset_name"}
@@ -188,9 +193,7 @@ def test_one_asset_in_two_directories_keys_its_quads_alike(tmp_path):
         _shown(Rig(copied(tmp_path, "hinged-flap", name)), "flap")
         for name in ("one", "two")
     )
-    assert dict(content_fields(NodeState.of(one))) == dict(
-        content_fields(NodeState.of(two))
-    )
+    assert _keyed(one) == _keyed(two)
 
 
 # Geometry
