@@ -271,3 +271,130 @@ def test_the_detector_imports_no_core():
         "assert 'arachne_core' not in sys.modules\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+#: Scenes of a sized window, as the scene's camera sees it with nothing
+#: replaced, with a method replaced on its instance, and with an entry of its
+#: table of display functions replaced; and the same replacements without a
+#: window.
+WINDOWED = """
+from arachne import *
+
+
+def _replace_method(camera):
+    held = camera.display_vectorized
+
+    def display_vectorized(vmobject, ctx):
+        return held(vmobject, ctx)
+
+    camera.display_vectorized = display_vectorized
+
+
+def _replace_entry(camera):
+    paint = camera.display_funcs[VMobject]
+
+    def bordered(mobjects, pixel_array):
+        return paint(mobjects, pixel_array)
+
+    camera.display_funcs[VMobject] = bordered
+
+
+class _Shows(Scene):
+    windowed = True
+    replace = None
+
+    def setup(self):
+        if self.replace is not None:
+            globals()[self.replace](self.renderer.camera)
+
+    def construct(self):
+        square = Square()
+        shown = Window(square, width=4, height=2.25) if self.windowed else square
+        self.add(shown)
+        self.play(shown.animate.shift(LEFT))
+
+
+class Window_(_Shows):
+    pass
+
+
+class WindowMethod(_Shows):
+    replace = "_replace_method"
+
+
+class AloneMethod(WindowMethod):
+    windowed = False
+
+
+class WindowEntry(_Shows):
+    replace = "_replace_entry"
+
+
+class AloneEntry(WindowEntry):
+    windowed = False
+"""
+
+
+def _opened(tmp_path, scene: str):
+    from arachne.session import Session
+
+    path = tmp_path / "windowed.py"
+    path.write_text(WINDOWED)
+    return Session.open(
+        path,
+        scene,
+        config={
+            "pixel_width": 96,
+            "pixel_height": 54,
+            "frame_rate": 4,
+            "media_dir": str(tmp_path / "media"),
+        },
+    )
+
+
+def _names(found) -> list[tuple[str, str]]:
+    return [(replaced.name, replaced.form) for replaced in found]
+
+
+def test_a_window_s_camera_at_its_own_size_replaces_nothing(tmp_path):
+    """The camera a window is drawn with at its own size holds the scene
+    camera's own painters, rebound to it: nothing of it is taken for the
+    scene's code, and the record of the scene notes nothing replaced.
+    """
+    from arachne.compose.stack import _camera_of_size
+
+    session = _opened(tmp_path, "Window_")
+    try:
+        assert session.record.camera_replaced == ()
+        inner = _camera_of_size(session.scene.renderer.camera, (40, 22))
+        assert replaced_methods(inner) == ()
+        assert not display_funcs_rewired(inner)
+    finally:
+        session.close()
+
+
+def test_a_replacement_the_scene_made_is_found_with_a_window_as_without(tmp_path):
+    """A method the scene's code replaced on its camera, and an entry of its
+    table of display functions, are found as they are without a window: in
+    the record, on the scene's camera, and on the camera the window is drawn
+    with at its own size, which draws through them too.
+    """
+    from arachne.compose.stack import _camera_of_size
+
+    for kind in ("Method", "Entry"):
+        alone = _opened(tmp_path, f"Alone{kind}")
+        try:
+            recorded = _names(alone.record.camera_replaced)
+            live = _names(replaced_methods(alone.scene.renderer.camera))
+        finally:
+            alone.close()
+        assert live, kind
+        windowed = _opened(tmp_path, f"Window{kind}")
+        try:
+            camera = windowed.scene.renderer.camera
+            assert _names(windowed.record.camera_replaced) == recorded, kind
+            assert _names(replaced_methods(camera)) == live, kind
+            inner = _camera_of_size(camera, (40, 22))
+            assert _names(replaced_methods(inner)) == live, kind
+        finally:
+            windowed.close()
