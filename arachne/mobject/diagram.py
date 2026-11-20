@@ -337,6 +337,8 @@ class Flow(VGroup):
         """Put the tokens where they are ``seconds`` after the flow started."""
         self.elapsed = float(seconds)
         path = ArcLength(self.edge.points)
+        if not path.length > _NO_LENGTH:
+            raise ValueError("a path of zero length has no length")
         share = path.length / len(self.submobjects)
         for index, token in enumerate(self.submobjects):
             along = (self.travelled() + index * share) % path.length
@@ -364,6 +366,10 @@ class Flow(VGroup):
 
 
 quantities.register("diagram.", owner="arachne.mobject.diagram", units=("u/s",))
+
+#: The length, in scene units, at or below which an edge has none to flow along
+#: (a line collapsed to a point measures a rounding error, not 0).
+_NO_LENGTH = 1e-9
 
 #: The share of a flow's declared speed within which its tokens' advance
 #: along the edge, by arc length, holds.
