@@ -24,7 +24,7 @@ SCENES = Path(__file__).parent / "effects_scenes.py"
 SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15}
 
 if importlib.util.find_spec("arachne_gpu") is None:
-    collect_ignore = ["test_drawn.py"]
+    collect_ignore = ["test_drawn.py", "test_window_drawn.py"]
 
 
 def pytest_configure(config):

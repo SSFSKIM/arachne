@@ -30,13 +30,26 @@ window's stack too.
 A layer inside another layer's family is drawn only through a window (the
 window's objects are a stack of their own); any other nesting is refused
 with ``render.unsupported``, never flattened.
+
+A window whose corners are an axis-aligned rectangle, neither mirrored nor
+turned, is a frame of its own at the rectangle's size in pixels: its objects
+are drawn by a camera of that size over the frame's view, its numbers (a
+blur, a feather, the focus's aperture) are in that camera's pixels, and it
+is placed at its true corners (:func:`_window_size`). So it shows what its
+objects alone would draw at that size, and nothing of it leaves the
+rectangle. A window at any other corners is drawn at the frame's size and
+placed by nearest, as every window was before windows had sizes.
 """
 
 from __future__ import annotations
 
 __all__ = ["Stack", "Unsupported"]
 
-from collections.abc import Callable, Iterable, Sequence
+import contextlib
+import copy
+import functools
+import math
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -54,8 +67,10 @@ if TYPE_CHECKING:
 #: The frame's corners in CE's image order (upper left, upper right, lower
 #: left, lower right), as fractions of its width and height.
 _FRAME_CORNERS = ((0, 0), (1, 0), (0, 1), (1, 1))
-#: The one resampling this build draws: nearest.
+#: The resamplings a window is placed by: nearest, its texels copied; and,
+#: for a window at its own size at an axis-aligned rectangle only, bilinear.
 _NEAREST = 0
+_BILINEAR = 2
 _TRANSPARENT = bytes(4)
 
 
@@ -89,8 +104,11 @@ class Stack:
         self._dependents: set[int] = set()
         #: How many frames the compositor drew for this stack.
         self.drawn = 0
-        #: The focus of the frame being drawn, every stack of it under it.
+        #: The focus of the frame being drawn, every stack of it under it,
+        #: in the pixels of the stack being built; and its depth and
+        #: aperture in scene units.
         self._focus: Any = None
+        self._focus_at: tuple[float, float] | None = None
 
     def at(self, capture: Capture) -> None:
         """The frame about to be drawn is ``capture``'s."""
@@ -146,10 +164,11 @@ class Stack:
         uploads: dict[bytes, None] = {}
         camera = self.camera
         try:
-            self._focus = None
+            self._focus = self._focus_at = None
             if self._capture is not None and self._capture.camera is not None:
                 found = focus_at(dict(self._capture.camera.values))
                 if found is not None:
+                    self._focus_at = found
                     self._focus = arachne_gpu.Focus(found[0], pixels(camera, found[1]))
             background = camera.background
             assert background is not None
@@ -219,8 +238,16 @@ class Stack:
         assert spec is not None
         camera = self.camera
         if spec.window is not None:
-            content = self._stack_of(spec.window, uploads)
-            source: Any = arachne_gpu.Window(content, self._corners(carrier), _NEAREST)
+            corners = self._corners(carrier)
+            sized = _window_size(corners)
+            if sized is None:
+                content = self._stack_of(spec.window, uploads)
+                source: Any = arachne_gpu.Window(content, corners, _NEAREST)
+            else:
+                size, resampling = sized
+                with self._inside(size):
+                    content = self._stack_of(spec.window, uploads)
+                source = arachne_gpu.Window(content, corners, resampling, size)
         else:
             parts = list(_runs([(leaf, None) for leaf in run], self._kind))
             if not parts:
@@ -267,15 +294,53 @@ class Stack:
             arachne_gpu.Layer(arachne_gpu.Picture(self._paint(part, uploads)))
             for part, _ in parts
         ]
+        frame = arachne_gpu.Frame(_TRANSPARENT, inner)
+        compositor = self.compositor
+        width, height = self.camera.pixel_width, self.camera.pixel_height
+        held = (compositor.width, compositor.height)
+        if (width, height) != held:
+            # Inside a window at its own size: the compositor draws frames
+            # of the outermost size, so the mask's stack is drawn as a
+            # window of its size copied to the frame's corner, and cut out.
+            if width > held[0] or height > held[1]:
+                raise Unsupported(
+                    "composite",
+                    f"a mask of several kinds in a window of {width} x {height}"
+                    f" pixels, larger than the frame of {held[0]} x {held[1]}",
+                )
+            corners = [(x * width, y * height) for x, y in _FRAME_CORNERS]
+            window = arachne_gpu.Window(frame, corners, _NEAREST, (width, height))
+            frame = arachne_gpu.Frame(_TRANSPARENT, [arachne_gpu.Layer(window)])
         try:
-            stacked = self.compositor.draw(arachne_gpu.Frame(_TRANSPARENT, inner))
+            stacked = compositor.draw(frame)
         except arachne_gpu.Unsupported as refused:
             raise Unsupported("composite", refused.reason) from None
+        stacked = np.asarray(stacked)[:height, :width]
         return self._upload(np.ascontiguousarray(stacked), True, uploads)
+
+    @contextlib.contextmanager
+    def _inside(self, size: tuple[int, int]) -> Iterator[None]:
+        """While it lasts, the stack builds a window at its own ``size``: its
+        objects are drawn by a camera of that size over the view of the
+        stack's camera, and the focus is in that camera's pixels.
+        """
+        import arachne_gpu
+
+        outer, focus = self.camera, self._focus
+        inner = _camera_of_size(outer, size)
+        self.camera = inner
+        if self._focus_at is not None:
+            depth, aperture = self._focus_at
+            self._focus = arachne_gpu.Focus(depth, pixels(inner, aperture))
+        try:
+            yield
+        finally:
+            self.camera, self._focus = outer, focus
 
     def _stack_of(self, objects: Sequence[Mobject], uploads: dict) -> Any:
         """A window's stack: ``objects`` drawn as a frame of their own, on a
-        transparent backdrop, under the frame's focus.
+        transparent backdrop, under the frame's focus, by the stack's camera
+        (a window's own, inside one at its own size).
         """
         import arachne_gpu
 
@@ -358,6 +423,93 @@ class Stack:
             points = np.array([carrier.get_corner(c) for c in (UL, UR, DL, DR)])
         found = self.camera.points_to_subpixel_coords(carrier, points)
         return [(float(x), float(y)) for x, y in found]
+
+
+def _window_size(
+    corners: Sequence[tuple[float, float]],
+) -> tuple[tuple[int, int], int] | None:
+    """The pixel size and the resampling a window shown at ``corners`` (in
+    pixels, CE's image order) is drawn at, or ``None`` for corners that are
+    no axis-aligned rectangle, or a mirrored, turned or empty one: such a
+    window keeps the frame's size and nearest.
+
+    The GPU build's one rule: per axis, the true rectangle's size rounded
+    to the nearest whole pixel, ties half up, at least 1; nearest when the
+    rectangle is integral and 1:1 with that size, bilinear otherwise. The
+    true corners are placed unchanged.
+    """
+    upper_left, upper_right, lower_left, lower_right = corners
+    if not (
+        upper_left[1] == upper_right[1]
+        and lower_left[1] == lower_right[1]
+        and upper_left[0] == lower_left[0]
+        and upper_right[0] == lower_right[0]
+    ):
+        return None
+    (left, top), (right, bottom) = upper_left, lower_right
+    width, height = right - left, bottom - top
+    if not (width > 0 and height > 0 and math.isfinite(width * height)):
+        return None
+    size = (max(1, math.floor(width + 0.5)), max(1, math.floor(height + 0.5)))
+    integral = all(float(v).is_integer() for v in (left, top, right, bottom))
+    exact = integral and size == (width, height)
+    return size, _NEAREST if exact else _BILINEAR
+
+
+def _camera_of_size(camera: Camera, size: tuple[int, int]) -> Camera:
+    """A camera like ``camera``, over the same view of the scene, drawing
+    frames of ``size`` (width, height) pixels: what draws a window's objects
+    at the window's own size.
+
+    A camera that also draws zoomed displays (a ``MultiCamera`` with
+    display cameras, as a ``ZoomedScene``'s is) is refused: drawing through
+    a copy of it would resize and repaint its display cameras at the
+    window's size.
+    """
+    from arachne.camera.multi_camera import MultiCamera
+
+    if isinstance(camera, MultiCamera) and camera.image_mobjects_from_cameras:
+        raise Unsupported(
+            "window",
+            "a window at its own size in a scene whose camera draws zoomed"
+            " displays: its objects are drawn by a camera of the window's size,"
+            " which would resize the zoom's cameras; draw the window and the"
+            " zoom in separate scenes, or drop one of them",
+        )
+    width, height = size
+    inner = copy.copy(camera)
+    inner.pixel_width, inner.pixel_height = width, height
+    # The camera's own painters, bound to the copy, which paints with its
+    # own size; and what a camera keeps by its pixel array, or for its size.
+    inner.display_funcs = {
+        kind: _bound_to(paint, camera, inner)
+        for kind, paint in camera.display_funcs.items()
+    }
+    inner.pixel_array_to_cairo_context = {}
+    inner.pixel_array_to_mapping_centre = {}
+    inner.background_colored_vmobject_displayer = None
+    inner.adjusted_thickness = functools.partial(_thickness_at_own_size, inner)
+    inner.pixel_array = np.zeros(
+        (height, width, camera.n_channels), dtype=camera.pixel_array_dtype
+    )
+    return inner
+
+
+def _thickness_at_own_size(camera: Camera, thickness: float) -> float:
+    """A point's thickness as ``Camera.adjusted_thickness`` gives it, with
+    ``camera``'s own size where that reads the configured one: a scene
+    configured at the window's size, drawn alone, thickens its points by a
+    factor of 1, and so does the window's camera.
+    """
+    own = camera.pixel_height + camera.pixel_width
+    return 1 + (thickness - 1) * (own / own)
+
+
+def _bound_to(method: Any, owner: Any, other: Any) -> Any:
+    """``method``, if it is one bound to ``owner``, bound to ``other``."""
+    if getattr(method, "__self__", None) is owner:
+        return method.__func__.__get__(other)
+    return method
 
 
 def _read_through(roots: Iterable[Mobject]) -> set[int]:

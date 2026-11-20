@@ -60,8 +60,11 @@ class LayerSpec:
     scene units, multiplies the layer (``mask_invert`` keeps what it would
     remove). ``depth`` is the layer's scene depth, blurred under the
     camera's focus (:func:`set_focus`). ``window`` holds objects drawn as a
-    stack of their own, at the frame's size, and shown in this object's four
-    corners in place of the object's own picture.
+    stack of their own and shown in this object's four corners in place of
+    the object's own picture: at the size those corners are shown at in
+    pixels, as the objects alone would be drawn at that size, where the
+    corners are an axis-aligned rectangle neither mirrored nor turned; at
+    the frame's size anywhere else.
     """
 
     blur: float | None = None
