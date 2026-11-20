@@ -63,7 +63,7 @@ import difflib
 import math
 import os
 import weakref
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 
 import numpy as np
 
@@ -178,6 +178,11 @@ class Rig(VGroup):
     manifest's ``size`` places it. ``vmobject_kwargs`` go to the group, as a
     ``VGroup``'s do.
     """
+
+    #: What a content key leaves out: the frame of the camera the rig is
+    #: viewed through, a handle on another object, not content (the view
+    #: itself, its home and distance, is keyed).
+    _content_key_omits: ClassVar[frozenset[str]] = frozenset({"_view_frame"})
 
     def __init__(
         self, asset: Asset | str | os.PathLike[str], **vmobject_kwargs: Any
@@ -413,13 +418,15 @@ class Rig(VGroup):
     # Viewing through a camera
 
     def view_through(self, camera: Camera, *, distance: float | None = None) -> Self:
-        """View the rig through ``camera``, a camera whose frame moves (a
-        ``MovingCameraScene``'s, ``self.camera``): from now on each part or
-        slot with a depth ``d`` slides by ``(1 - D / (D + d))`` of the
-        camera frame's move from where it is now, its home, with ``D`` the
-        viewing distance ``distance`` (the frame's height now, unless
+        """View the rig through ``camera``, the running scene's camera, whose
+        frame moves (a ``MovingCameraScene``'s ``self.camera``): from now on
+        each part or slot with a depth ``d`` slides by ``(1 - D / (D + d))``
+        of the camera frame's move from where it is now, its home, with ``D``
+        the viewing distance ``distance`` (the frame's height now, unless
         given). The scene's media driver settles the rig at every instant
-        from now on, so the scene's plays are evaluated at every tick.
+        from now on, so the scene's plays are evaluated at every tick. Any
+        other camera is a ``ValueError``: the scene records its own camera's
+        frame, and no other.
 
         ``D`` must be finite and above 0, and ``D + d`` above 0 for every
         depth: a ``ValueError`` otherwise, checked at each call. Called
@@ -456,6 +463,12 @@ class Rig(VGroup):
             raise RuntimeError(
                 "view_through follows the camera at every instant of the running"
                 " scene: call it inside the scene's construct"
+            )
+        if camera is not getattr(recorder.scene, "camera", None):
+            raise ValueError(
+                "A rig is viewed through the running scene's own camera, whose"
+                " frame the scene records: view it through self.camera, not"
+                " another camera."
             )
         home = np.asarray(camera.frame.get_center(), dtype=float)
         self._view_frame = camera.frame

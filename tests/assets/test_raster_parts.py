@@ -34,7 +34,7 @@ from arachne.timeline.record import NodeState, content_fields
 from tests.media.raster_scenes import flap_pictures, layer_pictures
 
 from .draw_fixture_pack import DEFECTS, NAMES, RASTER
-from .helpers import copied, edited, refused
+from .helpers import admitted, copied, edited, refused
 
 DEFECT_DIR = Path(__file__).parent / "defects"
 
@@ -409,3 +409,102 @@ def test_a_still_has_no_counterpart_when_rigs_morph(tmp_path):
     assert len(morph._arriving) == 3
     morph.begin()
     assert {type(part).__name__ for part in morph._parts} == {"FadeOut", "FadeIn"}
+
+
+def test_an_arriving_slot_s_still_fades_in_on_its_slot_s_layer(tmp_path):
+    from arachne import Scene
+
+    deep = edited(
+        copied(tmp_path, "hinged-flap", "deep"),
+        lambda d: (
+            d.update(requires=["raster", "depth"]),
+            d["slots"][0].update(depth=3),
+        ),
+    )
+    admitted(deep)
+    scene = Scene()
+    source = Rig("fixture:hinged-flap")
+    destination = Rig(deep)
+    scene.add(source)
+    morph = MorphParts(source, destination)
+    morph._setup_scene(scene)
+    layers = {layer_of(m) for m in morph._arriving}
+    assert layers == {None, layer_of(destination.part("badge"))}
+    (badge,) = [m for m in morph._arriving if layer_of(m) is not None]
+    assert layer_of(badge).depth == 3
+
+
+# The frame cache
+
+
+def test_a_kept_picture_is_given_only_for_the_digest_it_was_checked_against():
+    from arachne.mobject.media.frames import FrameCache
+
+    asset = load_asset("fixture:hinged-flap")
+    part = asset.manifest.parts[0]
+    cache = FrameCache()
+    found = cache.member(
+        asset.digest, asset.directory, asset.name, part.file, part.digest, 7
+    )
+    assert len(cache) == 1
+    assert (
+        cache.member(
+            asset.digest, asset.directory, asset.name, part.file, part.digest, 7
+        )
+        is found
+    )
+    other = "sha256:" + "0" * 64
+    error = refused(
+        "media.inexact",
+        lambda: cache.member(
+            asset.digest, asset.directory, asset.name, part.file, other, 9
+        ),
+    )
+    assert error.line == 9
+    assert error.detail["reason"] == "digest"
+    assert error.detail["file"] == part.file
+    assert error.detail["expected"] == other
+    assert error.detail["found"] == part.digest
+
+
+# Admission of stills that do not decode
+
+
+def test_a_still_whose_pixels_do_not_decode_is_a_named_failure_and_no_geometry(
+    tmp_path,
+):
+    asset = copied(tmp_path, "hinged-flap", "corrupt")
+    flap = asset / "pieces" / "flap.png"
+    data = bytearray(flap.read_bytes())
+    start = data.index(b"IDAT") + 8
+    data[start : start + 24] = bytes(b ^ 0x5A for b in data[start : start + 24])
+    flap.write_bytes(bytes(data))
+    report = admit(asset)
+    found = {result.name: result for result in report.results}
+    assert [result.name for result in report.results] == list(RASTER_CHECKS)
+    for name in CHECKS:
+        assert not found[name].passed
+        assert math.isnan(found[name].worst)
+        assert found[name].pose is None
+        assert found[name].failure.startswith("not measured: pieces/flap.png is")
+    assert not found["frames_exact"].passed
+    assert found["frames_exact"].pose == "pieces/flap.png"
+
+
+def test_admission_decodes_each_still_once_for_its_masks(monkeypatch):
+    from arachne.mobject.media import frames
+
+    decoded: list[tuple[int, int]] = []
+    real = frames.decode
+
+    def counted(data: bytes) -> np.ndarray:
+        pixels = real(data)
+        decoded.append(pixels.shape[:2])
+        return pixels
+
+    monkeypatch.setattr(frames, "decode", counted)
+    report = admit("fixture:hinged-flap")
+    assert report.passed
+    files = {f"pieces/{name}.png" for name in ("body", "flap", "on", "off")}
+    # Once for the masks of every pose, and twice for frames_exact.
+    assert len(decoded) == 3 * len(files)

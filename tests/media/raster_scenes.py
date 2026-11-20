@@ -31,7 +31,7 @@ GROUND = FIXTURES / "layered-ground"
 LIFT, GROW, SHOWN = 30.0, 1.2, "off"
 SHIFT = np.array([-1.5, 0.5, 0.0])
 #: How the layered scenes move the camera, and the focus they set.
-PAN = np.array([2.0, 0.0, 0.0])
+PAN = np.array([2.0, 0.75, 0.0])
 FOCUS, APERTURE = 1.0, 0.04
 
 

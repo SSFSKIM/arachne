@@ -47,6 +47,7 @@ from arachne.camera.projection import (
     held_still,
     hold_rotation,
     member_place,
+    picture_place,
     point_thickness,
     record_view,
     view_of,
@@ -711,8 +712,8 @@ class _Reader:
             lays = viewing.lays(node, lambda: _lays(mob, kind, points))
         if kind == "points" and lays.stroke <= 0:
             return None
-        # Placed by the route it is drawn through: a path whose fill is a
-        # picture by a path's, its place kept as a path's is.
+        # A path whose fill is a picture is placed as its picture's image,
+        # its place kept as a path's is.
         picture = kind != drawn_as
         if viewing is None or node is None or drawn_as == "image":
             placed = self._place(mob, picture)
@@ -755,18 +756,19 @@ class _Reader:
 
     def _place(self, mob: Mobject, picture: bool = False) -> Placed | None:
         """Where the camera puts ``mob``, or ``None`` when its draw paints
-        nothing. A ``picture`` (a path whose fill is a picture) paints its
-        points' box, as an image does, not its outline's ink.
+        nothing. A ``picture`` (a path whose fill is a picture) is placed,
+        and is there or not, as the image of its picture is
+        (:func:`~arachne.camera.projection.picture_place`).
         """
-        found = member_place(self.camera, self.view, mob)
+        place = picture_place if picture else member_place
+        found = place(self.camera, self.view, mob)
         if found is None:
             return None
         ink, pixels, depth = found
         screen = _screen(self.view, pixels)
         # Read-only on every read, kept or not: kept reads share it.
         screen.setflags(write=False)
-        box = _box(screen)
-        return Placed(ink=box if picture else ink, screen=screen, box=box, depth=depth)
+        return Placed(ink=ink, screen=screen, box=_box(screen), depth=depth)
 
     def unit(self, mob: Mobject, chain: tuple[Mobject, ...]) -> Unit | None:
         """What a sweep measures ``mob`` (held by ``chain``) as part of:

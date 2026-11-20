@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import textwrap
+from dataclasses import fields
 from fractions import Fraction
 from pathlib import Path
 
@@ -78,7 +79,10 @@ def test_a_layered_set_slides_by_its_depths_at_every_tick_while_it_fades_in(
         for name, corners in home.items():
             slide = (1 - DISTANCE / (DISTANCE + depth_of(name))) * moved
             found = boxes[f"rig[{_index(name)}]"]
-            assert np.allclose(found, _box(corners + slide), atol=1e-9), (name, k)
+            assert np.allclose(found, _box(corners + slide), rtol=0, atol=1e-9), (
+                name,
+                k,
+            )
 
 
 def _index(name: str) -> int:
@@ -102,7 +106,9 @@ def test_an_anchor_on_a_layer_is_right_before_the_instant_s_settle(session_of):
         as_of, boxes = _scene_boxes(session, Fraction(k, 60))
         expected = peak + slide * PAN * float(as_of)
         x0, y0, x1, y1 = boxes["dot"]
-        assert np.allclose([(x0 + x1) / 2, (y0 + y1) / 2], expected[:2], atol=1e-9), k
+        assert np.allclose(
+            [(x0 + x1) / 2, (y0 + y1) / 2], expected[:2], rtol=0, atol=1e-9
+        ), k
 
 
 VIEWED = """\
@@ -305,6 +311,7 @@ class Raster(Scene):
     def construct(self):
         label = Text("over", font_size=20).move_to([0, 1.0, 0])
         art = Rig({asset!r}).shift({shift!r})
+        {extra}
         self.add({order})
         self.wait(0.5)
 
@@ -313,6 +320,7 @@ class Images(Scene):
     def construct(self):
         label = Text("over", font_size=20).move_to([0, 1.0, 0])
         art = Group(*[image(f, c) for f, c in {pictures!r}]).shift({shift!r})
+        {extra}
         self.add({order})
         self.wait(0.5)
 """
@@ -335,7 +343,9 @@ def _clear_on_top(tmp_path: Path) -> Path:
     return admitted(asset)
 
 
-def _linted(tmp_path: Path, asset: Path, scene: str, order: str, shift) -> Session:
+def _linted(
+    tmp_path: Path, asset: Path, scene: str, order: str, shift, extra: str = "pass"
+) -> Session:
     """A session of ``scene`` of :data:`LINTED` on ``asset``."""
     from .raster_scenes import files_of
 
@@ -347,7 +357,11 @@ def _linted(tmp_path: Path, asset: Path, scene: str, order: str, shift) -> Sessi
     file.write_text(
         textwrap.dedent(
             LINTED.format(
-                asset=str(asset), pictures=pictures, order=order, shift=list(shift)
+                asset=str(asset),
+                pictures=pictures,
+                order=order,
+                shift=list(shift),
+                extra=extra,
             )
         )
     )
@@ -438,3 +452,138 @@ def test_the_lint_reads_a_raster_member_as_it_reads_the_same_still(tmp_path, shi
     assert [kind for kind, *_ in fresh] == ["image"] * 3
     assert fresh == read["Images"][0]
     assert codes["Raster"] == codes["Images"]
+
+
+def test_view_through_needs_the_running_scene_s_own_camera(tmp_path):
+    file = tmp_path / "other.py"
+    file.write_text(
+        textwrap.dedent(
+            """\
+            from arachne import *
+
+
+            class Other(MovingCameraScene):
+                def construct(self):
+                    Rig("fixture:layered-ground").view_through(MovingCamera())
+            """
+        )
+    )
+    error = _refused(tmp_path, file, "Other")
+    assert error.data["cls"] == "ValueError"
+    assert "self.camera" in str(error.data)
+    assert "_view_frame" in Rig._content_key_omits
+
+
+def _clear(tmp_path: Path) -> Path:
+    """The layered set with its far layer clear everywhere."""
+    from PIL import Image
+
+    from arachne.mobject.media.frames import frame_digest
+    from tests.assets.helpers import admitted
+
+    asset = copied(tmp_path, "layered-ground", "clear")
+    pixels = np.zeros((20, 48, 4), dtype=np.uint8)
+    Image.fromarray(pixels).save(asset / "layers" / "far.png", format="PNG")
+    edited(asset, lambda d: d["parts"][0].update(digest=frame_digest(pixels)))
+    return admitted(asset)
+
+
+@pytest.mark.parametrize(
+    ("variant", "extra", "left"),
+    [
+        # Under half a pixel high: drawn by no camera.
+        ("on-top", "art.stretch(0.003, 1)", 0),
+        # Every pixel transparent, at the rig's full opacity or at none.
+        ("clear", "pass", 2),
+        (
+            "on-top",
+            "for m in art.family_members_with_points(): m.set_opacity(0)",
+            0,
+        ),
+    ],
+    ids=["thin", "clear", "faded"],
+)
+def test_the_lint_leaves_out_a_picture_that_paints_nothing_as_it_leaves_the_still(
+    tmp_path, variant, extra, left
+):
+    asset = _clear_on_top(tmp_path) if variant == "on-top" else _clear(tmp_path)
+    read = {}
+    for scene in ("Raster", "Images"):
+        session = _linted(tmp_path, asset, scene, "art, label", (0, 0, 0), extra=extra)
+        try:
+            read[scene] = [_read(session, memo=memo) for memo in (False, True)]
+        finally:
+            session.close()
+    fresh, kept = read["Raster"]
+    assert fresh == kept == read["Images"][0]
+    assert len(fresh) == left
+
+
+STANDING = """\
+from arachne import *
+from arachne.assets import RasterPart, load_asset
+
+
+class Standing(Scene):
+    def construct(self):
+        asset = load_asset("fixture:hinged-flap")
+        part = asset.manifest.parts[0]
+        quad = RasterPart(
+            part.box,
+            asset_digest=asset.digest,
+            file=part.file,
+            digest=part.digest,
+            asset=asset.name,
+            directory=asset.directory,
+        )
+        self.add(quad.scale(0.02).move_to(ORIGIN))
+        self.wait(0.5)
+"""
+
+
+def test_a_standing_picture_s_place_is_kept_and_read_again_from_the_memo(
+    tmp_path, monkeypatch
+):
+    from arachne.lint import parts as parts_module
+    from arachne.lint.leaf_memo import LeafMemo
+    from arachne.lint.parts import build_parts
+    from arachne.timeline.routes import _resolve
+
+    file = tmp_path / "standing.py"
+    file.write_text(STANDING)
+    session = Session.open(file, "Standing", config=SMALL)
+    placed: list[object] = []
+    real = parts_module._Reader._place
+
+    def counted(self, mob, picture=False):
+        placed.append(picture)
+        return real(self, mob, picture)
+
+    monkeypatch.setattr(parts_module._Reader, "_place", counted)
+    memo = LeafMemo()
+    try:
+        record = session.record
+        read = []
+        for t in (Fraction(1, 10), Fraction(2, 5)):
+            resolved = _resolve(record, t)
+            read.append(
+                build_parts(
+                    record,
+                    t,
+                    resolved.play,
+                    resolved.capture,
+                    answer="recorded",
+                    target=(96, 54),
+                    memo=memo,
+                )
+            )
+    finally:
+        session.close()
+    (first,), (second,) = (r.parts for r in read)
+    assert first.kind == second.kind == "image"
+    (one,), (two,) = first.leaves, second.leaves
+    for field in fields(one):
+        a, b = getattr(one, field.name), getattr(two, field.name)
+        assert np.array_equal(a, b) if field.name == "points" else a == b, field
+    # Placed once, as a picture: the second read is the memo's.
+    assert placed == [True]

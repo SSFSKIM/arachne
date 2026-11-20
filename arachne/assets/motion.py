@@ -383,7 +383,7 @@ class MorphParts(Animation):
             _drawn(self._stand_in, n) for n in ours if n not in theirs or n in stills
         ]
         arriving = {
-            arrives[n]: _drawn(destination, n).copy()
+            arrives[n]: _arriving(destination, n)
             for n in theirs
             if n not in ours or n in stills
         }
@@ -464,6 +464,20 @@ def _still(drawn: VMobject) -> bool:
     from .raster import RasterPart
 
     return any(isinstance(shape, RasterPart) for shape in drawn.get_family())
+
+
+def _arriving(rig: Rig, name: str) -> VMobject:
+    """A copy of what ``rig`` draws of ``name``, to fade in, on the layer its
+    part or slot is on (a slot's layer, at its depth, is its group's, which
+    the drawing alone does not carry).
+    """
+    from ..compose.layer import layer_of, set_layer
+
+    copy = _drawn(rig, name).copy()
+    layer = layer_of(rig.part(name))
+    if layer is not None and layer_of(copy) is None:
+        set_layer(copy, layer)
+    return copy
 
 
 def _drawn(rig: Rig, name: str) -> VMobject:

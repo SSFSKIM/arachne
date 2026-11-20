@@ -103,7 +103,7 @@ from ..utils.color import BLACK, WHITE
 from .anchor import attachments
 from .joins import ENGINE_LIMIT
 from .manifest import MANIFEST, MEDIA_KINDS, Media, PartSpec, normalised, read_json
-from .reader import TOOL, Asset, checks_for, read_asset, read_file
+from .reader import CHECKS, TOOL, Asset, checks_for, raster_files, read_asset, read_file
 from .rig import Rig, unadmitted_rig
 
 #: The longer side of every mask, in pixels.
@@ -228,9 +228,31 @@ def admit(asset: Asset | str | os.PathLike[str]) -> AdmissionReport:
         return AdmissionReport(
             manifest.name, manifest.version, manifest.kind, asset.digest, results
         )
+    coverage: dict[str, np.ndarray] = {}
+    if "raster" in manifest.requires:
+        coverage, broken = _raster_coverage(asset)
+        if broken:
+            # A still that does not decode has no shape: no mask is drawn and
+            # no geometry measured, and frames_exact names it.
+            file, why = broken[0]
+            unmeasured = tuple(
+                CheckResult(
+                    name,
+                    False,
+                    math.nan,
+                    None,
+                    f"not measured: {why}, so no mask of {file} is drawn",
+                )
+                for name in CHECKS
+            )
+            results = (*unmeasured, _raster_exact(asset))
+            assert tuple(result.name for result in results) == checks_for(manifest)
+            return AdmissionReport(
+                manifest.name, manifest.version, manifest.kind, asset.digest, results
+            )
     rig = unadmitted_rig(asset)
     poses = list(_poses(rig))
-    grid = _Grid(rig, poses)
+    grid = _Grid(rig, poses, coverage)
     default = grid.masks(rig, poses[0])
     checks = (_Holes(default), _Detached(rig, default), _Anchors(rig, grid))
     for pose in poses:
@@ -344,7 +366,15 @@ class _Grid:
     into :data:`MASK_SIZE` pixels on its longer side.
     """
 
-    def __init__(self, rig: Rig, poses: Sequence[_Pose]) -> None:
+    def __init__(
+        self,
+        rig: Rig,
+        poses: Sequence[_Pose],
+        coverage: Mapping[str, np.ndarray] | None = None,
+    ) -> None:
+        #: Each raster file's mask picture (:func:`_raster_coverage`), by
+        #: its normalised path, decoded once for every pose.
+        self.coverage = coverage or {}
         low, high = np.full(2, math.inf), np.full(2, -math.inf)
         for pose in poses:
             shapes = _drawn(_posed(rig, pose))
@@ -388,7 +418,7 @@ class _Grid:
             corners = still.corners()
             if corners is not None:
                 camera.display_image_mobject(
-                    _Covered(corners, _coverage(still)),  # type: ignore[arg-type]
+                    _Covered(corners, self.coverage[normalised(still.file)]),  # type: ignore[arg-type]
                     camera.pixel_array,
                 )
         return np.array(camera.pixel_array[:, :, 3] > 0)
@@ -445,18 +475,34 @@ class _Covered:
         return self.pixels
 
 
-def _coverage(still: Any) -> np.ndarray:
-    """Opaque white where the raster member ``still``'s file has any alpha,
-    transparent elsewhere: its file decoded as it is, so that a frame
-    unlike its digest (which ``frames_exact`` finds) still has a shape.
+def _raster_coverage(
+    asset: Asset,
+) -> tuple[dict[str, np.ndarray], list[tuple[str, str]]]:
+    """Each raster file of ``asset``, a rig, as its mask picture: opaque
+    white where its alpha is above 0, transparent elsewhere, by its
+    normalised path; decoded once, as it is, so that a frame unlike its
+    digest (which ``frames_exact`` finds) still has a shape. And each file
+    in no admitted form, or that does not decode, with what is wrong.
     """
-    from ..mobject.media.frames import decode
+    from ..mobject.media.frames import EXPECTED_FORM, decode, form_of
 
-    data = read_file(still._directory, normalised(still.file), still._asset_name)
-    alpha = decode(data)[:, :, 3] > 0
-    found = np.zeros((*alpha.shape, 4), dtype=np.uint8)
-    found[alpha] = 255
-    return found
+    coverage: dict[str, np.ndarray] = {}
+    broken: list[tuple[str, str]] = []
+    for file in raster_files(asset.manifest):
+        data = read_file(asset.directory, file, asset.name)
+        found = form_of(data)
+        if isinstance(found, str):
+            broken.append((file, f"{file} is {found}, and not {EXPECTED_FORM}"))
+            continue
+        try:
+            alpha = decode(data)[:, :, 3] > 0
+        except ValueError as error:
+            broken.append((file, f"{file} is {error}"))
+            continue
+        mask = np.zeros((*alpha.shape, 4), dtype=np.uint8)
+        mask[alpha] = 255
+        coverage[file] = mask
+    return coverage, broken
 
 
 # The checks

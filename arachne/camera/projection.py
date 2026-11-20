@@ -43,6 +43,7 @@ __all__ = [
     "home_box",
     "member_box",
     "member_place",
+    "picture_place",
     "pixel_box",
     "pixel_points",
     "point_thickness",
@@ -739,12 +740,51 @@ def _image_painted(camera: Camera, view: View, member: Mobject) -> bool:
     (``Camera.display_image_mobject``), and a raster whose every pixel is
     fully transparent paints nothing (its opacity is in its alpha).
     """
-    raster = getattr(member, "pixel_array", None)
+    return _quad_painted(
+        camera, view, member, member.points, getattr(member, "pixel_array", None)
+    )
+
+
+def picture_place(
+    camera: Camera, view: View, member: Mobject
+) -> tuple[Box, np.ndarray, None] | None:
+    """What :func:`member_place` gives for an image, for a path whose fill is
+    a picture (``fill_is_picture``): its picture placed as the camera places
+    an image at the path's corners (``member.corners()``, CE's image order),
+    around the frame's centre, its ink the corners' box; ``None`` where the
+    camera's draw of that image paints nothing (:func:`_image_painted`): no
+    corners, a picture under half a pixel high, or one every pixel of which
+    is transparent at the path's opacity (``member.pixels()``).
+    """
+    from arachne.lint.raised import RaisedFinding
+
+    corners = member.corners()  # type: ignore[attr-defined]
+    if corners is None:
+        return None
+    try:
+        raster = member.pixels()  # type: ignore[attr-defined]
+    except RaisedFinding:
+        # A picture the engine refuses to draw is refused where a frame is
+        # drawn; read here, it stands where it would be drawn.
+        raster = None
+    if not _quad_painted(camera, view, member, corners, raster):
+        return None
+    shown = _pre_display(camera, member, corners)
+    ink = _span(_placed(view, shown, view.frame_center, home=True))
+    return ink, _placed(view, shown, view.frame_center, home=False), None
+
+
+def _quad_painted(
+    camera: Camera, view: View, member: Mobject, points: np.ndarray, raster: Any
+) -> bool:
+    """:func:`_image_painted` for an image of ``member`` at ``points`` (its
+    corners, CE's image order) whose pixels are ``raster``.
+    """
     if raster is not None:
         raster = np.asarray(raster)
         if raster.ndim == 3 and raster.shape[-1] == 4 and not raster[..., 3].any():
             return False
-    shown = _pre_display(camera, member, member.points)
+    shown = _pre_display(camera, member, points)
     target = _placed(view, shown, view.frame_center, home=False)
     target = target - target.astype(np.int64).min(axis=0)
     vertices = [target[i] for i in (0, 1, 3, 2)]

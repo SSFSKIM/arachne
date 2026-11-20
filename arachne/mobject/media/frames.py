@@ -327,6 +327,9 @@ class FrameCache:
         #: The most bytes of frames kept.
         self.bound = bound
         self._held: OrderedDict[tuple[str, str], FrozenPixels] = OrderedDict()
+        #: The frame digest a raster member's kept picture was checked
+        #: against, by its key.
+        self._verified: dict[tuple[str, str], str] = {}
         self._bytes = 0
         self._lock = threading.Lock()
 
@@ -362,17 +365,43 @@ class FrameCache:
         ``directory``), kept, or decoded and checked against ``digest`` now
         (:func:`checked_member`, whose refusals carry ``line``). Keyed as a
         media frame is, by the asset's digest and the file's path inside
-        it, so two members of one size never share an entry.
+        it, so two members of one size never share an entry. A kept picture
+        is given only where ``digest`` is the one it was checked against;
+        another is refused (``media.inexact``, reason ``digest``) at ``line``.
         """
         key = (asset_digest, normalised(file))
+        with self._lock:
+            verified = self._verified.get(key) if key in self._held else None
+        if verified is not None and verified != digest:
+            _inexact(
+                asset,
+                file,
+                "digest",
+                digest,
+                verified,
+                line,
+                what=(
+                    f"the frame {file} of the asset {asset} was checked to the"
+                    f" digest {verified}, not the {digest} this member lists;"
+                    " nothing of it is drawn"
+                ),
+            )
         return self._kept(
-            key, lambda: checked_member(directory, asset, file, digest, line)
+            key,
+            lambda: checked_member(directory, asset, file, digest, line),
+            verified=digest,
         )
 
     def _kept(
-        self, key: tuple[str, str], read: Callable[[], FrozenPixels]
+        self,
+        key: tuple[str, str],
+        read: Callable[[], FrozenPixels],
+        *,
+        verified: str | None = None,
     ) -> FrozenPixels:
-        """The frame kept under ``key``, or ``read()`` now and kept."""
+        """The frame kept under ``key``, or ``read()`` now and kept, with
+        the digest it was ``verified`` against when given.
+        """
         with self._lock:
             found = self._held.get(key)
             if found is not None:
@@ -382,9 +411,12 @@ class FrameCache:
         with self._lock:
             if key not in self._held and pixels.nbytes <= self.bound:
                 self._held[key] = pixels
+                if verified is not None:
+                    self._verified[key] = verified
                 self._bytes += pixels.nbytes
                 while self._bytes > self.bound:
-                    _, gone = self._held.popitem(last=False)
+                    gone_key, gone = self._held.popitem(last=False)
+                    self._verified.pop(gone_key, None)
                     self._bytes -= gone.nbytes
         return pixels
 
@@ -392,6 +424,7 @@ class FrameCache:
         """Let every frame go."""
         with self._lock:
             self._held.clear()
+            self._verified.clear()
             self._bytes = 0
 
 
