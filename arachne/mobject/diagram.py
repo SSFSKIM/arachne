@@ -674,7 +674,10 @@ class ZoomInto(Animation):
     :data:`LEGIBLE_MARGIN`), or over the zoom's last :data:`FADE` if it
     never does. Each other piece of the scene the frame's edge would cut
     (a top-level mobject, or a piece of a group that holds the block)
-    fades out over the :data:`FADE` before it is cut and stays hidden.
+    fades out over the :data:`FADE` before it is cut and stays hidden. A
+    diagram's connector, with its label, fades no later than the
+    earliest-fading piece it joins (the block itself never fades), so no
+    arrow shows without its ends.
 
     The frame is the scene's camera's, which only a moving camera has (a
     :class:`~.MovingCameraScene`); a ``frame`` passed must be that one.
@@ -732,13 +735,22 @@ class ZoomInto(Animation):
                     " block from the inside as it is to be shown"
                 )
             self._fade_in = _window(self._legible_from(inside))
-        #: Each piece the frame's edge cuts: its family, how each member
-        #: shows now, and the share of the zoom it fades out over.
+        #: Each piece the frame's edge cuts, or a connector or label whose
+        #: ends it cuts: its family, how each member shows now, and the
+        #: share of the zoom it fades out over.
         self._fading: list[
             tuple[list[Mobject], list[Opacities], tuple[float, float]]
         ] = []
-        for piece in _pieces(self._scene_mobjects, block, frame):
-            cut = self._cut_at(piece)
+        pieces = _pieces(self._scene_mobjects, block, frame)
+        cuts = {id(piece): self._cut_at(piece) for piece in pieces}
+        joins = _joins(self._scene_mobjects)
+        for piece in pieces:
+            # A connector, and its label, fades no later than what it joins.
+            held = [
+                cuts[id(piece)],
+                *(cuts.get(id(m)) for m in joins.get(id(piece), ())),
+            ]
+            cut = min((c for c in held if c is not None), default=None)
             if cut is None:
                 continue
             family = list(piece.get_family())
@@ -999,6 +1011,51 @@ def _pieces(
 
     walk(mobjects)
     return found
+
+
+def _joins(mobjects: Iterable[Mobject]) -> dict[int, tuple[Mobject, ...]]:
+    """What each connector of a diagram among ``mobjects`` joins, by its
+    id: the pieces of the diagram nearest its two ends; and for its label,
+    the connector and those pieces.
+    """
+    found: dict[int, tuple[Mobject, ...]] = {}
+    seen: set[int] = set()
+    for mob in mobjects:
+        for diagram in mob.get_family():
+            if not isinstance(diagram, Diagram) or id(diagram) in seen:
+                continue
+            seen.add(id(diagram))
+            labels = {id(e.label) for e in diagram.edges if e.label is not None}
+            pieces = [
+                piece
+                for piece in diagram.submobjects
+                if not any(piece is e for e in diagram.edges)
+                and id(piece) not in labels
+                and not isinstance(piece, Flow)
+                and any(len(m.points) for m in piece.get_family())
+            ]
+            if not pieces:
+                continue
+            for edge in diagram.edges:
+                if not len(edge.points):
+                    continue
+                ends = tuple(
+                    _nearest(pieces, point)
+                    for point in (edge.points[0], edge.points[-1])
+                )
+                found[id(edge)] = ends
+                if edge.label is not None:
+                    found[id(edge.label)] = (edge, *ends)
+    return found
+
+
+def _nearest(pieces: Sequence[Mobject], point: np.ndarray) -> Mobject:
+    """The one of ``pieces`` whose box is nearest ``point``."""
+    at = np.asarray(point)[:2]
+    lows = np.array([p.get_critical_point(DL)[:2] for p in pieces])
+    highs = np.array([p.get_critical_point(UR)[:2] for p in pieces])
+    apart = np.linalg.norm(np.maximum(np.maximum(lows - at, at - highs), 0.0), axis=1)
+    return pieces[int(np.argmin(apart))]
 
 
 def _revealed_texts(inside: Mobject) -> list[Mobject]:

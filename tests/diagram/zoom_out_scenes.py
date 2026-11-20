@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from arachne import (
     BLUE,
+    ORIGIN,
     RIGHT,
     UP,
     Block,
@@ -176,3 +177,46 @@ class ReturnWithoutMovingCamera(Scene):
         zoom.begin()
         zoom.finish()
         self.play(ZoomOut(zoom))
+
+
+def computer() -> tuple[Diagram, Block, list]:
+    """Case 7's two levels: a computer's blocks, the processor holding its
+    core; and each connector of the computer with the blocks it joins.
+    """
+    core = Diagram(cell=(2.4, 1.5))
+    control = core.place(Node("ctrl", radius=0.55, font_size=36), 0.5, 0)
+    alu = core.place(Node("ALU", radius=0.55, font_size=36), 0, 1)
+    registers = core.place(Node("regs", radius=0.55, font_size=36), 1, 1)
+    core.connect(control, alu)
+    core.connect(control, registers)
+    core.connect(alu, registers, route="straight")
+    machine = Diagram(cell=(3.4, 2.4))
+    source = machine.place(Block("input", width=2.2, height=1.4), 0, 0)
+    processor = machine.place(
+        Block("processor", width=2.4, height=1.6, inside=core), 1, 0
+    )
+    sink = machine.place(Block("output", width=2.2, height=1.4), 2, 0)
+    memory = machine.place(Block("memory", width=2.2, height=1.4), 1, 1)
+    joins = [
+        (machine.connect(source, processor, label="data"), source, processor),
+        (machine.connect(processor, sink), processor, sink),
+        (machine.connect((processor, "bottom"), memory), processor, memory),
+    ]
+    machine.move_to(ORIGIN)
+    return machine, processor, joins
+
+
+class IntoTheProcessorAndBack(MovingCameraScene):
+    """Case 7's zoom over 0.6-3.1 s, held to 4.1 s; back over 4.1-6.6 s;
+    and in again, with a new zoom, over 6.6-9.1 s.
+    """
+
+    def construct(self):
+        machine, processor, self.joins = computer()
+        self.add(machine)
+        self.wait(0.6)
+        zoom = ZoomInto(processor)
+        self.play(zoom, run_time=2.5)
+        self.wait(1)
+        self.play(ZoomOut(zoom))
+        self.play(ZoomInto(processor), run_time=2.5)
