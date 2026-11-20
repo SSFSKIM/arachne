@@ -217,12 +217,7 @@ impl Compositor {
     }
 
     /// A compositor drawing on `opened`, a device of the door `software` names.
-    pub(crate) fn on(
-        opened: Opened,
-        width: u32,
-        height: u32,
-        software: bool,
-    ) -> Result<Self, OpenError> {
+    fn on(opened: Opened, width: u32, height: u32, software: bool) -> Result<Self, OpenError> {
         // Both limits are checked before any resource exists.
         let (padded_row, readback_size) = frame_size(width, height, &opened.limits)?;
         let max_dimension = opened.limits.max_texture_dimension_2d;

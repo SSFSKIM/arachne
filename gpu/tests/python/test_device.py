@@ -5,7 +5,9 @@ door. A test about a machine with no GPU makes that machine for itself in a chil
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import tomllib
@@ -121,14 +123,23 @@ print(json.dumps(report))
 
 def test_a_process_forked_after_first_use_is_refused_and_one_forked_before_draws():
     here = str(Path(__file__).parent)
-    done = subprocess.run(
+    # The helper leads a process group of its own, so a timeout ends the children it forked too:
+    # a child that hangs on what it inherited is the failure this test exists to catch.
+    helper = subprocess.Popen(
         [sys.executable, "-c", FORK, here],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=120,
-        check=True,
+        start_new_session=True,
     )
-    report = json.loads(done.stdout.splitlines()[-1])
+    try:
+        out, err = helper.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        os.killpg(helper.pid, signal.SIGKILL)
+        helper.communicate()
+        raise
+    assert helper.returncode == 0, err
+    report = json.loads(out.splitlines()[-1])
     # Forked before this process first used the build: the child opens Vulkan of its own.
     assert report["before"] == ["ran"]
     # Forked after: its Vulkan state is the parent's, and both calls refuse before touching it.

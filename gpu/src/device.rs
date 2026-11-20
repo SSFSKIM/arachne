@@ -8,7 +8,9 @@
 //!
 //! That instance and those devices belong to the process that made them. A child forked after it
 //! inherits their memory but not the threads that hold the driver's locks, so in a forked process
-//! every call that would reach Vulkan refuses with [`ForkedProcess`] before it touches them.
+//! opening a compositor (either door) and listing adapters refuse with [`ForkedProcess`] before
+//! they touch either. That guard covers opening and enumeration only: a compositor the child
+//! inherited is not safe to draw with or to drop.
 
 use std::fmt;
 
@@ -314,10 +316,11 @@ mod tests {
         assert_eq!(owner.load(Ordering::Acquire), 41);
     }
 
-    /// The software door (lavapipe, which every machine the probes run on carries) opened into a
-    /// slot of this test's own, apart from the process's, so destroying its device disturbs no
-    /// other test. The loss arrives the way a driver's would: through the device-lost callback,
-    /// which wgpu delivers at the first poll after `destroy`.
+    /// The cache's transition on a loss, checked on the software door (lavapipe, which every
+    /// machine the probes run on carries) in a slot of this test's own, apart from the process's,
+    /// so destroying its device disturbs no other test. The loss arrives the way a driver's would:
+    /// through the device-lost callback, which wgpu delivers at the first poll after `destroy`.
+    /// No frame is drawn here: drawing tests go through the launch mode's fixture.
     #[test]
     fn a_lost_device_is_replaced_at_the_next_open_and_the_replacement_is_kept() {
         static SLOT: Mutex<Option<Opened>> = Mutex::new(None);
@@ -339,14 +342,10 @@ mod tests {
             !Arc::ptr_eq(&first.lost, &second.lost),
             "a lost device is replaced"
         );
-        let mut drawn_on = crate::compositor::Compositor::on(second.clone(), 8, 8, true).unwrap();
-        let picture: Vec<u8> = (0..8 * 8 * 4)
-            .map(|i| if i % 4 == 3 { 255 } else { 7 })
-            .collect();
-        let key = crate::keys::painted_key(8, 8, &picture);
-        drawn_on.upload_painted(key, 8, 8, &picture).unwrap();
-        let frame = crate::frame::Frame::new([0; 4], vec![crate::frame::Layer::picture(key)]);
-        assert_eq!(drawn_on.draw(&frame).unwrap(), picture);
+        assert!(
+            !second.lost.load(Ordering::Acquire),
+            "the replacement is a live device"
+        );
         let third = open_in(&SLOT, Door::Software).unwrap();
         assert!(
             Arc::ptr_eq(&second.lost, &third.lost),
