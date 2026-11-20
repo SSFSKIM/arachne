@@ -561,3 +561,58 @@ def test_a_port_the_other_piece_covers_is_refused():
     diagram = arachne.Diagram(a, b)
     with pytest.raises(ValueError, match="move the two pieces apart"):
         diagram.connect((a, "right"), (b, "right"))
+
+
+def _bezier_polyline(curve: np.ndarray, samples: int = 24) -> np.ndarray:
+    t = np.linspace(0, 1, samples)[:, None]
+    p0, p1, p2, p3 = curve
+    return (
+        (1 - t) ** 3 * p0
+        + 3 * (1 - t) ** 2 * t * p1
+        + 3 * (1 - t) * t**2 * p2
+        + t**3 * p3
+    )[:, :2]
+
+
+def _segments_cross(p: np.ndarray, q: np.ndarray, r: np.ndarray, s: np.ndarray) -> bool:
+    """Whether segment rs meets segment pq anywhere but pq's ends (a lead
+    may touch a loop only where it joins it).
+    """
+    d, e = q - p, s - r
+    cross = d[0] * e[1] - d[1] * e[0]
+    if abs(cross) < 1e-12:
+        return False
+    w = r - p
+    t = (w[0] * e[1] - w[1] * e[0]) / cross
+    v = (w[0] * d[1] - w[1] * d[0]) / cross
+    return 1e-6 < t < 1 - 1e-6 and -1e-9 <= v <= 1 + 1e-9
+
+
+@pytest.mark.parametrize(
+    ("turns", "radius", "start", "end"),
+    [
+        (6, 0.2, LEFT, RIGHT),
+        (12, 0.3, LEFT * 2, RIGHT * 2),
+        (10, 0.25, LEFT * 1.5 + DOWN, RIGHT * 1.5 + UP),
+        (1, 0.3, LEFT, RIGHT),
+    ],
+)
+def test_a_coils_leads_cross_no_loop_and_its_ends_mirror(turns, radius, start, end):
+    coil = Coil(start, end, turns=turns, radius=radius)
+    curves = _curves(coil)
+    left, body, right = curves[0], curves[1:-1], curves[-1]
+    loop = np.concatenate([_bezier_polyline(c) for c in body])
+    for lead in (left, right):
+        p, q = lead[0, :2], lead[-1, :2]
+        for r, s in zip(loop[:-1], loop[1:], strict=True):
+            assert not _segments_cross(p, q, r, s)
+    # Mirrored across the line halfway between its ends, the coil is itself
+    # run backwards: the right lead leaves the last loop where and as the
+    # left lead enters the first.
+    a, b = np.asarray(start, float), np.asarray(end, float)
+    u = (b - a) / np.linalg.norm(b - a)
+    middle = (a + b) / 2
+    points = np.asarray(coil.points)
+    along = (points - middle) @ u
+    mirrored = points - 2 * along[:, None] * u
+    assert np.allclose(mirrored[::-1], points, atol=1e-6)
