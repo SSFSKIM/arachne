@@ -47,7 +47,6 @@ __all__ = ["Stack", "Unsupported"]
 
 import contextlib
 import copy
-import functools
 import math
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
@@ -488,21 +487,26 @@ def _camera_of_size(camera: Camera, size: tuple[int, int]) -> Camera:
     inner.pixel_array_to_cairo_context = {}
     inner.pixel_array_to_mapping_centre = {}
     inner.background_colored_vmobject_displayer = None
-    inner.adjusted_thickness = functools.partial(_thickness_at_own_size, inner)
+    # One plain function, the same for every window's camera: the factor
+    # depends on no camera's state (below).
+    inner.adjusted_thickness = _thickness_at_own_size
     inner.pixel_array = np.zeros(
         (height, width, camera.n_channels), dtype=camera.pixel_array_dtype
     )
     return inner
 
 
-def _thickness_at_own_size(camera: Camera, thickness: float) -> float:
-    """A point's thickness as ``Camera.adjusted_thickness`` gives it, with
-    ``camera``'s own size where that reads the configured one: a scene
-    configured at the window's size, drawn alone, thickens its points by a
-    factor of 1, and so does the window's camera.
+def _thickness_at_own_size(thickness: float) -> float:
+    """A point's thickness on a window's camera. ``Camera.adjusted_thickness``
+    scales a thickness by the configured frame's size over the camera's own;
+    a scene configured at the window's size and drawn alone has the factor
+    1, and a window's camera, which draws under the frame's configuration,
+    is given that factor itself.
+
+    One module-level function, the same object on every window's camera;
+    it reads no camera.
     """
-    own = camera.pixel_height + camera.pixel_width
-    return 1 + (thickness - 1) * (own / own)
+    return 1 + (thickness - 1) * 1.0
 
 
 def _bound_to(method: Any, owner: Any, other: Any) -> Any:
