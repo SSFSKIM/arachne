@@ -1,10 +1,11 @@
-//! The 200-box pile: a walled tray, and 8 layers of 5 x 5 spinning cubes dropped into it, stepped
-//! 3,600 ticks (W200's literals). For each pair the step's checks find tunnelled in it, the
-//! evidence of what happened: the sweep's class and value, the pair's distance through the step,
-//! and what the solver's contact graph held between the two after the step before it, after the
-//! step itself (the contacts its every substep solved: one narrow-phase pass per step, since the
-//! world takes one continuous-collision substep) and after the next (computed from the step's
-//! end). Printed for CI's log, one line per finding.
+//! Two contact-rich scenes, each of which finds nothing: the 200-box pile (a walled tray, and 8
+//! layers of 5 x 5 spinning cubes dropped into it, stepped 3,600 ticks: W200's literals), and a
+//! smaller pour of balls and boxes. For any pair the step's checks find tunnelled, the evidence
+//! of what happened is printed for CI's log: the sweep's class and value, the pair's distance
+//! through the step, and what the solver's contact graph held between the two after the step
+//! before it, after the step itself (the contacts its every substep solved: one narrow-phase pass
+//! per step, since the world takes one continuous-collision substep) and after the next (computed
+//! from the step's end).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -52,8 +53,15 @@ fn stored(x: f64) -> f32 {
     x as f32
 }
 
-/// A body of one box shape at its centre, in the pile's material.
-fn cuboid(w: &mut World, fixed: bool, size: [f64; 3], centre: [f64; 3], spin: [f64; 3]) {
+/// A body of one shape at its centre, of density 1 and friction 0.5.
+fn solid(
+    w: &mut World,
+    fixed: bool,
+    kind: ShapeKind,
+    centre: [f64; 3],
+    spin: [f64; 3],
+    restitution: f64,
+) {
     let body = w
         .add_body(Body {
             fixed,
@@ -67,29 +75,39 @@ fn cuboid(w: &mut World, fixed: bool, size: [f64; 3], centre: [f64; 3], spin: [f
         .expect("a body");
     w.add_shape(Shape {
         body,
-        kind: ShapeKind::Cuboid {
-            half_extents: size.map(|x| stored(x / 2.0)).to_vec(),
-        },
+        kind,
         position: vec![0.0; 3],
         rotation: vec![0.0, 0.0, 0.0, 1.0],
         density: stored(DENSITY),
         friction: stored(FRICTION),
-        restitution: stored(RESTITUTION),
+        restitution: stored(restitution),
     })
     .expect("a shape");
 }
 
-/// The pile as the authoring API declares it: gravity, the tray's parts, then the boxes layer by
-/// layer, y then x within a layer, each odd layer shifted by half a spacing.
-fn pile() -> World {
+fn cuboid(size: [f64; 3]) -> ShapeKind {
+    ShapeKind::Cuboid {
+        half_extents: size.map(|x| stored(x / 2.0)).to_vec(),
+    }
+}
+
+/// A 3D world under the pile's gravity.
+fn falling() -> World {
     let mut w =
         World::with_options(3, Integrator::Solver, false, Options::default()).expect("a world");
     w.add_force(Force::Gravity {
         acceleration: GRAVITY.map(stored).to_vec(),
     })
     .expect("gravity");
+    w
+}
+
+/// The pile as the authoring API declares it: gravity, the tray's parts, then the boxes layer by
+/// layer, y then x within a layer, each odd layer shifted by half a spacing.
+fn pile() -> World {
+    let mut w = falling();
     for (size, centre) in TRAY {
-        cuboid(&mut w, true, size, centre, [0.0; 3]);
+        solid(&mut w, true, cuboid(size), centre, [0.0; 3], RESTITUTION);
     }
     let mut boxes = 0;
     for layer in 0..GRID[2] {
@@ -100,8 +118,62 @@ fn pile() -> World {
                 let x = (i as f64 - (GRID[0] - 1) as f64 / 2.0) * SPACING + shift;
                 let y = (j as f64 - (GRID[1] - 1) as f64 / 2.0) * SPACING + shift;
                 let spin = SPINS[boxes % SPINS.len()];
-                cuboid(&mut w, false, [BOX_SIDE; 3], [x, y, z], spin);
+                solid(
+                    &mut w,
+                    false,
+                    cuboid([BOX_SIDE; 3]),
+                    [x, y, z],
+                    spin,
+                    RESTITUTION,
+                );
                 boxes += 1;
+            }
+        }
+    }
+    w
+}
+
+/// Another contact-rich scene, not tuned to the rule: 36 balls and boxes of four sizes, in 4
+/// layers of 3 x 3 (0.6 apart, each odd layer shifted 0.2), spinning as the pile's boxes do,
+/// poured into a narrower tray (inner faces at x, y = +-1.1, walls 1.5 high), for 600 ticks.
+fn pour() -> World {
+    let mut w = falling();
+    let tray: [([f64; 3], [f64; 3]); 5] = [
+        ([4.0, 4.0, 0.2], [0.0, 0.0, -0.1]),
+        ([0.2, 2.4, 1.5], [-1.2, 0.0, 0.75]),
+        ([0.2, 2.4, 1.5], [1.2, 0.0, 0.75]),
+        ([2.2, 0.2, 1.5], [0.0, -1.2, 0.75]),
+        ([2.2, 0.2, 1.5], [0.0, 1.2, 0.75]),
+    ];
+    for (size, centre) in tray {
+        solid(&mut w, true, cuboid(size), centre, [0.0; 3], RESTITUTION);
+    }
+    let kinds = [
+        (ShapeKind::Ball { radius: 0.12 }, 0.3),
+        (cuboid([0.3, 0.2, 0.24]), RESTITUTION),
+        (ShapeKind::Ball { radius: 0.08 }, 0.3),
+        (cuboid([0.2, 0.2, 0.12]), RESTITUTION),
+    ];
+    let mut n = 0;
+    for layer in 0..4 {
+        let shift = if layer % 2 == 1 { 0.2 } else { 0.0 };
+        let z = 0.5 + f64::from(layer) * 0.5;
+        for j in 0..3 {
+            for i in 0..3 {
+                let (x, y) = (
+                    f64::from(i - 1) * 0.6 + shift,
+                    f64::from(j - 1) * 0.6 + shift,
+                );
+                let (kind, restitution) = kinds[n % kinds.len()].clone();
+                solid(
+                    &mut w,
+                    false,
+                    kind,
+                    [x, y, z],
+                    SPINS[n % SPINS.len()],
+                    restitution,
+                );
+                n += 1;
             }
         }
     }
@@ -111,20 +183,18 @@ fn pile() -> World {
 fn physics(w: &World) -> (&PhysicsWorld, &[(ColliderHandle, u32)]) {
     match &w.engine {
         Engine::Three(s) => s.physics(),
-        _ => unreachable!("the pile is a 3D solver's world"),
+        _ => unreachable!("the piles are 3D solver's worlds"),
     }
 }
 
-/// A body's name in the pile.
-fn name(body: u32) -> String {
-    const PARTS: [&str; 5] = ["floor", "wall -x", "wall +x", "wall -y", "wall +y"];
-    match PARTS.get(body as usize) {
-        Some(part) => part.to_string(),
-        None => {
-            let n = body as usize - PARTS.len();
-            format!("box {n} (layer {})", n / (GRID[0] * GRID[1]))
-        }
-    }
+/// A body's name: its number, and whether it is fixed.
+fn name(w: &World, body: u32) -> String {
+    let kind = if w.bodies[body as usize] {
+        "fixed"
+    } else {
+        "moving"
+    };
+    format!("{kind} {body}")
 }
 
 /// What the solver's contact graph held between two shapes after a step: the pair's manifolds,
@@ -313,17 +383,16 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-#[test]
-fn the_pile_s_tunnelling_findings_with_what_the_solver_held() {
-    let started = std::time::Instant::now();
-    let mut w = pile();
+/// Advances `w` row by row through `last`, and gathers each tunnelling finding's evidence;
+/// prints any other finding.
+fn observe(w: &mut World, last: usize) -> Vec<Evidence> {
     w.advance_to(0).expect("the first row");
-    let mut before = held(&w);
+    let mut before = held(w);
     let mut seen = w.findings().len();
     let (mut pending, mut found): (Vec<Evidence>, Vec<Evidence>) = (Vec::new(), Vec::new());
-    for row in 1..=LAST_TICK {
+    for row in 1..=last {
         w.advance_to(row).expect("the rows");
-        let now = held(&w);
+        let now = held(w);
         for mut e in pending.drain(..) {
             e.held[2] = now.get(&e.pair).copied();
             found.push(e);
@@ -331,7 +400,7 @@ fn the_pile_s_tunnelling_findings_with_what_the_solver_held() {
         let (findings, values) = (w.findings(), w.finding_values());
         for (&[at, kind, a, b], &value) in findings.iter().zip(values).skip(seen) {
             if kind != finding::TUNNELLED {
-                eprintln!("pile: row {at}: finding kind {kind} of {a}, {b}");
+                eprintln!("pile: row {at}: finding kind {kind} of {a}, {b}, value {value:e}");
                 continue;
             }
             assert_eq!(at as usize, row);
@@ -341,7 +410,7 @@ fn the_pile_s_tunnelling_findings_with_what_the_solver_held() {
                 row,
                 pair,
                 value,
-                profile: profile(&w, pair, row),
+                profile: profile(w, pair, row),
                 held: [before.get(&pair).copied(), now.get(&pair).copied(), None],
                 speeds: [speed(this, a), speed(this, b)],
                 heights: [last[a as usize * POSE + 2], last[b as usize * POSE + 2]],
@@ -351,10 +420,13 @@ fn the_pile_s_tunnelling_findings_with_what_the_solver_held() {
         before = now;
     }
     found.append(&mut pending);
-    let elapsed = started.elapsed();
+    found
+}
 
+/// Prints each tunnelling finding's evidence and a line of counts, prefixed with `scene`.
+fn report(scene: &str, w: &World, found: &[Evidence]) {
     let contacts = w.contacts();
-    for e in &found {
+    for e in found {
         let (a, b) = e.pair;
         let p = &e.profile;
         let near: Vec<String> = contacts
@@ -363,15 +435,15 @@ fn the_pile_s_tunnelling_findings_with_what_the_solver_held() {
             .map(|c| format!("{}@{}", if c[3] == 1 { "began" } else { "ended" }, c[0]))
             .collect();
         eprintln!(
-            "pile-finding: row {} pair ({a}, {b}) [{} | {}] class {} value {:e}\n  \
+            "{scene}-finding: row {} pair ({a}, {b}) [{} | {}] class {} value {:e}\n  \
              distance: start {:.6} end {:.6} closest {:.6} at t={:.4} deepest contact {:.6} at \
              t={:.4} rate {:.6}\n  \
              solver held: before {} | during {} | after (from the end) {}\n  \
              active: before {} during {} after {}; speeds (u/s, rad/s) {:?} {:?}; heights {:.4} \
              {:.4}; contact events within 10 rows {:?}",
             e.row,
-            name(a),
-            name(b),
+            name(w, a),
+            name(w, b),
             class(e.value),
             e.value,
             p.start,
@@ -396,8 +468,8 @@ fn the_pile_s_tunnelling_findings_with_what_the_solver_held() {
     }
     let count = |c: &str| found.iter().filter(|e| class(e.value) == c).count();
     eprintln!(
-        "pile: {} tunnelling findings: {} overlap, {} near, {} indeterminate; with an active \
-         contact before {}, during {}, after {}, at either end or during {}",
+        "{scene}: {} tunnelling findings: {} overlap, {} near, {} indeterminate; with an active \
+         contact before {}, during {}, after {}; contact events {}",
         found.len(),
         count("overlap"),
         count("near"),
@@ -405,27 +477,37 @@ fn the_pile_s_tunnelling_findings_with_what_the_solver_held() {
         found.iter().filter(|e| Held::active(e.held[0])).count(),
         found.iter().filter(|e| Held::active(e.held[1])).count(),
         found.iter().filter(|e| Held::active(e.held[2])).count(),
-        found
-            .iter()
-            .filter(|e| e.held.iter().any(|&h| Held::active(h)))
-            .count(),
+        contacts.len(),
     );
+}
+
+/// The build the pile's trace is pinned on: the shipped wheel's (x86-64 Linux, the pinned
+/// toolchain, baseline target features). Elsewhere the bytes differ by design (README.md,
+/// "Determinism"), and the pin does not apply.
+const PINNED_BUILD: &str =
+    "rustc 1.99.1 (58cf8f9c3 2026-10-13); x86_64-unknown-linux-gnu; fxsr,sse,sse2";
+/// The pile's trace bytes on that build, as they were before the late-contact rule: the rule
+/// reads the motion and must not move it.
+const PINNED_TRACE: &str = "e958ce6207ee2a3b94fa5d511ae9b0cf49359124d68b8e3830a6f5d9ed13f6d5";
+
+#[test]
+fn the_pile_comes_to_rest_with_nothing_found_and_its_trace_unchanged() {
+    let started = std::time::Instant::now();
+    let mut w = pile();
+    let found = observe(&mut w, LAST_TICK);
+    let seconds = started.elapsed().as_secs_f64();
+    report("pile", &w, &found);
 
     // What the last row shows (W200's rest facts), and the run's bytes.
     let n = w.bodies();
-    let fixed = TRAY.len();
     let (last, velocity) = (
         w.pose(LAST_TICK, LAST_TICK + 1),
         w.velocity(LAST_TICK, LAST_TICK + 1),
     );
-    let boxes = fixed as u32..n as u32;
+    let boxes = TRAY.len() as u32..n as u32;
     let max_speed = boxes
         .clone()
         .map(|b| speed(velocity, b).0)
-        .fold(0.0, f32::max);
-    let max_turning = boxes
-        .clone()
-        .map(|b| speed(velocity, b).1)
         .fold(0.0, f32::max);
     let top = boxes
         .clone()
@@ -437,20 +519,30 @@ fn the_pile_s_tunnelling_findings_with_what_the_solver_held() {
             p[0].abs() < 2.0 && p[1].abs() < 2.0
         })
         .count();
-    let (rows, events, seconds) = (w.rows(), contacts.len(), elapsed.as_secs_f64());
-    let (max_speed, max_turning, top) =
-        (f64::from(max_speed), f64::from(max_turning), f64::from(top));
-    eprintln!(
-        "pile: rows {rows} bodies {n}; at the last row max speed {max_speed:?} max angular speed \
-         {max_turning:?} top centre z {top:?} boxes in the tray {in_tray}; contact events \
-         {events}; advanced and read in {seconds:.3} s"
-    );
-    let identity = w.identity();
-    eprintln!(
-        "pile: build {:?} features {:?}; trace sha256 {}",
-        identity.build,
-        identity.features,
+    let (max_speed, top) = (f64::from(max_speed), f64::from(top));
+    let (build, trace) = (
+        w.identity().build,
         hex(Sha256::digest(w.trace_bytes()).as_slice()),
     );
-    eprintln!("pile-declaration: {}", hex(w.declaration_bytes()));
+    eprintln!(
+        "pile: rows {} bodies {n}; at the last row max speed {max_speed:?} top centre z {top:?} \
+         boxes in the tray {in_tray}; advanced and read in {seconds:.3} s; build {build:?}; \
+         trace sha256 {trace}",
+        w.rows(),
+    );
+    assert_eq!(in_tray, n - TRAY.len());
+    assert_eq!(w.findings(), &[] as &[[u32; 4]], "the pile finds nothing");
+    if build == PINNED_BUILD {
+        assert_eq!(trace, PINNED_TRACE, "the pile's motion moved");
+    } else {
+        eprintln!("pile: not the pinned build; its trace is not compared");
+    }
+}
+
+#[test]
+fn a_pour_of_balls_and_boxes_finds_nothing() {
+    let mut w = pour();
+    let found = observe(&mut w, 600);
+    report("pour", &w, &found);
+    assert_eq!(w.findings(), &[] as &[[u32; 4]], "the pour finds nothing");
 }

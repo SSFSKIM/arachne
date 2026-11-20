@@ -16,7 +16,9 @@ step. A stay's occurrence holds those of its rows as
   ``overlap`` (the shapes were seen penetrating each other), ``near`` (a
   certified distance within the allowed linear error, which could not be
   told from a crossing) or ``indeterminate`` (a crossing could not be ruled
-  out).
+  out); a contact the solver registered a tick late (the pair ends the step
+  within its prediction distance, on the side it began, never deeper into
+  each other than the allowed linear error) is not found.
 
 Each carries the scene's ``tick``. A stay that begins where an earlier one
 left the world shares that row with it: the earlier stay holds what was

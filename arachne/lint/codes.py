@@ -458,7 +458,14 @@ _TABLE = (
         " motion were seen penetrating each other (evidence overlap), came"
         " within the allowed linear error of each other, which could not be told"
         " from a crossing (near), or could not be shown apart (indeterminate);"
-        " found at the tick that ends the step, in the record's bake",
+        " found at the tick that ends the step, in the record's bake. Two bodies"
+        " that pass through each other and end on swapped sides, that sink into"
+        " each other deeper than the solver's allowed linear error, or that come"
+        " within it and part again without the solver registering a contact stay"
+        " found; two that end the step within the solver's prediction distance, on"
+        " the side they began, never deeper into each other than the allowed"
+        " linear error, are a contact the solver registered a tick late, and are"
+        " not found",
         "The tick is fixed, so let no body cross more than its own thickness in"
         " a step: thicken the thinner body, slow the faster one, or stiffen or"
         " soften the joint that flings it; and keep the world's"

@@ -7,7 +7,7 @@
 use super::*;
 use crate::encode::Settings;
 use crate::spec::{Body, Force, Joint, JointKind, Shape, ShapeKind};
-use crate::world::Recorded;
+use crate::world::{Condition, Recorded};
 
 pub(crate) struct Solver {
     world: PhysicsWorld,
@@ -30,6 +30,9 @@ pub(crate) struct Solver {
     /// Each shape's reach: the radius of a sphere about its body's centre of mass that holds
     /// the shape however the body turns. Computed at the first step, once every shape is on.
     reach: Vec<f32>,
+    /// A condition of the late-contact rule a test drops (`Solver::checks`).
+    #[cfg(test)]
+    dropped: Option<Condition>,
 }
 
 /// A body's motion over a step, as the step's checks sweep it: its centre of mass from `from`
@@ -50,6 +53,10 @@ struct Motion {
 /// support points and dot products, which are exact to about 6e-5 units within 1000 units of the
 /// origin (the range the sweep claims; `Sweep`).
 const ROUNDING: f32 = 5.0e-4;
+
+/// The most instants at which the late-contact rule measures a pair through a step
+/// (`Sweep::least`): a pair that would need more is not shown shallow.
+const MOST_INSTANTS: f32 = 65536.0;
 
 /// What two shapes are at one instant, as far as can be shown.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -113,6 +120,19 @@ fn gap_between(p1: &Pose, s1: &dyn Geometry, p2: &Pose, s2: &dyn Geometry, allow
     match separation(p1, s1, p2, s2, offset / measured) {
         Some(bound) => Gap::Apart(bound),
         None => Gap::Unknown,
+    }
+}
+
+/// The direction from the first shape's closest point to the second's, at their poses; `None`
+/// when they touch or intersect, or a number is not finite.
+fn direction(p1: &Pose, s1: &dyn Geometry, p2: &Pose, s2: &dyn Geometry) -> Option<Vector> {
+    match query::closest_points(p1, s1, p2, s2, f32::MAX) {
+        Ok(query::ClosestPoints::WithinMargin(a, b)) => {
+            let d = b - a;
+            let squared = d.dot(d);
+            (squared > 0.0 && squared.is_finite()).then_some(d)
+        }
+        _ => None,
     }
 }
 
@@ -236,6 +256,44 @@ impl Sweep<'_> {
         }
     }
 
+    /// A lower bound on the two shapes' signed distance through the step (negative: how deep
+    /// they penetrate each other), or `None` when it cannot be measured: their signed distance
+    /// at instants over which they close by at most a quarter of the allowance, each interval
+    /// between two bounded below by the mean of its ends less the most the distance can dip
+    /// between them (it changes at most at `rate`), less the rounding.
+    fn least(&self) -> Option<f32> {
+        let instants = (self.rate / (self.allowance / 4.0)).ceil();
+        if !instants.is_finite() || instants > MOST_INSTANTS {
+            return None;
+        }
+        let instants = (instants as u32).max(1);
+        let dip = self.rate / instants as f32 / 2.0;
+        let mut last = self.signed(0.0)?;
+        let mut least = f32::INFINITY;
+        for i in 1..=instants {
+            let next = self.signed(i as f32 / instants as f32)?;
+            least = least.min((last + next) / 2.0 - dip);
+            last = next;
+        }
+        Some(least - ROUNDING)
+    }
+
+    /// The two shapes' signed distance at the instant `t` of the step: minus the depth of a
+    /// contact query's penetration, else their distance; `None` when it cannot be measured.
+    fn signed(&self, t: f32) -> Option<f32> {
+        let (p1, p2) = (
+            self.motions.0.position_at_time(t),
+            self.motions.1.position_at_time(t),
+        );
+        let (s1, s2) = self.shapes;
+        let signed = match query::contact(&p1, s1, &p2, s2, 0.0) {
+            Ok(Some(c)) if c.dist < 0.0 => c.dist,
+            Ok(_) => query::distance(&p1, s1, &p2, s2).ok()?.distance,
+            Err(_) => return None,
+        };
+        signed.is_finite().then_some(signed)
+    }
+
     /// The two shapes' gap at the instant `t` of the step.
     fn gap(&self, t: f32) -> Gap {
         let (p1, p2) = (
@@ -266,6 +324,8 @@ impl Solver {
             touching: Vec::new(),
             before: None,
             reach: Vec::new(),
+            #[cfg(test)]
+            dropped: None,
         }
     }
 
@@ -554,7 +614,8 @@ impl Solver {
     /// when indeterminate): shapes the solver lets collide, that touched at neither end of the
     /// step (`now`, and the last row's), with no contact between them in the solver's step, and
     /// that came within the allowed linear error of each other, or could not be shown apart,
-    /// when swept through the step's motion (`Motion`).
+    /// when swept through the step's motion (`Motion`); and that are not a contact the solver
+    /// took one step late (`late_contact`).
     ///
     /// No test rules out a pair that meets: over any part of the step, the distance between two
     /// shapes shrinks by at most the relative travel of their bodies' centres plus each turn's
@@ -673,7 +734,15 @@ impl Solver {
                     allowance,
                 };
                 if let Some(value) = sweep.swept().value() {
-                    found.push((pair, value));
+                    // Each shape's pose at the step's end.
+                    let now = |s: usize, body: u32| {
+                        *self.world.bodies[self.bodies[body as usize]].position()
+                            * self.local_pose(self.shapes[s].0)
+                    };
+                    let end = (now(i, a), now(k, b));
+                    if !self.late_contact(&sweep, (&swept[i].0, &swept[k].0), (&end.0, &end.1)) {
+                        found.push((pair, value));
+                    }
                 }
             }
         }
@@ -687,6 +756,43 @@ impl Solver {
             }
         }
         merged
+    }
+
+    /// Whether two shapes the sweep did not show apart are a contact the solver took one step
+    /// late rather than a passing through: at the step's end they are within the solver's
+    /// prediction distance (its next step holds them in contact); the direction between their
+    /// closest points at the end agrees with that at the start (they end on the side they began);
+    /// and the deepest they penetrate each other through the step, as measured (`Sweep::least`),
+    /// is at most the allowed linear error (the depth the solver lets two resting shapes sink).
+    /// Both numbers are the solver's own. Anything that cannot be measured keeps the pair found.
+    fn late_contact(&self, sweep: &Sweep, start: (&Pose, &Pose), end: (&Pose, &Pose)) -> bool {
+        let parameters = &self.world.integration_parameters;
+        let (s1, s2) = sweep.shapes;
+        let near = query::distance(end.0, s1, end.1, s2).is_ok_and(|d| {
+            d.distance.is_finite() && d.distance <= parameters.prediction_distance()
+        });
+        if !near {
+            return false;
+        }
+        let same_side = !self.checks(Condition::SameSide)
+            || matches!(
+                (direction(start.0, s1, start.1, s2), direction(end.0, s1, end.1, s2)),
+                (Some(from), Some(to)) if from.dot(to) > 0.0
+            );
+        same_side
+            && (!self.checks(Condition::Shallow)
+                || sweep
+                    .least()
+                    .is_some_and(|least| least >= -parameters.allowed_linear_error()))
+    }
+
+    /// Whether the late-contact rule checks `condition`: always, but in a test that drops it.
+    fn checks(&self, condition: Condition) -> bool {
+        #[cfg(test)]
+        let dropped = self.dropped;
+        #[cfg(not(test))]
+        let dropped: Option<Condition> = None;
+        dropped != Some(condition)
     }
 
     /// A shape's pose in its body's frame.
@@ -770,6 +876,19 @@ impl Solver {
     #[allow(dead_code)] // Read by the 3D pile's tests only (world::pile).
     pub(crate) fn physics(&self) -> (&PhysicsWorld, &[(ColliderHandle, u32)]) {
         (&self.world, &self.shapes)
+    }
+
+    /// Drops a condition of the late-contact rule (`late_contact`), or none.
+    pub(crate) fn drop_condition(&mut self, dropped: Option<Condition>) {
+        self.dropped = dropped;
+    }
+
+    /// Sets the solver's allowed linear error and prediction distance (units), which the
+    /// late-contact rule reads.
+    pub(crate) fn set_tolerances(&mut self, allowed_linear_error: f32, prediction_distance: f32) {
+        let p = &mut self.world.integration_parameters;
+        p.normalized_allowed_linear_error = allowed_linear_error / p.length_unit;
+        p.normalized_prediction_distance = prediction_distance / p.length_unit;
     }
 }
 
