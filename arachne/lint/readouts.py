@@ -3,8 +3,9 @@
 At each lint instant every body readout the frame's capture draws is read
 for the tick its value is of (its declared ``sim.reads_tick``). One more
 than a tick behind the capture's tick, while its body's world is in the
-scene there (a stay of the world holds the capture's tick, and goes on
-past it), is a ``sim.readout_stale`` finding about the readout, over each
+scene there (the capture holds the world: not at the instant it leaves,
+which the next play's capture answers without it), is a
+``sim.readout_stale`` finding about the readout, over each
 run of consecutive lint instants at which it stays so: something held its
 updater (an animation of the readout itself, such as ``FadeIn``) while the
 body moved. A tick behind is the lag a readout added before an open world
@@ -76,8 +77,10 @@ def _read(
 
     scene_tick = math.floor(capture.instant * TICK_RATE)
     names = play.names if play is not None else record.final_names
+    walked = list(record._walk(capture, capture.draw_list()))
+    present = {id(mob) for mob, _ in walked}
     found: list[_Stale] = []
-    for mob, state in record._walk(capture, capture.draw_list()):
+    for mob, state in walked:
         if not isinstance(mob, BodyReadout):
             continue
         sources = state.get(SOURCES) or ()
@@ -86,8 +89,12 @@ def _read(
             continue
         if scene_tick - shown.tick <= LAG:
             continue
+        # Its world in the scene at the capture: a member of what it holds.
+        shows = state.get("_shows")
+        if shows is None or id(shows.world) not in present:
+            continue
         body = _body_id(bakes, shown.occurrence, shown.body)
-        if body is None or not _in_the_scene(bakes, body, scene_tick):
+        if body is None:
             continue
         origin = record.origin(mob)
         thing = FindingObject(
@@ -115,20 +122,6 @@ def _body_id(bakes: Bakes, ordinal: int, body: int) -> str | None:
             if binding.channel == "pose" and binding.index == body
         ),
         None,
-    )
-
-
-def _in_the_scene(bakes: Bakes, body: str, tick: int) -> bool:
-    """Whether a stay of the world of the body ``body`` holds ``tick`` and
-    goes on past it.
-    """
-    return any(
-        occurrence.first_tick <= tick < occurrence.last_tick
-        and any(
-            binding.id == body and binding.channel == "pose"
-            for binding in occurrence.bindings
-        )
-        for occurrence in bakes.occurrences
     )
 
 

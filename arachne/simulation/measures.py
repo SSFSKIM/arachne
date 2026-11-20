@@ -24,8 +24,11 @@ Each is exact as baked, the contact instants to within a tick (their
 tolerance, 1/60 s). A body left on screen after its world left reads the
 row its placement shows, the stay's last, at every instant after it while
 its own drawing stays as the stay left it, whichever route answers the
-instant: a held wait's one capture or a ticked play's own. Outside its
-stay otherwise (moved, redrawn, or before the stay) every one is
+instant: a held wait's one capture or a ticked play's own. That holds for
+a body drawn by its own points alone; a body with submobjects (a group)
+is drawn by them too, which its capture does not hold, so past its stay
+it is unreadable, moved or not. Outside its stay otherwise (moved,
+redrawn, or before the stay) every one is
 unreadable, with the reason, and the lint reports
 ``sim.quantity_unreadable``. A contact begins where two shapes come within
 the world's allowed linear error, touching or overlapping
@@ -89,14 +92,18 @@ def bind(mobject: Mobject, ordinal: int, body: int, drawn: bytes | None = None) 
 
 
 def drawn_key(own: Mapping[str, Any]) -> bytes | None:
-    """The key of what a mobject's own attributes ``own`` draw: its
-    placement's, or its points'; ``None`` when it has no points of its own.
+    """The key of what a mobject's own attributes ``own`` draw, when they
+    draw all of it: its placement's, or its points'; ``None`` for one with
+    submobjects (its drawing is also theirs, which its capture does not
+    hold) or with no points of its own.
     """
+    if own.get("submobjects"):
+        return None
     placement = own.get("_placement")
     points = own.get("_points")
     if placement is not None and (points is None or points is placement.materialized):
         return bytes(placement.key)
-    if points is None:
+    if points is None or not len(points):
         return None
     array = np.ascontiguousarray(points)
     return hashlib.blake2b(array.tobytes(), digest_size=16).digest()
@@ -117,6 +124,7 @@ def _tick(found: SimBody, held: Mapping[str, Any], at: At) -> int:
     if occurrence is None or at.tick <= occurrence.last_tick:
         return at.tick
     if drawn_key(held) != found.drawn:
+        # Moved, redrawn, or drawn by its submobjects: not the stay's row.
         return at.tick
     return occurrence.last_tick
 
