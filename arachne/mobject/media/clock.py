@@ -6,7 +6,7 @@ A clocked media object holds a **program**: an immutable tuple of
 (:meth:`~.VideoMobject.run`, ``loop``, ``hold`` and ``scrub``) each append
 one segment at the scene's present instant, so an earlier capture keeps the
 program as it was then. The program is data, and media time is exact
-arithmetic on it (:func:`program_time`):
+arithmetic on it (:func:`program_time`)::
 
     program time at the scene instant t, in the last segment that starts
     at or before t:
