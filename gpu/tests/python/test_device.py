@@ -79,6 +79,69 @@ def test_the_ordinary_door_refuses_a_machine_with_no_vulkan_loader(tmp_path):
     assert isinstance(report["software"], str)
 
 
+FORK = """
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import arachne_gpu, conftest
+from arachne_gpu import Frame
+from gpu_helpers import CLEAR
+
+def outcome(call):
+    try:
+        call()
+        return "ran"
+    except Exception as error:
+        return {"class": type(error).__name__, "runtime": isinstance(error, RuntimeError),
+                "message": str(error)}
+
+def in_a_fork(*calls):
+    read, write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read)
+        os.write(write, json.dumps([outcome(call) for call in calls]).encode())
+        os._exit(0)
+    os.close(write)
+    answer = b""
+    while chunk := os.read(read, 1 << 16):
+        answer += chunk
+    os.waitpid(pid, 0)
+    return json.loads(answer)
+
+def draws():
+    conftest.checked_compositor(16, 16).draw(Frame(CLEAR, []))
+
+report = {"before": in_a_fork(draws)}
+draws()
+report["after"] = in_a_fork(arachne_gpu.adapters, draws)
+report["parent"] = outcome(draws)
+print(json.dumps(report))
+"""
+
+
+def test_a_process_forked_after_first_use_is_refused_and_one_forked_before_draws():
+    here = str(Path(__file__).parent)
+    done = subprocess.run(
+        [sys.executable, "-c", FORK, here],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    report = json.loads(done.stdout.splitlines()[-1])
+    # Forked before this process first used the build: the child opens Vulkan of its own.
+    assert report["before"] == ["ran"]
+    # Forked after: its Vulkan state is the parent's, and both calls refuse before touching it.
+    for refused in report["after"]:
+        assert refused != "ran", report
+        assert refused["class"] == "ForkedProcessError", refused
+        assert refused["runtime"], refused
+        assert "spawn" in refused["message"], refused
+        assert "exec" in refused["message"], refused
+        assert "no gpu" not in refused["message"].lower()
+    assert report["parent"] == "ran"
+
+
 def test_adapters_lists_what_the_machine_offers():
     for adapter in arachne_gpu.adapters():
         assert set(adapter) == {
