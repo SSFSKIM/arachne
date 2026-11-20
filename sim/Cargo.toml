@@ -1,0 +1,50 @@
+[package]
+name = "arachne-sim"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Arachne's simulation crate: rigid-body worlds stepped on a fixed clock"
+repository = "https://github.com/SSFSKIM/arachne"
+publish = false
+
+[lib]
+name = "arachne_sim"
+
+[dependencies]
+# The solver, pinned by exact version, its features listed one by one, without `std` (README.md,
+# "Determinism").
+rapier2d = { version = "=0.36.1", default-features = false, features = [
+    "dim2",
+    "f32",
+    "alloc",
+    "block-solver",
+    "enhanced-determinism",
+] }
+rapier3d = { version = "=0.36.1", default-features = false, features = [
+    "dim3",
+    "f32",
+    "alloc",
+    "enhanced-determinism",
+] }
+
+[dev-dependencies]
+# The probe's digests.
+sha2 = "0.11.1"
+
+# The solver's calls to the platform's maths, routed through simba's traits (and so through the
+# pure-Rust libm under `enhanced-determinism`), at pinned commits: README.md, "Determinism".
+[patch.crates-io]
+rapier2d = { git = "https://github.com/dimforge/rapier", rev = "b303bc13e7e69abcec31c595f095de71edf2d3d3" }
+rapier3d = { git = "https://github.com/dimforge/rapier", rev = "b303bc13e7e69abcec31c595f095de71edf2d3d3" }
+parry2d = { git = "https://github.com/dimforge/parry", rev = "dbcce4095c5c65277de1d3363d59c9a75cc02a87" }
+parry3d = { git = "https://github.com/dimforge/parry", rev = "dbcce4095c5c65277de1d3363d59c9a75cc02a87" }
+glamx = { git = "https://github.com/dimforge/glamx", rev = "78c97db71c2724b096cf751d2024c405c65d8612" }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+# The release build with line tables, for ci/imports.py --where.
+[profile.audit]
+inherits = "release"
+debug = "line-tables-only"
