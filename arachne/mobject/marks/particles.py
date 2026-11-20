@@ -7,6 +7,7 @@ from __future__ import annotations
 __all__ = ["Burst", "ChargedParticle", "DottedTrail", "Particles", "WavefrontArcs"]
 
 import math
+import numbers
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -29,7 +30,8 @@ if TYPE_CHECKING:
 class ChargedParticle(VGroup):
     """A disc of ``radius`` bearing a plus (``charge > 0``), a minus
     (``charge < 0``) or nothing: point charges, ions in solution, ions at a
-    membrane. ``charge`` is kept as given; its sign picks the sign drawn and,
+    membrane. ``charge`` is kept as a plain number (a whole one as an
+    ``int``, any other as a ``float``); its sign picks the sign drawn and,
     unless ``color`` is given, the colour. Style keywords go to the disc;
     the sign keeps its own.
     """
@@ -45,7 +47,9 @@ class ChargedParticle(VGroup):
     ) -> None:
         style = take_style(kwargs)
         super().__init__(**kwargs)
-        self.charge = charge
+        self.charge: int | float = (
+            int(charge) if isinstance(charge, numbers.Integral) else float(charge)
+        )
         shade = (
             color
             if color is not None
