@@ -56,7 +56,7 @@ def keyed(mobject: Mobject, attribute: str) -> tuple[bytes, bytes]:
     ``mobject``'s values now: its part as given, and rounded to 6 decimals.
     A play's registered start state and a footprint both digest each node's
     :func:`~arachne.timeline.record.content_fields`, so a field there is in
-    both keys, and a value they cannot encode is left out of both.
+    both keys.
     """
     state = NodeState.of(mobject)
     given = {key: part for key, part, *_ in content_fields(state)}
