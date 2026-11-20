@@ -42,8 +42,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from arachne.frame_ir.xf import image_key
+from arachne.timeline.record import DEPENDENCIES
 
-from .layer import LayerSpec, focus_at, layer_of, pixels
+from .layer import focus_at, layer_of, pixels
 
 if TYPE_CHECKING:
     from arachne.camera.camera import Camera
@@ -132,13 +133,7 @@ class Stack:
                 else list(handed)
             )
             self._owners = _carriers(roots, self._origin)
-            carriers = {id(carrier): carrier for carrier in self._owners.values()}
-            self._dependents = {
-                id(member)
-                for carrier in carriers.values()
-                for read in _spec(carrier).dependencies
-                for member in read.get_family()
-            }
+            self._dependents = _read_through(roots)
         return self._owners
 
     def draw(self) -> np.ndarray:
@@ -272,7 +267,10 @@ class Stack:
             arachne_gpu.Layer(arachne_gpu.Picture(self._paint(part, uploads)))
             for part, _ in parts
         ]
-        stacked = self.compositor.draw(arachne_gpu.Frame(_TRANSPARENT, inner))
+        try:
+            stacked = self.compositor.draw(arachne_gpu.Frame(_TRANSPARENT, inner))
+        except arachne_gpu.Unsupported as refused:
+            raise Unsupported("composite", refused.reason) from None
         return self._upload(np.ascontiguousarray(stacked), True, uploads)
 
     def _stack_of(self, objects: Sequence[Mobject], uploads: dict) -> Any:
@@ -281,7 +279,15 @@ class Stack:
         """
         import arachne_gpu
 
-        leaves = self.camera.get_mobjects_to_display(list(objects))
+        # What a layer of this stack reads is painted only through it, here
+        # as in the frame: an object listed in the window and read by one
+        # of its layers too is painted once, through that layer.
+        read = _read_through(objects)
+        leaves = [
+            leaf
+            for leaf in self.camera.get_mobjects_to_display(list(objects))
+            if id(leaf) not in read
+        ]
         owners = _carriers(objects, self._origin)
         layers = self._layers(
             [(leaf, owners.get(id(leaf))) for leaf in leaves], uploads
@@ -354,9 +360,35 @@ class Stack:
         return [(float(x), float(y)) for x, y in found]
 
 
-def _spec(carrier: Mobject) -> LayerSpec:
-    found = layer_of(carrier)
-    assert found is not None
+def _read_through(roots: Iterable[Mobject]) -> set[int]:
+    """The ids of everything a layer within ``roots``' families reads, at
+    any depth: each capture dependency (:data:`.record.DEPENDENCIES`) with
+    its family, and what those read in turn. This is the closure a replay
+    walks to refuse leaving such an object out (:mod:`.timeline.footprint`).
+    """
+    found: set[int] = set()
+    seen: set[int] = set()
+    pending: list[Mobject] = list(roots)
+    reading: list[Mobject] = []
+    while pending:
+        mob = pending.pop()
+        if id(mob) in seen:
+            continue
+        seen.add(id(mob))
+        reading.extend(_dependencies_of(mob))
+        pending.extend(mob.submobjects)
+    while reading:
+        mob = reading.pop()
+        if id(mob) in found:
+            continue
+        found.add(id(mob))
+        reading.extend(mob.submobjects)
+        reading.extend(_dependencies_of(mob))
+    return found
+
+
+def _dependencies_of(mob: Mobject) -> tuple[Mobject, ...]:
+    found: tuple[Mobject, ...] = vars(mob).get(DEPENDENCIES, ())
     return found
 
 

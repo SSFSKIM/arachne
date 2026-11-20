@@ -48,13 +48,14 @@ def test_set_layer_declares_its_capabilities_and_withdraws_those_it_drops():
 
 
 def test_a_row_declared_on_its_own_outlives_every_spec():
+    """``layer.depth``, which a spec can hold but none set here does."""
     square, mask = Square(), Circle()
-    declare(square, "effect.depth_of_field")
+    declare(square, "layer.depth")
     set_layer(square, LayerSpec(blur=0.1))
     set_layer(square, LayerSpec(mask=mask))
-    assert held(square) == {"effect.depth_of_field", "effect.soft_mask"}
+    assert held(square) == {"layer.depth", "effect.soft_mask"}
     set_layer(square, None)
-    assert held(square) == {"effect.depth_of_field"}
+    assert held(square) == {"layer.depth"}
 
 
 def test_the_seam_is_declared_by_the_package():

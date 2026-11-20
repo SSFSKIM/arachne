@@ -321,3 +321,39 @@ class MaskNotShown(MaskShownToo):
     """:class:`MaskShownToo` without the mask added."""
 
     shown = False
+
+
+class WindowMaskShownToo(Scene):
+    """A frame whose window shows a white square cut out by a circle. With
+    ``shown`` the circle is added to the scene too; with ``listed`` it is
+    listed in the window beside the square. Either way it is painted only
+    through the square.
+    """
+
+    shown = True
+    listed = False
+
+    def construct(self):
+        inner = Square(side_length=6, fill_color=WHITE, fill_opacity=1)
+        mask = Circle(radius=1, color=RED, fill_opacity=1).shift(2 * LEFT)
+        set_layer(inner, LayerSpec(mask=mask))
+        frame = Rectangle(width=8, height=4.5, stroke_width=0)
+        window = (inner, mask) if self.listed else (inner,)
+        set_layer(frame, LayerSpec(window=window))
+        self.add(frame)
+        if self.shown:
+            self.add(mask)
+        self.wait(0.2)
+
+
+class WindowMaskListed(WindowMaskShownToo):
+    """The circle listed in the window beside the square it cuts out."""
+
+    shown = False
+    listed = True
+
+
+class WindowMaskNotShown(WindowMaskShownToo):
+    """The circle neither added nor listed."""
+
+    shown = False

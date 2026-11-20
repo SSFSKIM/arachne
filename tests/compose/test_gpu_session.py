@@ -357,20 +357,56 @@ def test_a_window_s_layers_are_defocused_by_the_frame_s_focus(session_of, softwa
     assert _blurred_edge(early_then) < _blurred_edge(late_first)
 
 
-def test_a_mask_shown_too_is_painted_only_through_its_layer(session_of, software):
-    shown = session_of("MaskShownToo")
-    alone = session_of("MaskNotShown")
+#: Scenes where a layer's mask is shown or listed besides being read, with
+#: the scene that only reads it, which each must draw the same.
+DUAL_ROLE = [
+    ("MaskShownToo", "MaskNotShown"),
+    ("WindowMaskShownToo", "WindowMaskNotShown"),
+    ("WindowMaskListed", "WindowMaskNotShown"),
+]
+
+
+def _masks_and_carriers(session) -> tuple[set[str], set[str]]:
+    """The ids of every mask a layer of the scene reads, at any depth, and
+    of the scene's top-level carriers.
+    """
+    record = session.record
+    holders = [mob for mob in record.mobjects() if layer_of(mob) is not None]
+    masks = {
+        record.origin(layer_of(mob).mask).id
+        for mob in holders
+        if layer_of(mob).mask is not None
+    }
+    roots = {id(mob) for mob in record.final.roots}
+    carriers = {record.origin(mob).id for mob in holders if id(mob) in roots}
+    return masks, carriers
+
+
+@pytest.mark.parametrize(("scene", "reads_only"), DUAL_ROLE)
+def test_a_mask_shown_or_listed_too_is_painted_only_through_its_layer(
+    session_of, software, scene, reads_only
+):
     t = Fraction(1, 10)
-    assert _close(_pixels(shown, t), _pixels(alone, t), within=0)
-    record = shown.record
-    (square,) = [mob for mob in record.mobjects() if layer_of(mob) is not None]
-    mask = record.origin(layer_of(square).mask).id
-    assert mask not in drawables(shown, t)
+    shown = session_of(scene)
+    assert _close(_pixels(shown, t), _pixels(session_of(reads_only), t), within=0)
+    masks, _ = _masks_and_carriers(shown)
+    listed = drawables(shown, t)
+    assert masks
+    assert not masks & set(listed)
 
 
-def test_a_carrier_s_object_map_holds_no_entry_of_what_it_reads(session_of, software):
-    session = session_of("MovingMask")
-    for carrier, dependency in _ids(session):
-        found = object_map(session, Fraction(1, 4), [carrier])
-        assert carrier in found.objects
-        assert dependency not in found.objects
+@pytest.mark.parametrize(("scene", "reads_only"), [*DUAL_ROLE, ("MovingMask", None)])
+def test_an_object_map_of_every_drawable_holds_none_of_what_layers_read(
+    session_of, software, scene, reads_only
+):
+    session = session_of(scene)
+    t = Fraction(1, 4) if scene == "MovingMask" else Fraction(1, 10)
+    masks, carriers = _masks_and_carriers(session)
+    asked = list(drawables(session, t))
+    found = object_map(session, t, asked)
+    assert not masks & set(found.objects)
+    assert carriers
+    for carrier in carriers:
+        footprint = found.objects[carrier]
+        assert footprint.mask is not None
+        assert footprint.mask.any()
