@@ -1,4 +1,5 @@
-//! The compositor: textures of two kinds, a stack of layers, and the frame read back.
+//! The compositor: textures of two kinds, a stack of layers with their effects, the frame read
+//! back, and the object map.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -6,12 +7,17 @@ use std::fmt;
 use wgpu::util::DeviceExt;
 
 use crate::device::{self, AdapterSummary, Door, NoGpu, Pin};
-use crate::frame::{Frame, NEAREST, Source};
+use crate::frame::Frame;
 use crate::keys::{Key, image_key, painted_from_straight, painted_key};
-use crate::placement::{Placement, place};
+use crate::object_map::{Footprint, from_coverage};
+use crate::plan::{Canvas, Effect, Placed, Planned, Stack, plan};
 
-/// Every texture and target: 8-bit values read and written as integers.
+/// Every texture and target a layer is drawn to: 8-bit values read and written as integers.
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uint;
+/// The working textures between an effect's passes: 32-bit integers, 8 fractional bits.
+const WIDE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
+/// How many layers one coverage frame marks: a bit each, 32 bits a pixel.
+const COVERAGE_BITS: usize = 32;
 
 /// Why a frame was not drawn or a texture not taken. Nothing is drawn when a frame is refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,11 +94,74 @@ struct LayerUniform {
     size: [u32; 2],
     kind: u32,
     opacity: u32,
+    mode: u32,
+    bit: u32,
+    padding: [u32; 2],
 }
 
+// A layer pass's kinds.
 const PICTURE: u32 = 0;
 const QUAD: u32 = 1;
 const FILL: u32 = 2;
+// What a layer pass writes: the layer stacked over what is below, one bit of coverage, or the
+// layer placed alone.
+const OVER: u32 = 0;
+const COVERAGE: u32 = 1;
+const PLACE: u32 = 2;
+
+impl LayerUniform {
+    fn new(kind: u32, rows: [[f32; 4]; 3], size: [u32; 2]) -> Self {
+        LayerUniform {
+            rows,
+            colour: [0; 4],
+            size,
+            kind,
+            opacity: 255,
+            mode: OVER,
+            bit: 0,
+            padding: [0; 2],
+        }
+    }
+
+    fn fill(colour: [u8; 4]) -> Self {
+        LayerUniform {
+            colour: colour.map(u32::from),
+            ..LayerUniform::new(FILL, [[0.0; 4]; 3], [0; 2])
+        }
+    }
+}
+
+/// One blur pass's parameters, laid out as `effects.wgsl`'s `Blur`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BlurUniform {
+    direction: [i32; 2],
+    radius: i32,
+    shift: u32,
+}
+
+/// The finishing pass's parameters, laid out as `effects.wgsl`'s `Finish`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FinishUniform {
+    masked: u32,
+    invert: u32,
+    padding: [u32; 2],
+}
+
+/// The textures one level of windows draws with: two accumulators a stack ping-pongs between,
+/// and, once a layer at this level carries an effect, that effect's working textures.
+struct Level {
+    accumulators: [Texture; 2],
+    effects: Option<Scratch>,
+}
+
+/// An effect's working textures: the layer placed alone, and later finished, in 8 bits; and three
+/// wide ones between the blur's and the feather's passes.
+struct Scratch {
+    layer: Texture,
+    wide: [Texture; 3],
+}
 
 /// A Vulkan device with no window, the textures it holds, and the frame size it draws.
 pub struct Compositor {
@@ -105,11 +174,18 @@ pub struct Compositor {
     max_dimension: u32,
     images: HashMap<Key, Texture>,
     painted: HashMap<Key, Texture>,
-    pipeline: wgpu::RenderPipeline,
-    layout: wgpu::BindGroupLayout,
-    accumulators: [Texture; 2],
+    compose: Pipeline,
+    blur: Pipeline,
+    finish: Pipeline,
+    /// Level 0 draws the frame; level n + 1 the windows of level n.
+    levels: Vec<Level>,
     readback: wgpu::Buffer,
     padded_row: u32,
+}
+
+struct Pipeline {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
 }
 
 impl Compositor {
@@ -131,47 +207,18 @@ impl Compositor {
         let (padded_row, readback_size) = frame_size(width, height, &opened.limits)?;
         let max_dimension = opened.limits.max_texture_dimension_2d;
         let device = opened.device;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let compose = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compose"),
             source: wgpu::ShaderSource::Wgsl(include_str!("compose.wgsl").into()),
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("compose"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+        let effects = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("effects"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("effects.wgsl").into()),
         });
-        let layout = pipeline.get_bind_group_layout(0);
-        let accumulator = || {
-            texture(
-                &device,
-                width,
-                height,
-                wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
-            )
-        };
-        let accumulators = [accumulator(), accumulator()];
+        let compose = pipeline(&device, &compose, "fs", FORMAT);
+        let blur = pipeline(&device, &effects, "blur_pass", WIDE);
+        let finish = pipeline(&device, &effects, "finish_pass", FORMAT);
+        let level = Level::new(&device, width, height);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: readback_size,
@@ -188,9 +235,10 @@ impl Compositor {
             max_dimension,
             images: HashMap::new(),
             painted: HashMap::new(),
-            pipeline,
-            layout,
-            accumulators,
+            compose,
+            blur,
+            finish,
+            levels: vec![level],
             readback,
             padded_row,
         })
@@ -316,97 +364,269 @@ impl Compositor {
         texture
     }
 
-    fn held(&self, key: &Key) -> Result<&Texture, DrawError> {
-        self.images
-            .get(key)
-            .or_else(|| self.painted.get(key))
-            .ok_or(DrawError::UnknownKey(*key))
+    /// The texture held under `key`, of either kind.
+    fn held(&self, key: &Key) -> Option<&Texture> {
+        self.images.get(key).or_else(|| self.painted.get(key))
+    }
+
+    /// The texture under a key the frame's plan found held: no texture is released while a frame
+    /// is drawn.
+    fn planned_texture(&self, key: &Key) -> &Texture {
+        self.held(key).expect("a key the plan found is held")
+    }
+
+    /// The frame checked whole and resolved, and every working texture it needs made.
+    fn prepare(&mut self, frame: &Frame) -> Result<Stack, DrawError> {
+        let size_of = |key: &Key| self.held(key).map(|t| (t.width, t.height));
+        let canvas = Canvas {
+            width: self.width,
+            height: self.height,
+            size_of: &size_of,
+        };
+        let stack = plan(frame, &canvas, 0)?;
+        self.make_room(&stack, 0);
+        Ok(stack)
+    }
+
+    /// Makes the working textures `stack` needs at `level`, and its windows' one level down.
+    fn make_room(&mut self, stack: &Stack, level: usize) {
+        if self.levels.len() == level {
+            self.levels
+                .push(Level::new(&self.device, self.width, self.height));
+        }
+        if self.levels[level].effects.is_none() && stack.layers.iter().any(|l| l.effect.is_some()) {
+            self.levels[level].effects = Some(Scratch::new(&self.device, self.width, self.height));
+        }
+        for layer in &stack.layers {
+            if let Placed::Window { stack, .. } = &layer.placed {
+                self.make_room(stack, level + 1);
+            }
+        }
     }
 
     /// Draws the frame: tight RGBA8 rows, top first, painted. The whole frame is checked before
     /// anything is drawn; a refused frame draws nothing. A draw holds the compositor exclusively
-    /// from its first pass to the read-back buffer's unmapping: its accumulators and that buffer
-    /// are one frame's at a time.
+    /// from its first pass to the read-back buffer's unmapping: its working textures and that
+    /// buffer are one frame's at a time.
     pub fn draw(&mut self, frame: &Frame) -> Result<Vec<u8>, DrawError> {
-        let mut passes = Vec::with_capacity(frame.layers.len());
-        for (index, layer) in frame.layers.iter().enumerate() {
-            let texture = self.held(layer.source.key())?;
-            if !(0.0..=1.0).contains(&layer.opacity) {
-                return Err(DrawError::Invalid(format!(
-                    "layer {index}: opacity {} is not in 0..=1",
-                    layer.opacity
-                )));
-            }
-            let mut uniform = LayerUniform {
-                rows: [[0.0; 4]; 3],
-                colour: [0; 4],
-                size: [texture.width, texture.height],
-                kind: PICTURE,
-                opacity: (layer.opacity * 255.0).round() as u32,
-            };
-            match &layer.source {
-                Source::Picture { .. } => {
-                    if (texture.width, texture.height) != (self.width, self.height) {
-                        return Err(DrawError::Invalid(format!(
-                            "layer {index}: a picture of {} x {} in a frame of {} x {}",
-                            texture.width, texture.height, self.width, self.height
-                        )));
-                    }
-                }
-                Source::Quad {
-                    corners,
-                    resampling,
-                    ..
-                } => {
-                    if *resampling != NEAREST {
-                        return Err(DrawError::Unsupported(format!(
-                            "layer {index}: resampling {resampling} (PIL's value); this build \
-                             resamples a quad by nearest ({NEAREST}) only"
-                        )));
-                    }
-                    if corners.iter().flatten().any(|c| !c.is_finite()) {
-                        return Err(DrawError::Invalid(format!(
-                            "layer {index}: a quad's corners are not finite"
-                        )));
-                    }
-                    match place(corners, texture.width, texture.height) {
-                        Placement::Mapped(rows) => {
-                            uniform.kind = QUAD;
-                            uniform.rows = rows;
-                        }
-                        Placement::Empty => continue,
-                        Placement::Refused(why) => {
-                            return Err(DrawError::Unsupported(format!("layer {index}: {why}")));
-                        }
-                    }
-                }
-            }
-            passes.push((texture, uniform));
-        }
-
+        let stack = self.prepare(frame)?;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let fill = LayerUniform {
-            rows: [[0.0; 4]; 3],
-            colour: frame.background.map(u32::from),
-            size: [0; 2],
-            kind: FILL,
-            opacity: 255,
-        };
-        let [first, second] = &self.accumulators;
-        self.pass(&mut encoder, fill, second, second, first);
-        let mut current = 0;
-        for (texture, uniform) in passes {
-            let below = &self.accumulators[current];
-            let target = &self.accumulators[1 - current];
-            self.pass(&mut encoder, uniform, below, texture, target);
-            current = 1 - current;
-        }
-        self.read_back(encoder, &self.accumulators[current])
+        let drawn = self.encode_stack(&mut encoder, &stack, 0);
+        self.read_back(encoder, drawn)
     }
 
-    fn pass(
+    /// One footprint per layer that names an object, in the frame's order: the pixels the layer
+    /// covers drawn with no effect, and how far its effects spread it. The frame is checked as
+    /// [`Compositor::draw`] checks it. Coverage is drawn on the device, one bit a layer, 32 layers
+    /// to a read-back; a window's stack is composed for it first.
+    pub fn object_map(&mut self, frame: &Frame) -> Result<Vec<Footprint>, DrawError> {
+        let stack = self.prepare(frame)?;
+        let named: Vec<(usize, &Planned, &str)> = stack
+            .layers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, layer)| Some((index, layer, layer.object_id.as_deref()?)))
+            .collect();
+        let mut footprints = Vec::with_capacity(named.len());
+        for batch in named.chunks(COVERAGE_BITS) {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            let accumulators = &self.levels[0].accumulators;
+            let [first, second] = accumulators;
+            self.layer_pass(
+                &mut encoder,
+                LayerUniform::fill([0; 4]),
+                second,
+                second,
+                first,
+            );
+            let mut current = 0;
+            for (bit, (_, layer, _)) in batch.iter().enumerate() {
+                let Some((source, mut uniform)) = self.placed(&mut encoder, &layer.placed, 0)
+                else {
+                    continue;
+                };
+                uniform.mode = COVERAGE;
+                uniform.bit = bit as u32;
+                uniform.opacity = layer.opacity;
+                let (below, target) = (&accumulators[current], &accumulators[1 - current]);
+                self.layer_pass(&mut encoder, uniform, below, source, target);
+                current = 1 - current;
+            }
+            let coverage = self.read_back(encoder, &accumulators[current])?;
+            for (bit, (index, layer, object_id)) in batch.iter().enumerate() {
+                footprints.push(from_coverage(
+                    &coverage,
+                    self.width,
+                    bit,
+                    object_id.to_string(),
+                    *index,
+                    layer.grow_px,
+                ));
+            }
+        }
+        Ok(footprints)
+    }
+
+    /// Records a stack's passes with `level`'s accumulators and returns the one it ends in.
+    fn encode_stack(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        stack: &Stack,
+        level: usize,
+    ) -> &Texture {
+        let accumulators = &self.levels[level].accumulators;
+        let [first, second] = accumulators;
+        self.layer_pass(
+            encoder,
+            LayerUniform::fill(stack.background),
+            second,
+            second,
+            first,
+        );
+        let mut current = 0;
+        for layer in &stack.layers {
+            let Some((placed, uniform)) = self.placed(encoder, &layer.placed, level) else {
+                continue;
+            };
+            let (source, mut uniform) = match &layer.effect {
+                Some(effect) => {
+                    let finished = self.encode_effect(encoder, level, placed, uniform, effect);
+                    let size = [self.width, self.height];
+                    (finished, LayerUniform::new(PICTURE, [[0.0; 4]; 3], size))
+                }
+                None => (placed, uniform),
+            };
+            uniform.opacity = layer.opacity;
+            let (below, target) = (&accumulators[current], &accumulators[1 - current]);
+            self.layer_pass(encoder, uniform, below, source, target);
+            current = 1 - current;
+        }
+        &accumulators[current]
+    }
+
+    /// The texture a layer draws from and the uniform that places it; `None` when it places
+    /// nothing. A window's stack is composed first, one level down.
+    fn placed(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        placed: &Placed,
+        level: usize,
+    ) -> Option<(&Texture, LayerUniform)> {
+        let frame_size = [self.width, self.height];
+        match placed {
+            Placed::Nothing => None,
+            Placed::Picture(key) => Some((
+                self.planned_texture(key),
+                LayerUniform::new(PICTURE, [[0.0; 4]; 3], frame_size),
+            )),
+            Placed::Quad { key, rows } => {
+                let texture = self.planned_texture(key);
+                let size = [texture.width, texture.height];
+                Some((texture, LayerUniform::new(QUAD, *rows, size)))
+            }
+            Placed::Window { stack, rows } => {
+                let composed = self.encode_stack(encoder, stack, level + 1);
+                Some((composed, LayerUniform::new(QUAD, *rows, frame_size)))
+            }
+        }
+    }
+
+    /// Records one layer's effects with `level`'s working textures and returns the finished layer,
+    /// a picture of the frame's size in 8 bits. The layer is placed alone, blurred along rows then
+    /// columns into wide values, multiplied by its mask's alpha (feathered the same way), and
+    /// rounded to 8 bits once (`effects.wgsl`).
+    fn encode_effect(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        level: usize,
+        source: &Texture,
+        mut place: LayerUniform,
+        effect: &Effect,
+    ) -> &Texture {
+        let scratch = self.levels[level]
+            .effects
+            .as_ref()
+            .expect("room is made for every effect before it is drawn");
+        let [rows, blurred, feathered] = &scratch.wide;
+        place.mode = PLACE;
+        self.layer_pass(encoder, place, source, source, &scratch.layer);
+        self.blur_pass(encoder, &effect.blur, [1, 0], 8, &scratch.layer, rows);
+        self.blur_pass(encoder, &effect.blur, [0, 1], 16, rows, blurred);
+        let mut finish = FinishUniform {
+            masked: 0,
+            invert: 0,
+            padding: [0; 2],
+        };
+        if let Some(mask) = &effect.mask {
+            let alpha = self.planned_texture(&mask.key);
+            self.blur_pass(encoder, &mask.feather, [1, 0], 8, alpha, rows);
+            self.blur_pass(encoder, &mask.feather, [0, 1], 16, rows, feathered);
+            finish.masked = 1;
+            finish.invert = u32::from(mask.invert);
+        }
+        let mask = if finish.masked == 1 {
+            feathered
+        } else {
+            blurred
+        };
+        let bind_group = self.bind_group(
+            &self.finish,
+            [
+                (
+                    3,
+                    self.uniform(bytemuck::bytes_of(&finish))
+                        .as_entire_binding(),
+                ),
+                (4, wgpu::BindingResource::TextureView(&blurred.view)),
+                (5, wgpu::BindingResource::TextureView(&mask.view)),
+            ],
+        );
+        self.run(encoder, &self.finish, &bind_group, &scratch.layer);
+        &scratch.layer
+    }
+
+    /// One pass of `effects.wgsl`'s blur: `weights` along `direction`, keeping 8 fractional bits
+    /// over a source with `shift - 8`.
+    fn blur_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        weights: &[u32],
+        direction: [i32; 2],
+        shift: u32,
+        source: &Texture,
+        target: &Texture,
+    ) {
+        let uniform = BlurUniform {
+            direction,
+            radius: (weights.len() - 1) as i32,
+            shift,
+        };
+        let uniform = self.uniform(bytemuck::bytes_of(&uniform));
+        let weights = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(weights),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let bind_group = self.bind_group(
+            &self.blur,
+            [
+                (0, uniform.as_entire_binding()),
+                (1, weights.as_entire_binding()),
+                (2, wgpu::BindingResource::TextureView(&source.view)),
+            ],
+        );
+        self.run(encoder, &self.blur, &bind_group, target);
+    }
+
+    /// One pass of `compose.wgsl`: `source` placed by `uniform`, written to `target` as
+    /// `uniform.mode` says, over `below`.
+    fn layer_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         uniform: LayerUniform,
@@ -414,31 +634,51 @@ impl Compositor {
         source: &Texture,
         target: &Texture,
     ) {
-        let buffer = self
-            .device
+        let uniform = self.uniform(bytemuck::bytes_of(&uniform));
+        let bind_group = self.bind_group(
+            &self.compose,
+            [
+                (0, uniform.as_entire_binding()),
+                (1, wgpu::BindingResource::TextureView(&below.view)),
+                (2, wgpu::BindingResource::TextureView(&source.view)),
+            ],
+        );
+        self.run(encoder, &self.compose, &bind_group, target);
+    }
+
+    fn uniform(&self, contents: &[u8]) -> wgpu::Buffer {
+        self.device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
-                contents: bytemuck::bytes_of(&uniform),
+                contents,
                 usage: wgpu::BufferUsages::UNIFORM,
-            });
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            })
+    }
+
+    fn bind_group<'a>(
+        &self,
+        pipeline: &Pipeline,
+        entries: impl IntoIterator<Item = (u32, wgpu::BindingResource<'a>)>,
+    ) -> wgpu::BindGroup {
+        let entries: Vec<wgpu::BindGroupEntry<'a>> = entries
+            .into_iter()
+            .map(|(binding, resource)| wgpu::BindGroupEntry { binding, resource })
+            .collect();
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&below.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&source.view),
-                },
-            ],
-        });
+            layout: &pipeline.layout,
+            entries: &entries,
+        })
+    }
+
+    /// Records one full-frame pass of `pipeline` writing `target`.
+    fn run(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &Pipeline,
+        bind_group: &wgpu::BindGroup,
+        target: &Texture,
+    ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -455,8 +695,8 @@ impl Compositor {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_pipeline(&pipeline.pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
 
@@ -544,13 +784,93 @@ fn extent(width: u32, height: u32) -> wgpu::Extent3d {
 }
 
 fn texture(device: &wgpu::Device, width: u32, height: u32, usage: wgpu::TextureUsages) -> Texture {
+    texture_of_format(device, width, height, usage, FORMAT)
+}
+
+/// A texture a pass writes and a later pass reads.
+fn working(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat) -> Texture {
+    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+        | wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::COPY_SRC;
+    texture_of_format(device, width, height, usage, format)
+}
+
+impl Level {
+    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        Level {
+            accumulators: [
+                working(device, width, height, FORMAT),
+                working(device, width, height, FORMAT),
+            ],
+            effects: None,
+        }
+    }
+}
+
+impl Scratch {
+    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        Scratch {
+            layer: working(device, width, height, FORMAT),
+            wide: [
+                working(device, width, height, WIDE),
+                working(device, width, height, WIDE),
+                working(device, width, height, WIDE),
+            ],
+        }
+    }
+}
+
+/// A full-frame pipeline of `module`'s vertex stage `vs` and fragment stage `fragment`, writing
+/// `format` with no blending; its bind group's layout is derived from what the stages use.
+fn pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    fragment: &str,
+    format: wgpu::TextureFormat,
+) -> Pipeline {
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(fragment),
+        layout: None,
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fragment),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    let layout = pipeline.get_bind_group_layout(0);
+    Pipeline { pipeline, layout }
+}
+
+fn texture_of_format(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    usage: wgpu::TextureUsages,
+    format: wgpu::TextureFormat,
+) -> Texture {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: extent(width, height),
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: FORMAT,
+        format,
         usage,
         view_formats: &[],
     });

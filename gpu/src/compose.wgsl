@@ -1,4 +1,5 @@
-// One layer stacked over what is below it, in Cairo's 8-bit arithmetic on painted values.
+// One layer stacked over what is below it, in Cairo's 8-bit arithmetic on painted values; or,
+// for an effect, placed alone; or, for the object map, marked as one bit of coverage.
 //
 // Every texture is Rgba8Uint: values are read and written as the integers they are, so the
 // stacking itself rounds the same on every adapter. A quad's placement is floating point: a pixel
@@ -20,6 +21,10 @@ struct Layer {
     kind: u32,
     // 0..=255.
     opacity: u32,
+    // 0: stacked over what is below; 1: bit `bit` of a coverage frame set where the layer puts any
+    // alpha (32 bits a pixel, bit b in channel b / 8); 2: placed alone, over nothing.
+    mode: u32,
+    bit: u32,
 }
 
 @group(0) @binding(0) var<uniform> layer: Layer;
@@ -63,6 +68,14 @@ fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         }
     }
     s = mul_un8(s, vec4<u32>(layer.opacity));
+    if layer.mode == 1u {
+        let channel = vec4<u32>(0u, 1u, 2u, 3u) == vec4<u32>(layer.bit / 8u);
+        let flag = select(vec4<u32>(0u), vec4<u32>(1u << (layer.bit % 8u)), channel);
+        return select(d, d | flag, s.a > 0u);
+    }
+    if layer.mode == 2u {
+        return s;
+    }
     // Painted "over", saturating as pixman's is.
     return min(s + mul_un8(d, vec4<u32>(255u - s.a)), vec4<u32>(255u));
 }

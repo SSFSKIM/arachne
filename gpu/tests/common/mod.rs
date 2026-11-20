@@ -182,3 +182,39 @@ pub fn software_icd() -> String {
         .display()
         .to_string()
 }
+
+/// Uploads a painted picture and returns its key.
+pub fn upload(c: &mut Compositor, width: u32, height: u32, rgba: &[u8]) -> arachne_gpu::Key {
+    let key = arachne_gpu::painted_key(width, height, rgba);
+    c.upload_painted(key, width, height, rgba).unwrap();
+    key
+}
+
+/// The picture made opaque: every alpha 255 (a painted picture stays painted).
+pub fn opaque(mut rgba: Vec<u8>) -> Vec<u8> {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        pixel[3] = 255;
+    }
+    rgba
+}
+
+/// The largest difference of any channel of any pixel.
+pub fn max_difference(a: &[u8], b: &[u8]) -> u8 {
+    assert_eq!(a.len(), b.len());
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| x.abs_diff(*y))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The four bytes of pixel (`x`, `y`) of a frame `width` wide.
+pub fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let at = ((y * width + x) * 4) as usize;
+    rgba[at..at + 4].try_into().unwrap()
+}
+
+/// Corners in CE's order for the rectangle from (`x0`, `y0`) to (`x1`, `y1`).
+pub fn rectangle(x0: f64, y0: f64, x1: f64, y1: f64) -> [[f64; 2]; 4] {
+    [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]
+}

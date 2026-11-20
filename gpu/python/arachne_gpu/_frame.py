@@ -1,9 +1,13 @@
-"""What one frame stacks: layers in drawing order, bottom first."""
+"""What one frame stacks: layers in drawing order, bottom first, each with its effects; and what
+the object map says of them.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import KW_ONLY, dataclass
+
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -26,19 +30,95 @@ class Quad:
 
 
 @dataclass(frozen=True)
-class Layer:
-    """One layer: its source, scaled by ``opacity`` (0 to 1) and stacked over what is below."""
+class Window:
+    """Another stack, ``frame``, composed at the frame's size and placed at four corners as a
+    :class:`Quad` is. Windows nest at most four deep. Its stack is drawn on 8-bit integers as any
+    frame is and its texels are copied, not filtered, so it rounds nothing.
+    """
 
-    source: Picture | Quad
+    frame: Frame
+    corners: Sequence[tuple[float, float]]
+    resampling: int
+
+
+@dataclass(frozen=True)
+class Blur:
+    """A Gaussian blur of standard deviation ``sigma_px``, in pixels.
+
+    It runs on integers: fixed-point weights summing to exactly one, a pass along rows then one
+    along columns, with 8 fractional bits kept between them. The layer is rounded back to 8 bits
+    once, half up, after its mask has multiplied it.
+    """
+
+    sigma_px: float
+
+
+@dataclass(frozen=True)
+class SoftMask:
+    """A picture (a texture of the frame's size, of either kind) whose alpha, and only its
+    alpha, feathered by ``feather_px``, multiplies the layer; ``invert`` keeps what it would
+    remove. The feather runs along rows then columns, so its cutoff is per axis: a pixel whose
+    centre is farther than the feather from every pixel across the mask's edge, along both
+    axes, is kept or removed whole. It runs on integers as a :class:`Blur` does; the product of
+    the blurred layer and the feathered alpha is the one rounding back to 8 bits.
+    """
+
+    key: bytes
+    feather_px: float
+    invert: bool = False
+
+
+@dataclass(frozen=True)
+class Focus:
+    """The depth in focus: a layer at depth ``d`` is blurred with
+    ``sigma_px = aperture * |d - depth|``, combined with its own :class:`Blur` as the root of the
+    sum of their squares into one Gaussian, which runs and rounds as a blur does. A layer at
+    the focus depth is not defocused; its own blur still applies.
+    """
+
+    depth: float
+    aperture: float
+
+
+@dataclass(frozen=True)
+class Layer:
+    """One layer: its source, blurred (by ``blur`` and by ``depth`` under the frame's focus, as one
+    Gaussian), multiplied by ``mask``, scaled by ``opacity`` (0 to 1) and stacked over what is
+    below. ``object_id`` names the object it draws, for the object map.
+    """
+
+    source: Picture | Quad | Window
     _: KW_ONLY
     opacity: float = 1.0
+    depth: float | None = None
+    blur: Blur | None = None
+    mask: SoftMask | None = None
+    object_id: str | None = None
 
 
 @dataclass(frozen=True)
 class Frame:
     """One frame: ``background``, painted RGBA as 4 bytes, under every layer, then ``layers``
-    bottom first.
+    bottom first; ``focus`` blurs every layer with a depth by its distance from it.
     """
 
     background: bytes
     layers: Sequence[Layer]
+    focus: Focus | None = None
+
+
+@dataclass(frozen=True)
+class Footprint:
+    """Where one object covers the frame, as the compositor draws it.
+
+    ``box`` is ``(x0, y0, x1, y1)`` in pixels, half-open, y down, all zero when nothing is
+    covered; ``mask`` is a bool array of the box's size, true where the layer drawn with no effect
+    puts any alpha; ``grow_px`` is how far its effects spread it (three sigma of its blur, or its
+    mask's feather, whichever is larger). ``layer`` is the index of the layer that draws it.
+    """
+
+    object_id: str
+    layer: int
+    box: tuple[int, int, int, int]
+    mask: np.ndarray
+    grow_px: float
