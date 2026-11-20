@@ -461,3 +461,78 @@ class StillReadout(Scene):
     def construct(self) -> None:
         self.add(Readout(1.5, format="{:.2f}", name="readout").move_to(ORIGIN))
         self.wait(0.25)
+
+
+#: How large a worded count is drawn: as large as fits on one line at every
+#: font a test machine has, since a text wider than its layout wraps.
+WORDED_FONT_SIZE = 96
+
+
+class CountOnAPlate(Scene):
+    """A readout on its plate, with a leading word, counted over one
+    second.
+    """
+
+    def construct(self) -> None:
+        reading = Readout(
+            0, format="swell {:.0f}%", pill=True, font_size=WORDED_FONT_SIZE
+        )
+        self.add(reading)
+        self.play(CountUp(reading, 100, rate_func=linear), run_time=1)
+
+
+class CountAfterAWord(Scene):
+    """A readout with a leading word counted over one second, its digits
+    widening after the word.
+    """
+
+    def construct(self) -> None:
+        reading = Readout(0, format="swell {:.0f}%", font_size=WORDED_FONT_SIZE)
+        self.add(reading)
+        self.play(CountUp(reading, 100, rate_func=linear), run_time=1)
+
+
+class WideningReadouts(Scene):
+    """Two leaderless readouts attached to a moving dot, one to its right
+    and one to its left, counting from one digit to six: each widens away
+    from the dot, its centre moving while its edge facing the dot keeps its
+    gap.
+    """
+
+    def construct(self) -> None:
+        dot = _moving_dot()
+        right = Readout(0, format="{:.0f}", at=anchor(dot), offset=1.2 * RIGHT)
+        left = Readout(0, format="{:.0f}", at=anchor(dot), offset=1.2 * LEFT + UP)
+        self.add(dot, right, left)
+        self.play(
+            CountUp(right, 100000, rate_func=linear),
+            CountUp(left, 100000, rate_func=linear),
+            run_time=1,
+        )
+
+
+class HookedReadout(Readout):
+    """A readout whose held point is an author's override: it counts its
+    calls, and raises once :attr:`refuse` is set.
+    """
+
+    calls = 0
+    refuse = False
+
+    def held_point(self, body):
+        if type(self).refuse:
+            raise RuntimeError("the hook was called")
+        type(self).calls += 1
+        return super().held_point(body)
+
+
+class HookedReadoutWidening(Scene):
+    """A :class:`HookedReadout` attached to the right of a moving dot,
+    counting from one digit to six.
+    """
+
+    def construct(self) -> None:
+        dot = _moving_dot()
+        reading = HookedReadout(0, format="{:.0f}", at=anchor(dot), offset=1.2 * RIGHT)
+        self.add(dot, reading)
+        self.play(CountUp(reading, 100000, rate_func=linear), run_time=1)

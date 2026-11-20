@@ -114,10 +114,15 @@ class Coil(VMobject):
         a, b = as_point(start), as_point(end)
         u, n = direction(a, b), normal(direction(a, b))
         body_a, body_b, body = _leads(a, b, lead)
-        pitch = body / self.turns
         # How far a turn leans along the axis: past pitch/2pi, it loops.
-        lean = 0.6 * radius
-        sweep = TAU * self.turns
+        lean = min(0.6 * radius, body / 4)
+        # The helix leaves the left lead rising from the axis at its first
+        # loop's back and ends half a turn short of whole, coming down to the
+        # axis at its last loop's front: the right lead leaves the last loop
+        # as the left lead enters the first, mirrored, and the drawn helix is
+        # its own mirror image. Its ``turns`` tops span the body.
+        sweep = TAU * (self.turns - 0.5)
+        pitch = (body - 2 * lean) / (self.turns - 0.5)
 
         def at(phi: float) -> np.ndarray:
             along = pitch * phi / TAU + lean * (1 - math.cos(phi))
@@ -127,7 +132,7 @@ class Coil(VMobject):
             along = pitch / TAU + lean * math.sin(phi)
             return u * along + n * radius * math.cos(phi)
 
-        body_points = hermite(at, slope, 0.0, sweep, 8 * self.turns)
+        body_points = hermite(at, slope, 0.0, sweep, 8 * self.turns - 4)
         self.set_points(np.concatenate([line(a, body_a), body_points, line(body_b, b)]))
 
 

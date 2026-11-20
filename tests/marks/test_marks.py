@@ -237,12 +237,12 @@ def test_ports_follow_their_mark():
 
 
 def test_a_switch_opens_and_closes_in_place():
-    switch = Switch(LEFT, RIGHT, closed=True)
-    assert np.allclose(np.asarray(switch.blade.points)[-1], RIGHT)
+    switch = Switch(LEFT, RIGHT, closed=True, contact_radius=0.06)
+    assert np.allclose(np.asarray(switch.blade.points)[-1], RIGHT + LEFT * 0.06)
     switch.shift(UP).set_closed(False)
     end = np.asarray(switch.blade.points)[-1]
     assert end[1] > 1
-    assert np.linalg.norm(end - (LEFT + UP)) == pytest.approx(2)
+    assert np.linalg.norm(end - (LEFT + UP)) == pytest.approx(2 - 0.06)
 
 
 def test_magnifier_lines_touch_both_circles():
@@ -561,3 +561,140 @@ def test_a_port_the_other_piece_covers_is_refused():
     diagram = arachne.Diagram(a, b)
     with pytest.raises(ValueError, match="move the two pieces apart"):
         diagram.connect((a, "right"), (b, "right"))
+
+
+def _bezier_polyline(curve: np.ndarray, samples: int = 24) -> np.ndarray:
+    t = np.linspace(0, 1, samples)[:, None]
+    p0, p1, p2, p3 = curve
+    return (
+        (1 - t) ** 3 * p0
+        + 3 * (1 - t) ** 2 * t * p1
+        + 3 * (1 - t) * t**2 * p2
+        + t**3 * p3
+    )[:, :2]
+
+
+def _segments_cross(p: np.ndarray, q: np.ndarray, r: np.ndarray, s: np.ndarray) -> bool:
+    """Whether segment rs meets segment pq anywhere but pq's ends (a lead
+    may touch a loop only where it joins it).
+    """
+    d, e = q - p, s - r
+    cross = d[0] * e[1] - d[1] * e[0]
+    if abs(cross) < 1e-12:
+        return False
+    w = r - p
+    t = (w[0] * e[1] - w[1] * e[0]) / cross
+    v = (w[0] * d[1] - w[1] * d[0]) / cross
+    return 1e-6 < t < 1 - 1e-6 and -1e-9 <= v <= 1 + 1e-9
+
+
+@pytest.mark.parametrize(
+    ("turns", "radius", "start", "end"),
+    [
+        (6, 0.2, LEFT, RIGHT),
+        (12, 0.3, LEFT * 2, RIGHT * 2),
+        (10, 0.25, LEFT * 1.5 + DOWN, RIGHT * 1.5 + UP),
+        (1, 0.3, LEFT, RIGHT),
+    ],
+)
+def test_a_coils_leads_cross_no_loop_and_its_ends_mirror(turns, radius, start, end):
+    coil = Coil(start, end, turns=turns, radius=radius)
+    curves = _curves(coil)
+    left, body, right = curves[0], curves[1:-1], curves[-1]
+    loop = np.concatenate([_bezier_polyline(c) for c in body])
+    for lead in (left, right):
+        p, q = lead[0, :2], lead[-1, :2]
+        for r, s in zip(loop[:-1], loop[1:], strict=True):
+            assert not _segments_cross(p, q, r, s)
+    # Mirrored across the line halfway between its ends, the coil is itself
+    # run backwards: the right lead leaves the last loop where and as the
+    # left lead enters the first.
+    a, b = np.asarray(start, float), np.asarray(end, float)
+    u = (b - a) / np.linalg.norm(b - a)
+    middle = (a + b) / 2
+    points = np.asarray(coil.points)
+    along = (points - middle) @ u
+    mirrored = points - 2 * along[:, None] * u
+    assert np.allclose(mirrored[::-1], points, atol=1e-6)
+
+
+@pytest.mark.parametrize("closed", [True, False])
+def test_a_switchs_blade_draws_nothing_inside_its_rings(closed):
+    switch = Switch(LEFT, RIGHT + UP * 0.5, closed=closed, contact_radius=0.08)
+    switch.shift(DOWN).scale(1.5)
+    for state in (closed, not closed):
+        switch.set_closed(state)
+        blade = np.concatenate([_bezier_polyline(c) for c in _curves(switch.blade)])
+        for ring in switch.contacts:
+            centre, radius = ring.get_center()[:2], ring.width / 2
+            distances = np.linalg.norm(blade - centre, axis=1)
+            assert distances.min() >= radius - 1e-6
+    # Closed, it spans the rings edge to edge.
+    switch.set_closed(True)
+    ends = np.asarray(switch.blade.points)[[0, -1], :2]
+    for end, ring in zip(ends, switch.contacts, strict=True):
+        radius = ring.width / 2
+        # On the ring as drawn: a Bezier circle, within 1e-4 of its radius.
+        assert np.linalg.norm(end - ring.get_center()[:2]) == pytest.approx(
+            radius, rel=1e-4
+        )
+
+
+def _off_outline(ring, point: np.ndarray) -> float:
+    """How far ``point`` lies from ``ring``'s drawn outline, read as a dense
+    polyline through its curves.
+    """
+    outline = np.concatenate([_bezier_polyline(c, 400) for c in _curves(ring)])
+    starts, course = outline[:-1], np.diff(outline, axis=0)
+    share = np.clip(
+        np.einsum("ij,ij->i", point - starts, course)
+        / np.maximum(np.einsum("ij,ij->i", course, course), 1e-18),
+        0.0,
+        1.0,
+    )
+    return float(np.linalg.norm(starts + course * share[:, None] - point, axis=1).min())
+
+
+def test_a_switch_stretched_unevenly_closes_onto_its_rings_as_drawn():
+    # A diagonal switch stretched across: its rings are ellipses, which the
+    # blade must meet where they are drawn, leaving no gap and entering
+    # neither.
+    switch = Switch(LEFT + DOWN, RIGHT + UP, contact_radius=0.1)
+    switch.stretch(2.0, 0)
+    for closed in (True, False):
+        switch.set_closed(closed)
+        ends = np.asarray(switch.blade.points)[[0, -1], :2]
+        gap = _off_outline(switch.contacts[0], ends[0])
+        assert gap < 1e-5, (closed, gap)
+        if closed:
+            gap = _off_outline(switch.contacts[1], ends[1])
+            assert gap < 1e-5, gap
+
+
+def _inside_ring(ring, point: np.ndarray) -> bool:
+    """Whether ``point`` lies inside ``ring``'s drawn outline (even-odd)."""
+    outline = np.concatenate([_bezier_polyline(c, 400) for c in _curves(ring)])
+    a, b = outline[:-1], outline[1:]
+    straddle = (a[:, 1] > point[1]) != (b[:, 1] > point[1])
+    x = a[:, 0] + (point[1] - a[:, 1]) * (b[:, 0] - a[:, 0]) / np.where(
+        b[:, 1] == a[:, 1], 1.0, b[:, 1] - a[:, 1]
+    )
+    return bool((straddle & (x > point[0])).sum() % 2)
+
+
+@pytest.mark.parametrize(
+    "shaped",
+    [lambda s: s.stretch(2.0, 0), lambda s: s.rotate(0.3).stretch(0.5, 1)],
+    ids=["stretched", "turned-and-squashed"],
+)
+@pytest.mark.parametrize("open_angle", [0.01, 0.05])
+def test_an_open_switch_s_blade_stops_short_of_its_far_ring(shaped, open_angle):
+    switch = Switch(LEFT + DOWN, RIGHT + UP, contact_radius=0.1, open_angle=open_angle)
+    shaped(switch)
+    switch.set_closed(False)
+    blade = np.concatenate([_bezier_polyline(c, 200) for c in _curves(switch.blade)])
+    far = switch.contacts[1]
+    assert not any(_inside_ring(far, p) for p in blade)
+    # And short of it by a visible clearance: a quarter of the ring's size.
+    clearance = 0.25 * min(far.width, far.height) / 2
+    assert _off_outline(far, blade[-1]) >= clearance
