@@ -473,8 +473,8 @@ def _camera_of_size(camera: Camera, size: tuple[int, int]) -> Camera:
             "window",
             "a window at its own size in a scene whose camera draws zoomed"
             " displays: its objects are drawn by a camera of the window's size,"
-            " which would resize the zoom's cameras; show the zoom outside the"
-            " window",
+            " which would resize the zoom's cameras; draw the window and the"
+            " zoom in separate scenes, or drop one of them",
         )
     width, height = size
     inner = copy.copy(camera)

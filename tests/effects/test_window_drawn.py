@@ -382,7 +382,10 @@ def test_a_window_at_its_own_size_under_a_zoom_is_refused_and_leaves_the_zoom(
         (each.pixel_width, each.pixel_height, each.pixel_array.shape)
         for each in cameras
     ]
-    with pytest.raises(Unsupported, match="show the zoom outside the window"):
+    with pytest.raises(
+        Unsupported,
+        match="draw the window and the zoom in separate scenes, or drop one of them",
+    ):
         session.frame(Fraction(1, 10))
     after = [
         (each.pixel_width, each.pixel_height, each.pixel_array.shape)
