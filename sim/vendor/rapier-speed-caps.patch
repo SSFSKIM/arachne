@@ -1,0 +1,128 @@
+Speed caps flag the bodies they scale down: rapier's only local change, recorded in
+sim/vendor/VENDORED.md. Paths are under sim/vendor/rapier/; `tree_check.py patches` checks the
+vendored sources hold it, and a move of the pin applies it to the new sources with
+`git apply --directory=sim/vendor/rapier sim/vendor/rapier-speed-caps.patch`.
+
+diff --git a/src/dynamics/rigid_body.rs b/src/dynamics/rigid_body.rs
+--- a/src/dynamics/rigid_body.rs
++++ b/src/dynamics/rigid_body.rs
+@@ -1,3 +1,6 @@
++// Modified by the Arachne authors: the speed caps flag the bodies they scale down
++// (sim/vendor/VENDORED.md lists the change).
++
+ use crate::alloc_prelude::*;
+ #[cfg(all(not(feature = "std"), feature = "dim3"))]
+ use simba::scalar::ComplexField;
+@@ -80,6 +83,9 @@ pub struct RigidBody {
+     /// step: the farthest particle travel of its soft body over the coming step (zero for
+     /// regular bodies).
+     pub(crate) soft_motion_margin: Real,
++    /// Whether the linear, and the angular, speed cap scaled this body down in the last step
++    /// it was solved in.
++    pub(crate) speeds_capped: (bool, bool),
+     /// User-defined data associated to this rigid-body.
+     pub user_data: u128,
+ }
+@@ -118,6 +124,7 @@ impl RigidBody {
+             soft_body: crate::dynamics::SoftBodyHandle::invalid(),
+             soft_cluster: u32::MAX,
+             soft_motion_margin: 0.0,
++            speeds_capped: (false, false),
+         }
+     }
+ 
+@@ -167,6 +174,7 @@ impl RigidBody {
+             soft_body: _soft_body, // The soft-body markers belong to the proxy, not to its state.
+             soft_cluster: _soft_cluster,
+             soft_motion_margin: _soft_motion_margin, // Engine-managed, like the markers.
++            speeds_capped: _speeds_capped, // Engine-managed: what the last step did.
+             user_data,
+         } = other;
+ 
+@@ -188,6 +196,13 @@ impl RigidBody {
+         self.changes = RigidBodyChanges::all();
+     }
+ 
++    /// Whether the solver scaled this body's linear velocity, and its angular velocity, down to
++    /// its caps (`IntegrationParameters::max_linear_velocity`, and 45 degrees a step unless the
++    /// body allows fast rotation) in any substep of the last step it was solved in.
++    pub fn speeds_capped(&self) -> (bool, bool) {
++        self.speeds_capped
++    }
++
+     /// The additional number of solver iterations run for the constraints directly
+     /// involving this rigid-body.
+     ///
+diff --git a/src/dynamics/solver/solver_body.rs b/src/dynamics/solver/solver_body.rs
+--- a/src/dynamics/solver/solver_body.rs
++++ b/src/dynamics/solver/solver_body.rs
+@@ -1,3 +1,6 @@
++// Modified by the Arachne authors: the speed caps flag the bodies they scale down
++// (sim/vendor/VENDORED.md lists the change).
++
+ use crate::alloc_prelude::*;
+ use crate::dynamics::RigidBody;
+ use crate::math::{Real, SPATIAL_DIM, Vector};
+@@ -36,6 +39,10 @@ macro_rules! scatter(
+ /// `SolverBodies.flags` byte parallel to `vels`/`poses` so the scalar integrate-positions loop
+ /// can read it without disturbing the SIMD-gathered `SolverVel`/`SolverPose` layouts.
+ pub(crate) const SOLVER_BODY_ALLOW_FAST_ROTATION: u8 = 1;
++/// Per-solver-body flags: the linear, and the angular, speed cap scaled the body down in a
++/// substep of this step (cleared with the other flags as the body is copied in, each step).
++pub(crate) const SOLVER_BODY_LINEAR_CAPPED: u8 = 2;
++pub(crate) const SOLVER_BODY_ANGULAR_CAPPED: u8 = 4;
+ 
+ #[derive(Default)]
+ pub struct SolverBodies {
+diff --git a/src/dynamics/solver/staged_island_solver/worker.rs b/src/dynamics/solver/staged_island_solver/worker.rs
+--- a/src/dynamics/solver/staged_island_solver/worker.rs
++++ b/src/dynamics/solver/staged_island_solver/worker.rs
+@@ -1,3 +1,6 @@
++// Modified by the Arachne authors: the speed caps flag the bodies they scale down
++// (sim/vendor/VENDORED.md lists the change).
++
+ //! The stage machine executed by every worker: solver-body init, constraint
+ //! generation, the per-group substep loop, and the impulse/rigid-body
+ //! writeback stages.
+@@ -12,6 +15,7 @@ use crate::dynamics::solver::contact_constraint::ContactWithCoulombFrictionBuild
+ use crate::dynamics::solver::contact_constraint::ContactWithTwistFrictionBuilder;
+ use crate::dynamics::solver::joint_constraint::GenericJointConstraintBuilder;
+ use crate::dynamics::solver::solver_body::SOLVER_BODY_ALLOW_FAST_ROTATION;
++use crate::dynamics::solver::solver_body::{SOLVER_BODY_ANGULAR_CAPPED, SOLVER_BODY_LINEAR_CAPPED};
+ use crate::dynamics::solver::solver_contact_graph::ContactRef;
+ use crate::dynamics::{JointGraphEdge, RigidBodyType, RigidBodyVelocity};
+ use crate::geometry::ContactManifold;
+@@ -662,18 +666,21 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
+                                 let n = vel.linear.length();
+                                 if n > max_lin {
+                                     vel.linear *= max_lin / n;
++                                    vs.solver_bodies.flags[i] |= SOLVER_BODY_LINEAR_CAPPED;
+                                 }
+                             }
+                             if vs.solver_bodies.flags[i] & SOLVER_BODY_ALLOW_FAST_ROTATION == 0 {
+                                 #[cfg(feature = "dim2")]
+                                 if vel.angular.abs() > max_ang {
+                                     vel.angular = vel.angular.signum() * max_ang;
++                                    vs.solver_bodies.flags[i] |= SOLVER_BODY_ANGULAR_CAPPED;
+                                 }
+                                 #[cfg(feature = "dim3")]
+                                 {
+                                     let n = vel.angular.length();
+                                     if n > max_ang {
+                                         vel.angular *= max_ang / n;
++                                        vs.solver_bodies.flags[i] |= SOLVER_BODY_ANGULAR_CAPPED;
+                                     }
+                                 }
+                             }
+@@ -973,6 +980,11 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
+                 };
+                 new_vels = new_vels.apply_damping(base_params.dt, &rb.damping);
+                 rb.vels = new_vels;
++                let capped = vs.solver_bodies.flags[rb.ids.active_set_id as usize];
++                rb.speeds_capped = (
++                    capped & SOLVER_BODY_LINEAR_CAPPED != 0,
++                    capped & SOLVER_BODY_ANGULAR_CAPPED != 0,
++                );
+ 
+                 // NOTE: if it's a position-based kinematic body, don't writeback as we want
+                 //       to preserve exactly the value given by the user (it might not be

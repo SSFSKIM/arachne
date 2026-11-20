@@ -75,6 +75,22 @@ case prints its closed form, tolerance and measured value), `sim-identity` (the 
 3.12 and 3.14) and `sim-macos`. The workflow `sim-probe.yml` runs the probe on Linux x86-64, Windows
 x86-64 and macOS arm64 and compares the outputs; `sim-wheels.yml` builds the wheels.
 
+## What a world finds
+
+Beside its rows, never in the trace, a world records what it found (`World::findings`, each
+with a value, `World::finding_values`): a body whose state went non-finite; a body whose speed or
+angular speed rose above the world's limit, as its row shows it or as the solver's cap scaled it
+down in the step (the vendored solver flags that, `vendor/VENDORED.md`; the value is then a lower
+bound, the cap); and two bodies that may have passed through each other in a step. The last is
+decided by a bound that does not miss a crossing and by conservative advancement through the
+step, which reports two shapes seen penetrating each other, two that came within the allowed
+linear error (0.005 units) of each other, and two it could not show apart (a number that is not
+finite, a query that cannot answer, a separation it cannot certify). It advances only by a
+certified separation: along the measured closest direction, from the shapes' support maps, less
+a rounding of 5e-4 units, which covers single-precision poses and dot products while the shapes
+and their motion stay within about 1000 units of the origin, where a number is exact to about
+6e-5 units; beyond that the sweep claims nothing.
+
 ## Determinism
 
 "The same bytes" rests on three things: the same declaration (the same numbers, inserted in the
@@ -168,6 +184,13 @@ expose.
 
 At the release, the probe imported `acosf asinf atan2f cosf expf log2f powf sincosf sinf` on Linux.
 At the pinned commits it imports none, on Linux, macOS and Windows.
+
+The one local change to the solver's sources (`vendor/VENDORED.md`, `vendor/rapier-speed-caps.patch`:
+`rapier/src/dynamics/solver/solver_body.rs`, `solver/staged_island_solver/worker.rs` and
+`rigid_body.rs`) sets and copies integer flags where the speed caps scale a velocity down, so the
+crate can find a speed above its limit that the step's last velocity no longer shows. It adds and
+changes no floating-point operation and no call, so this audit's conclusions hold for it; the
+probe's digests do not move.
 
 In the table, † marks a call site `ci/imports.py --where` resolved in the build at the release;
 ‡ one read in the source only (that run resolved no site for `cosf` and `log2f`, and the constant

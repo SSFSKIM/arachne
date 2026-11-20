@@ -1,3 +1,6 @@
+// Modified by the Arachne authors: the speed caps flag the bodies they scale down
+// (sim/vendor/VENDORED.md lists the change).
+
 use crate::alloc_prelude::*;
 #[cfg(all(not(feature = "std"), feature = "dim3"))]
 use simba::scalar::ComplexField;
@@ -80,6 +83,9 @@ pub struct RigidBody {
     /// step: the farthest particle travel of its soft body over the coming step (zero for
     /// regular bodies).
     pub(crate) soft_motion_margin: Real,
+    /// Whether the linear, and the angular, speed cap scaled this body down in the last step
+    /// it was solved in.
+    pub(crate) speeds_capped: (bool, bool),
     /// User-defined data associated to this rigid-body.
     pub user_data: u128,
 }
@@ -118,6 +124,7 @@ impl RigidBody {
             soft_body: crate::dynamics::SoftBodyHandle::invalid(),
             soft_cluster: u32::MAX,
             soft_motion_margin: 0.0,
+            speeds_capped: (false, false),
         }
     }
 
@@ -167,6 +174,7 @@ impl RigidBody {
             soft_body: _soft_body, // The soft-body markers belong to the proxy, not to its state.
             soft_cluster: _soft_cluster,
             soft_motion_margin: _soft_motion_margin, // Engine-managed, like the markers.
+            speeds_capped: _speeds_capped, // Engine-managed: what the last step did.
             user_data,
         } = other;
 
@@ -186,6 +194,13 @@ impl RigidBody {
         self.user_data = *user_data;
 
         self.changes = RigidBodyChanges::all();
+    }
+
+    /// Whether the solver scaled this body's linear velocity, and its angular velocity, down to
+    /// its caps (`IntegrationParameters::max_linear_velocity`, and 45 degrees a step unless the
+    /// body allows fast rotation) in any substep of the last step it was solved in.
+    pub fn speeds_capped(&self) -> (bool, bool) {
+        self.speeds_capped
     }
 
     /// The additional number of solver iterations run for the constraints directly

@@ -9,5 +9,6 @@
 
 manim/grpc/gen/** linguist-generated=true
 
-# Upstream sources kept byte for byte (sim/vendor/VENDORED.md); the pre-commit hooks skip them too.
+# Upstream sources, kept byte for byte but for the one change sim/vendor/VENDORED.md records; the
+# pre-commit hooks skip them too.
 sim/vendor/** linguist-vendored=true

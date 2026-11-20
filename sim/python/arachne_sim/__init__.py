@@ -11,6 +11,15 @@ its callbacks. Rows are handed out as read-only arrays: :meth:`World.pose` (``x,
 ``vx, vy, vz, wx, wy, wz``) and :meth:`World.contacts` (``row, a, b, kind``, kind 1 when bodies
 ``a < b`` began to touch and 0 when they parted).
 
+:meth:`World.findings` is what a world found as it computed its rows (``row, kind, a, b``):
+a body whose state went non-finite (:data:`NON_FINITE`); whose speed or angular speed rose above
+the world's limit as its row shows (:data:`SPEED`, :data:`ANGULAR_SPEED`; ``speed_limit`` and
+``angular_speed_limit``, below the solver's caps :data:`SPEED_CAP` and
+:data:`ANGULAR_SPEED_CAP`), or reached at least the cap, which scaled it down in the step
+(:data:`SPEED_CAPPED`, :data:`ANGULAR_SPEED_CAPPED`); and two bodies that may have passed
+through each other: a crossing, or a pass within the allowed linear error that could not be
+told from one (:data:`TUNNELLED`).
+
 :meth:`World.declaration_bytes` is everything the world was given, in order;
 :meth:`World.trace_bytes` is the canonical bytes of the bake content its rows make (channels
 ``pose`` and ``velocity``, event table ``contact``, and :meth:`World.identity`).
@@ -21,10 +30,37 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from arachne_sim._sim import CONTENT_LAYOUT, DECLARATION_LAYOUT
+from arachne_sim._sim import (
+    ANGULAR_SPEED,
+    ANGULAR_SPEED_CAP,
+    ANGULAR_SPEED_CAPPED,
+    ANGULAR_SPEED_LIMIT,
+    CONTENT_LAYOUT,
+    DECLARATION_LAYOUT,
+    NON_FINITE,
+    SPEED,
+    SPEED_CAP,
+    SPEED_CAPPED,
+    SPEED_LIMIT,
+    TUNNELLED,
+)
 from arachne_sim._sim import World as _World
 
-__all__ = ["CONTENT_LAYOUT", "DECLARATION_LAYOUT", "World"]
+__all__ = [
+    "ANGULAR_SPEED",
+    "ANGULAR_SPEED_CAP",
+    "ANGULAR_SPEED_CAPPED",
+    "ANGULAR_SPEED_LIMIT",
+    "CONTENT_LAYOUT",
+    "DECLARATION_LAYOUT",
+    "NON_FINITE",
+    "SPEED",
+    "SPEED_CAP",
+    "SPEED_CAPPED",
+    "SPEED_LIMIT",
+    "TUNNELLED",
+    "World",
+]
 
 
 class World(_World):
@@ -48,3 +84,21 @@ class World(_World):
         """Every contact event so far, ``[events, 4]`` (row, a, b, kind), sorted, read-only."""
         data, count = self._contacts()
         return np.frombuffer(data, dtype="<u4").reshape((count, 4))
+
+    def findings(self) -> npt.NDArray[np.uint32]:
+        """What was found so far, ``[findings, 4]`` (row, kind, a, b), sorted, read-only: a
+        body's finding names it as ``a`` and ``b``, a pair's its two bodies, ``a < b``.
+        """
+        data, count = self._findings()
+        return np.frombuffer(data, dtype="<u4").reshape((count, 4))
+
+    def finding_values(self) -> npt.NDArray[np.float32]:
+        """The value of each of :meth:`findings`, in order, read-only: for :data:`SPEED` and
+        :data:`ANGULAR_SPEED` the row's speed (u/s) or angular speed (rad/s); for
+        :data:`SPEED_CAPPED` and :data:`ANGULAR_SPEED_CAPPED` a lower bound, the larger of the
+        row's and the cap (the finite cap, even where the speed overflowed); for
+        :data:`TUNNELLED` minus the depth the sweep saw the two bodies penetrating, else the
+        closest distance it measured within the allowed linear error, or NaN when it could not
+        show them apart; NaN for :data:`NON_FINITE`.
+        """
+        return np.frombuffer(self._finding_values(), dtype="<f4")

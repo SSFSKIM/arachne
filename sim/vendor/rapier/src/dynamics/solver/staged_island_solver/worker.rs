@@ -1,3 +1,6 @@
+// Modified by the Arachne authors: the speed caps flag the bodies they scale down
+// (sim/vendor/VENDORED.md lists the change).
+
 //! The stage machine executed by every worker: solver-body init, constraint
 //! generation, the per-group substep loop, and the impulse/rigid-body
 //! writeback stages.
@@ -12,6 +15,7 @@ use crate::dynamics::solver::contact_constraint::ContactWithCoulombFrictionBuild
 use crate::dynamics::solver::contact_constraint::ContactWithTwistFrictionBuilder;
 use crate::dynamics::solver::joint_constraint::GenericJointConstraintBuilder;
 use crate::dynamics::solver::solver_body::SOLVER_BODY_ALLOW_FAST_ROTATION;
+use crate::dynamics::solver::solver_body::{SOLVER_BODY_ANGULAR_CAPPED, SOLVER_BODY_LINEAR_CAPPED};
 use crate::dynamics::solver::solver_contact_graph::ContactRef;
 use crate::dynamics::{JointGraphEdge, RigidBodyType, RigidBodyVelocity};
 use crate::geometry::ContactManifold;
@@ -662,18 +666,21 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
                                 let n = vel.linear.length();
                                 if n > max_lin {
                                     vel.linear *= max_lin / n;
+                                    vs.solver_bodies.flags[i] |= SOLVER_BODY_LINEAR_CAPPED;
                                 }
                             }
                             if vs.solver_bodies.flags[i] & SOLVER_BODY_ALLOW_FAST_ROTATION == 0 {
                                 #[cfg(feature = "dim2")]
                                 if vel.angular.abs() > max_ang {
                                     vel.angular = vel.angular.signum() * max_ang;
+                                    vs.solver_bodies.flags[i] |= SOLVER_BODY_ANGULAR_CAPPED;
                                 }
                                 #[cfg(feature = "dim3")]
                                 {
                                     let n = vel.angular.length();
                                     if n > max_ang {
                                         vel.angular *= max_ang / n;
+                                        vs.solver_bodies.flags[i] |= SOLVER_BODY_ANGULAR_CAPPED;
                                     }
                                 }
                             }
@@ -973,6 +980,11 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
                 };
                 new_vels = new_vels.apply_damping(base_params.dt, &rb.damping);
                 rb.vels = new_vels;
+                let capped = vs.solver_bodies.flags[rb.ids.active_set_id as usize];
+                rb.speeds_capped = (
+                    capped & SOLVER_BODY_LINEAR_CAPPED != 0,
+                    capped & SOLVER_BODY_ANGULAR_CAPPED != 0,
+                );
 
                 // NOTE: if it's a position-based kinematic body, don't writeback as we want
                 //       to preserve exactly the value given by the user (it might not be

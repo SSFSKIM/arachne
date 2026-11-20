@@ -15,6 +15,13 @@ findings (a probe's a note, an execution's an error), and a stale session a
 ``source.changed`` note. The caller's time range and exemptions then leave
 findings out, look-alikes fold, and the result is data: nothing the lint
 finds ends the process.
+
+What the record's bakes found (a simulation gone unstable, two bodies that
+passed through each other) becomes a finding at its tick (:mod:`.bakes`)
+when its tick is in the time range. When ``at`` names the instants, its
+bodies' boxes are read only at a frame no later than the latest instant
+read (none when it names none), so nothing past them is replayed; a finding
+beyond is reported with its boxes null.
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from arachne.timeline.clock import exact
 
+from .bakes import bake_findings, request_bake_frames
 from .bridge import Checks, terms_at
 from .exempt import Exemptions
 from .findings import Finding, fold, in_range
@@ -172,6 +180,8 @@ def lint(
     frames = Frames(session, lint_instants=instants)
     _request_parts(frames, instants)
     request_quantities(frames, instants)
+    named = None if at is None or isinstance(at, str) else [i.t for i in instants]
+    baked = request_bake_frames(frames, record, t_range, named)
     # The scene's own checks (:mod:`.bridge`), whatever the rules.
     checks = Checks(rules)
     checks.request_frames(frames)
@@ -185,6 +195,7 @@ def lint(
     found = [finding for rule in rules for finding in rule(context)]
     found.extend(checks(context))
     found.extend(unreadable_findings(frames, instants, parts))
+    found.extend(bake_findings(frames, record, baked))
     # After the parts: a forward run that read them may have found one.
     found.extend(_diverged(session))
     if session.stale:
