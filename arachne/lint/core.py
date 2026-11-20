@@ -17,9 +17,11 @@ findings out, look-alikes fold, and the result is data: nothing the lint
 finds ends the process.
 
 What the record's bakes found (a simulation gone unstable, two bodies that
-passed through each other) becomes a finding at its tick (:mod:`.bakes`),
-read only when its tick is in the time range, so it asks for no frame past
-what the caller asked for.
+passed through each other) becomes a finding at its tick (:mod:`.bakes`)
+when its tick is in the time range. Its bodies' boxes are read only within
+what the lint replays anyway: the time range when given, else, when ``at``
+names the instants, no later than the latest of them; a finding beyond is
+reported with its boxes null.
 """
 
 from __future__ import annotations
@@ -173,12 +175,13 @@ def lint(
             "sample_fps is the rate of the rules a scene armed: pass it with"
             " rules='armed'"
         )
+    at = at if at is None or isinstance(at, str) else tuple(at)
     instants = lint_instants(record, fps, at=at)
     rules = tuple(rules)
     frames = Frames(session, lint_instants=instants)
     _request_parts(frames, instants)
     request_quantities(frames, instants)
-    baked = request_bake_frames(frames, record, t_range)
+    baked = request_bake_frames(frames, record, t_range, _replayed_until(at, t_range))
     # The scene's own checks (:mod:`.bridge`), whatever the rules.
     checks = Checks(rules)
     checks.request_frames(frames)
@@ -210,6 +213,20 @@ def lint(
         time.perf_counter() - started,
         target_resolution(session),
     )
+
+
+def _replayed_until(
+    at: str | Iterable[Fraction | float] | None, t_range: Sequence[float] | None
+) -> Fraction | None:
+    """The latest instant a lint reads the scene at, when its caller bounds
+    it: the end of ``t_range``, else the latest instant ``at`` names; ``None``
+    when nothing bounds it.
+    """
+    if t_range is not None:
+        return exact(t_range[1])
+    if at is None or isinstance(at, str):
+        return None
+    return max((exact(each) for each in at), default=None)
 
 
 def _live_lint(session: Session, finding: Finding, started: float) -> LintResult:

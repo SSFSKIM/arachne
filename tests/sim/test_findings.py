@@ -270,7 +270,7 @@ def test_a_body_through_a_thin_wall_tunnelled_and_its_twin_did_not(opened):
     _, (finding,) = _simulation(session)
     assert finding.code == "sim.tunnelled"
     assert [thing.id for thing in finding.objects] == [wall, disc]
-    assert finding.detail == {"tick": 1}
+    assert finding.detail == {"tick": 1, "overlapped": True}
     assert finding.t_start == Fraction(1, 60)
     assert finding.message == (
         f"{wall} and {disc} passed through each other in the step to tick 1, with"
@@ -317,7 +317,8 @@ def test_a_finding_at_a_play_s_last_tick_names_that_play(opened):
     session = opened("EndsAtTheCrossing")
     _, (finding,) = _simulation(session)
     assert (finding.t_start, finding.detail["tick"]) == (Fraction(1, 2), 30)
-    assert finding.line == _line("first")
+    assert finding.line is not None
+    assert finding.line.line == _line("first")
 
 
 def test_a_body_the_frame_does_not_draw_keeps_its_id_and_line(opened):
@@ -333,7 +334,8 @@ def test_a_body_the_frame_does_not_draw_keeps_its_id_and_line(opened):
     (thing,) = finding.objects
     assert (thing.id, thing.source_line, thing.kind) == (body, _line("made"), "Dot")
     assert (thing.bbox, thing.screen_bbox) == (None, None)
-    assert finding.line == _line("entered")
+    assert finding.line is not None
+    assert finding.line.line == _line("entered")
 
 
 def test_a_finding_outside_the_lint_s_range_asks_for_no_frame(opened, monkeypatch):
@@ -358,6 +360,74 @@ def test_a_finding_outside_the_lint_s_range_asks_for_no_frame(opened, monkeypatc
     assert [times for owner, times in asked if owner == bakes_module.OWNER] == [
         [Fraction(7, 15)]
     ]
+
+
+def test_a_speed_the_solver_capped_reached_at_least_its_cap(opened):
+    """Every row of the overflowing push is at rest; the solver scaled the
+    speed down to its cap at the first step, and the finding says only what
+    that shows: it reached at least the cap.
+    """
+    session = opened("OverflowingPush")
+    (body,) = _bodies(session)
+    velocity = _read(session.state_at(Fraction(1, 5)), body)["sim.velocity"]
+    assert velocity.value == (0.0, 0.0, 0.0)
+    _, (finding,) = _simulation(session)
+    assert finding.code == "sim.unstable"
+    assert finding.detail == {
+        "tick": 1,
+        "signal": "speed",
+        "value": 400.0,
+        "limit": 200.0,
+        "capped": True,
+    }
+    assert finding.message == (
+        f"{body}'s speed reached at least the solver's cap of 400 u/s at tick 1,"
+        " above its world's limit of 200 u/s"
+    )
+
+
+def test_a_pass_within_the_allowance_is_possibly_a_crossing(opened):
+    """Two discs that pass 0.003 apart, within the allowed linear error and
+    short of touching: possibly passed through, not seen overlapping.
+    """
+    session = opened("PassingClose")
+    first, second = _bodies(session)
+    _, (finding,) = _simulation(session)
+    assert finding.code == "sim.tunnelled"
+    assert finding.detail == {"tick": 1, "overlapped": False}
+    assert finding.message == (
+        f"{first} and {second} possibly passed through each other in the step to"
+        " tick 1: they came within the allowed linear error of each other, which"
+        " could not be told from a crossing, with no contact between them"
+    )
+
+
+def test_a_lint_at_named_instants_reads_no_frame_past_them(opened, monkeypatch):
+    """A lint at 0 alone replays nothing past 0: the speeding point's finding
+    at 31/60 s is reported, its body named by id and line, its boxes null,
+    and no frame is asked for it.
+    """
+    session = opened("Speeding")
+    (body,) = _bodies(session)
+    asked: list[object] = []
+    request = frames_module.Frames.request
+
+    def spied(self, owner, times, read, **options):
+        asked.append(owner)
+        return request(self, owner, times, read, **options)
+
+    monkeypatch.setattr(frames_module.Frames, "request", spied)
+    _, (finding,) = _simulation(session, at=[0])
+    assert bakes_module.OWNER not in asked
+    assert finding.t_start == Fraction(31, 60)
+    (thing,) = finding.objects
+    assert (thing.id, thing.kind, thing.bbox, thing.screen_bbox) == (
+        body,
+        "Dot",
+        None,
+        None,
+    )
+    assert thing.source_line is not None
 
 
 # Authoring

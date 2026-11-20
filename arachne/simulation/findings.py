@@ -9,13 +9,15 @@ step. A stay's occurrence holds those of its rows as
 
 - ``sim.unstable`` about one body, its ``signal`` ``non_finite``, ``speed``
   or ``angular_speed``, with the ``value`` found and the world's ``limit``
-  (none for a non-finite state);
-- ``sim.tunnelled`` about two bodies.
+  (none for a non-finite state), and for a speed whether the solver
+  ``capped`` it: scaled it down to its cap in the step, so that the value
+  is a lower bound, the cap, whatever the row shows;
+- ``sim.tunnelled`` about two bodies, and whether the solver's sweep saw
+  them ``overlapped``: when not, they came within the allowed linear error
+  of each other, which could not be told from a crossing (or a number of
+  the sweep could not be told).
 
-Each carries the scene's ``tick``. A speed the solver scaled down to its cap
-during a step is found though the step's last velocity is under the limit,
-its value then at least the cap (:meth:`arachne_sim.World.finding_values`).
-A stay that begins where an earlier one left the world shares that row with
+Each carries the scene's ``tick``. A stay that begins where an earlier one left the world shares that row with
 it: the earlier stay holds what was found there.
 """
 
@@ -35,7 +37,11 @@ _KINDS = {
     2: ("sim.unstable", "speed"),
     3: ("sim.unstable", "angular_speed"),
     4: ("sim.tunnelled", None),
+    5: ("sim.unstable", "speed"),
+    6: ("sim.unstable", "angular_speed"),
 }
+#: The kinds of a speed the solver scaled down to its cap.
+_CAPPED = frozenset({5, 6})
 
 
 def occurrence_findings(
@@ -71,8 +77,11 @@ def occurrence_findings(
                 limit = float(crate.angular_speed_limit)
             measured = None if limit is None or not math.isfinite(value) else value
             detail.update(signal=signal, value=measured, limit=limit)
+            if limit is not None:
+                detail["capped"] = kind in _CAPPED
             bodies: tuple[str, ...] = (ids[a],)
         else:
+            detail["overlapped"] = value == 0.0
             bodies = (ids[a], ids[b])
         out.append(BakeFinding(code, row, bodies, detail))
     return tuple(out)

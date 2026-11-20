@@ -205,3 +205,33 @@ class ArrivesTooFast(Scene):
         world.body(dot, shape=None, mass=1.0, velocity=RIGHT * 2)
         self.add(world)
         self.wait(0.5)  # @entered
+
+
+class OverflowingPush(Scene):
+    """A point of mass 1 in a solver's world pushed so hard that its speed's
+    square overflows: the solver scales its velocity to zero at every step,
+    so every row is at rest, under the limit.
+    """
+
+    def construct(self):
+        world = World(integrator="solver")
+        point = world.body(Dot(), shape=None, mass=1.0)
+        world.add_force(ConstantForce(point, force=RIGHT * 1e38))
+        self.add(world)
+        self.wait(0.25)
+
+
+class PassingClose(Scene):
+    """Two discs 0.05 in radius moving toward each other at 30 u/s each, on
+    paths 0.103 apart: in the first step they pass 0.003 apart, within the
+    allowed linear error, without touching.
+    """
+
+    def construct(self):
+        world = World()
+        world.body(Circle(radius=0.05).shift(LEFT * 0.4), velocity=RIGHT * 30)
+        world.body(
+            Circle(radius=0.05).shift(RIGHT * 0.4 + UP * 0.103), velocity=LEFT * 30
+        )
+        self.add(world)
+        self.wait(0.25)
