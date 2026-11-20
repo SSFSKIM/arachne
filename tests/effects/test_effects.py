@@ -5,6 +5,8 @@ server, and a frame refused on a host with no GPU.
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import pytest
 
 from arachne import (
@@ -104,12 +106,19 @@ class _Server:
         """The quantities of the object the scene named ``name``, at ``t``,
         each readable, by name.
         """
+        return self.numbers_as_of(t, name)[1]
+
+    def numbers_as_of(self, t: float, name: str) -> tuple[Fraction, dict[str, float]]:
+        """:meth:`numbers`, with the instant the answer is of (``as_of``:
+        the last instant at or before ``t`` the session's frames are on).
+        """
         state = self.server.handle("state_at", {"t": t})["state"]
         (node,) = [node for node in state["nodes"] if node["name"] == name]
         found = state["quantities"].get(node["id"], [])
         assert not [each for each in found if "unreadable" in each], found
         assert {each["unit"] for each in found} <= {"u", "1"}
-        return {each["name"]: each["value"] for each in found}
+        as_of = Fraction(state["as_of_exact"])
+        return as_of, {each["name"]: each["value"] for each in found}
 
     def close(self) -> None:
         self.server.handle("close", {})
@@ -144,8 +153,11 @@ def test_state_at_answers_the_numbers_each_instant_s_effects_hold(server):
 def test_state_at_answers_a_changing_blur_at_each_instant(server):
     opened = server("ChangingBlur")
     for t in (0.25, 0.5, 0.75):
-        found = opened.numbers(t, "plane")
-        assert found == {"effect.blur": pytest.approx(0.2 * (1 - t) + 0.6 * t)}
+        as_of, found = opened.numbers_as_of(t, "plane")
+        # The play runs from 0 to 1 linearly: its share done is the instant.
+        assert 0 < as_of < 1
+        sigma = 0.2 * (1 - as_of) + 0.6 * as_of
+        assert found == {"effect.blur": pytest.approx(float(sigma))}
     assert opened.numbers(1.0, "plane") == {"effect.blur": 0.6}
     # Brought to 0, the blur is gone from the spec and from the answer.
     assert opened.numbers(1.6, "plane") == {}
