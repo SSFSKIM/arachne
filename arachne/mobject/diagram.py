@@ -163,6 +163,10 @@ class Diagram(VGroup):
             edge = _StraightConnector(a, b, tip=tip, color=color, **kwargs)
         self.add(edge)
         self.edges = (*self.edges, edge)
+        # What it joins, by keys of this diagram's pieces, which copies keep.
+        held: Any = edge
+        held.start_key = self._key_of(_piece(start))
+        held.end_key = self._key_of(_piece(end))
         if label is not None:
             text = Text(
                 label,
@@ -176,12 +180,24 @@ class Diagram(VGroup):
             # The side of the line its label stands on beside a flow (1 for
             # above, or right of an upright line; -1 for the other), and how
             # far a flow's tokens reach from the line (0 without one).
-            held: Any = edge
             held.label_side = 1
             held.flow_reach = 0.0
             self.add(text)
         self._side_labels()
         return edge
+
+    def _key_of(self, piece: Mobject) -> int:
+        """``piece``'s key in this diagram (its ``diagram_key``, an integer
+        no other piece of the diagram holds), given it if it has none.
+        """
+        taken = {
+            getattr(m, "diagram_key", None) for m in self.submobjects if m is not piece
+        }
+        key = getattr(piece, "diagram_key", None)
+        if not isinstance(key, int) or key in taken:
+            key = 1 + max((k for k in taken if isinstance(k, int)), default=0)
+            cast(Any, piece).diagram_key = key
+        return key
 
     def _side_labels(self) -> None:
         """Give each labelled connector the side of its line with more room
@@ -1112,8 +1128,9 @@ def _pieces(
 
 def _joins(mobjects: Iterable[Mobject]) -> dict[int, tuple[Mobject, ...]]:
     """What each connector of a diagram among ``mobjects`` joins, by its
-    id: the pieces of the diagram nearest its two ends; and for its label,
-    the connector and those pieces.
+    id: the pieces of the diagram it was made to join, found by their keys
+    (:meth:`Diagram.connect`); and for its label, the connector and those
+    pieces.
     """
     found: dict[int, tuple[Mobject, ...]] = {}
     seen: set[int] = set()
@@ -1122,37 +1139,24 @@ def _joins(mobjects: Iterable[Mobject]) -> dict[int, tuple[Mobject, ...]]:
             if not isinstance(diagram, Diagram) or id(diagram) in seen:
                 continue
             seen.add(id(diagram))
-            labels = {id(e.label) for e in diagram.edges if e.label is not None}
-            pieces = [
-                piece
-                for piece in diagram.submobjects
-                if not any(piece is e for e in diagram.edges)
-                and id(piece) not in labels
-                and not isinstance(piece, Flow)
-                and any(len(m.points) for m in piece.get_family())
-            ]
-            if not pieces:
-                continue
+            by_key: dict[int, Mobject | None] = {}
+            for piece in diagram.submobjects:
+                key = getattr(piece, "diagram_key", None)
+                if isinstance(key, int):
+                    # A key two pieces hold names neither.
+                    by_key[key] = None if key in by_key else piece
             for edge in diagram.edges:
-                if not len(edge.points):
-                    continue
+                keys = (getattr(edge, name, None) for name in ("start_key", "end_key"))
                 ends = tuple(
-                    _nearest(pieces, point)
-                    for point in (edge.points[0], edge.points[-1])
+                    end
+                    for key in keys
+                    if isinstance(key, int) and (end := by_key.get(key)) is not None
                 )
                 found[id(edge)] = ends
-                if edge.label is not None:
-                    found[id(edge.label)] = (edge, *ends)
+                label = getattr(edge, "label", None)
+                if label is not None:
+                    found[id(label)] = (edge, *ends)
     return found
-
-
-def _nearest(pieces: Sequence[Mobject], point: np.ndarray) -> Mobject:
-    """The one of ``pieces`` whose box is nearest ``point``."""
-    at = np.asarray(point)[:2]
-    lows = np.array([p.get_critical_point(DL)[:2] for p in pieces])
-    highs = np.array([p.get_critical_point(UR)[:2] for p in pieces])
-    apart = np.linalg.norm(np.maximum(np.maximum(lows - at, at - highs), 0.0), axis=1)
-    return pieces[int(np.argmin(apart))]
 
 
 def _revealed_texts(inside: Mobject) -> list[Mobject]:

@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from arachne import LEFT, RIGHT, UP, Block, Diagram, Dot, VMobject
+from arachne.mobject.diagram import _joins
 from arachne.session import Session
 from arachne.timeline import admission
 from arachne.timeline.draw import Drawing
@@ -122,3 +124,27 @@ def test_a_return_brings_each_connector_back_on_its_window_reversed(shares):
     # Back to full by the return's end.
     end = by_t[back_start + Fraction(run)]
     assert all(value == pytest.approx(1.0) for value in end.values())
+
+
+def _tipped() -> tuple[Diagram, Block, Block, VMobject]:
+    """Two blocks joined by a tipped connector, whose wire stops short of
+    the far block's port, and a small dot nearer the wire's end than that
+    block.
+    """
+    near = Block("a", width=2.0, height=1.2).move_to(LEFT * 3)
+    far = Block("b", width=2.0, height=1.2).move_to(RIGHT * 1)
+    diagram = Diagram(near, far)
+    edge = diagram.connect(near, far, label="go")
+    diagram.add(Dot(radius=0.08).move_to(edge.points[-1] + UP * 0.2))
+    return diagram, near, far, edge
+
+
+def test_a_connector_s_ends_are_the_pieces_it_was_made_to_join():
+    diagram, near, far, edge = _tipped()
+    joined = _joins([diagram])
+    assert joined[id(edge)] == (near, far)
+    assert joined[id(edge.label)] == (edge, near, far)
+    # And on a copy, its own pieces.
+    copy = diagram.copy()
+    joined = _joins([copy])
+    assert joined[id(copy.edges[0])] == (copy[0], copy[1])
