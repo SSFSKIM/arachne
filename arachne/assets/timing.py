@@ -64,6 +64,12 @@ boiled drawing, on its outline as painted: :mod:`.anchor`); the annotation
 itself is never stepped. A copy of a declared mobject carries its mark, and
 is declared too when it enters the scene that declared it.
 
+The declared mobject declares its timing (:mod:`arachne.quantities`),
+read from the mark a capture holds: ``timing.rate``, its drawings a second,
+and with boil ``timing.boil_rate`` and ``timing.boil_amplitude``, in
+changes a second (``1/s``) and pixels of the 1080-pixel reference picture
+(``px``).
+
 Stated limit. A frozen frame (``pause``, ``wait(frozen_frame=True)``) runs
 no updater, so it shows the family as true when it begins, without boil:
 after an off-grid play end, the final state before its boundary.
@@ -132,14 +138,16 @@ import functools
 import math
 import numbers
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
+from .. import quantities
 from ..mobject.values import FrozenPoints, adopt
+from ..quantities import At, Quantity
 from ..timeline.record import NodeState
 
 if TYPE_CHECKING:
@@ -300,6 +308,45 @@ def timing_of(mobject: Mobject) -> Timing | None:
     state the record installed, it is the timing declared then.
     """
     return _timing(mobject.__dict__.get(MARK))
+
+
+# Declared quantities
+
+#: The prefix of an illustration's declared quantities.
+PREFIX = "timing."
+quantities.register(PREFIX, owner="arachne.assets", units=("1/s", "px"))
+
+
+@dataclass(frozen=True, slots=True)
+class TimingNumbers:
+    """The source of a declared mobject's timing quantities. It holds
+    nothing: what it answers is read from the mark the capture holds, so a
+    mobject declared again answers its new timing from then.
+    """
+
+
+@quantities.source(TimingNumbers)
+def _declared(
+    found: TimingNumbers, held: Mapping[str, Any], at: At
+) -> Iterable[Quantity]:
+    timing = _timing(held.get(MARK))
+    if timing is None:
+        return ()
+    numbers = [Quantity(f"{PREFIX}rate", timing.drawings_per_second, "1/s")]
+    boil = timing.boil
+    if boil is not None:
+        numbers += [
+            Quantity(f"{PREFIX}boil_rate", boil.rate, "1/s"),
+            Quantity(f"{PREFIX}boil_amplitude", boil.amplitude, "px"),
+        ]
+    return numbers
+
+
+def _declare_numbers(root: Mobject) -> None:
+    """Have ``root`` declare its timing's numbers, once."""
+    held = root.__dict__.get(quantities.SOURCES, ())
+    if not any(type(each) is TimingNumbers for each in held):
+        quantities.attach(root, TimingNumbers())
 
 
 # Scene drivers
@@ -1075,6 +1122,7 @@ class TimingClock:
         now = scene.time
         mark = timing.mark
         root.__dict__[MARK] = mark
+        _declare_numbers(root)
         self._marks.append(mark)
         illustration = self.illustration_of(root)
         if illustration is not None:
