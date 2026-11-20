@@ -158,7 +158,7 @@ gates:
     run: bash gpu/ci/test.sh
     timeout: 30
   - name: gpu-binding
-    run: bash gpu/ci/binding.sh gpu/tests/python tests/routing tests/compose tests/effects
+    run: bash gpu/ci/binding.sh gpu/tests/python tests/routing tests/compose tests/media tests/effects
     env: {UV_PYTHON: "3.12"}
     timeout: 30
   - name: cpu-bytes
@@ -181,6 +181,8 @@ gates:
       - "arachne/timeline/draw.py"
       - "arachne/timeline/record.py"
       - "gpu/ci/base_head*"
+      - "arachne/mobject/media/**"
+      - "arachne/assets/**"
     run: bash gpu/ci/base_head.sh "$CI_KIT_BASE"
     env: {UV_PYTHON: "3.12"}
     timeout: 60

@@ -69,6 +69,7 @@ from .mobject.graphing.scale import *
 from .mobject.logo import *
 from .mobject.marks import *
 from .mobject.matrix import *
+from .mobject.media import *
 from .mobject.mobject import *
 from .mobject.svg.brace import *
 from .mobject.svg.svg_mobject import *

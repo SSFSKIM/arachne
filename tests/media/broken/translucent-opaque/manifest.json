@@ -1,0 +1,33 @@
+{
+  "manifest_version": "1.1",
+  "name": "translucent-opaque",
+  "version": 1,
+  "kind": "still",
+  "requires": [],
+  "size": {"width": 1, "height": 1},
+  "media": {
+    "pixels": [16, 16],
+    "alpha": false,
+    "frames": [
+      {
+        "file": "frames/0000.png",
+        "digest": "sha256:59969be064c7898c9921ef50ef71e4168a1d01b34b279a3304ad9c46cef8be03"
+      }
+    ]
+  },
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:ac610f50683898b06e4a4294b727997d145c3c9680ada41fb92d7b79f08722aa",
+    "results": [
+      {"name": "frames_exact", "pass": true},
+      {"name": "frames_uniform", "pass": false}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

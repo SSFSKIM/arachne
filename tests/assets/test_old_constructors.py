@@ -5,7 +5,10 @@ them in the same process; that scene poses its rig, alone and while it
 moves, with a callout on one of its anchors and a readout counting. Nor
 does a scene with an effect between them change them: here, with no GPU,
 it answers its states and refuses its frames
-(``tests/effects/test_drawn.py`` draws it on a device).
+(``tests/effects/test_drawn.py`` draws it on a device). A scene of media
+objects runs between them too: here, on a host with no GPU, its states are
+answered and its frames refused (``render.gpu_required``);
+``tests/media/test_drawn.py`` draws it on a device between them.
 """
 
 from __future__ import annotations
@@ -80,11 +83,39 @@ class WithEffect(Scene):
         self.wait(0.25)
 """
 
-#: Opens each old scene, then a scene that used an asset, then each old
-#: scene again, in one process; prints each opening's routes and frames.
+WITH_MEDIA = """\
+from arachne import *
+
+
+class WithMedia(Scene):
+    def construct(self):
+        clip = VideoMobject("fixture:numbered-clip")
+        still = Still("fixture:swatch").shift(DOWN)
+        self.add(still)
+        self.play(FadeIn(clip), still.animate.shift(RIGHT), run_time=0.5)
+        self.wait(0.25)
+"""
+
+#: Opens each old scene, then a scene that used an asset, one with an effect
+#: and one of media objects, then each old scene again, in one process, on a
+#: host with no GPU; prints each opening's routes and frames, and what the
+#: effect and media scenes answered.
 PROGRAM = """\
 import hashlib, json, sys
+from arachne.compose import device
+from arachne.routing import GpuRequired
 from arachne.session import Session
+
+
+class NoGpu:
+    def pin(self):
+        return None
+
+    def open(self, width, height):
+        return None
+
+
+device.door = NoGpu()
 
 directory, media = sys.argv[1], sys.argv[2]
 config = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4, "media_dir": media}
@@ -119,11 +150,34 @@ def refused(file, scene):
         session.close()
 
 
+def media_answers():
+    session = Session.open(f"{directory}/with_media.py", "WithMedia", config=config)
+    try:
+        media = {"Still", "VideoMobject"}
+        kinds = [
+            sorted(media & {n.type for n in session.state_at(t).nodes}) for t in (0, 0.6)
+        ]
+        try:
+            session.frame(0.25)
+        except GpuRequired as refused:
+            frame = refused.code
+        else:
+            frame = "drawn"
+        return {"route": session.route, "kinds": kinds, "frame": frame}
+    finally:
+        session.close()
+
+
 fresh = {scene: opened("old.py", scene) for scene in ("OldSvg", "OldImage")}
 asset = opened("with_asset.py", "WithAsset")
 effect = refused("with_effect.py", "WithEffect")
+media = media_answers()
 after = {scene: opened("old.py", scene) for scene in ("OldSvg", "OldImage")}
-print(json.dumps({"fresh": fresh, "asset": asset, "effect": effect, "after": after}))
+print(
+    json.dumps(
+        {"fresh": fresh, "asset": asset, "effect": effect, "media": media, "after": after}
+    )
+)
 """
 
 
@@ -147,6 +201,7 @@ def _scenes(directory: Path) -> Path:
     (directory / "old.py").write_text(textwrap.dedent(OLD))
     (directory / "with_asset.py").write_text(textwrap.dedent(WITH_ASSET))
     (directory / "with_effect.py").write_text(textwrap.dedent(WITH_EFFECT))
+    (directory / "with_media.py").write_text(textwrap.dedent(WITH_MEDIA))
     return directory
 
 
@@ -172,3 +227,8 @@ def test_an_svg_and_an_image_by_path_draw_the_same_with_or_without_a_manifest(
         assert openings["effect"]["frame"] == "render.gpu_required"
     assert bare["fresh"] == with_manifest["fresh"]
     assert bare["asset"] == with_manifest["asset"]
+    assert bare["media"] == {
+        "route": "gpu",
+        "kinds": [["Still", "VideoMobject"]] * 2,
+        "frame": "render.gpu_required",
+    }

@@ -16,8 +16,17 @@ outline and a name a pose could not tell apart included), a file not there
 (``asset.unreadable``), and, once all of that holds, an asset not admitted
 (``asset.unadmitted``): it loads only when its manifest's ``checks`` record
 the tool version :data:`TOOL`, the digest of its files and manifest as they
-are, and every check of :data:`CHECKS` by name, each passing
-(:mod:`.admission` writes that record). Nothing is cached between loads.
+are, and every check of the asset's check set by name, each passing
+(:func:`checks_for`; :mod:`.admission` writes that record). Nothing is
+cached between loads.
+
+A media asset (a still, a clip or a sprite) is frames of pixels, each a
+file in a form the engine decodes exactly
+(:data:`~arachne.mobject.media.frames.ADMITTED`). Loading reads every file's
+bytes, for the asset's digest, and each frame file's header, for its form: a
+file in no admitted form is ``media.inexact`` (reason ``format``), before
+admission is asked. It decodes no frame: each frame is decoded, and checked
+against its digest, when it is first drawn (:mod:`arachne.mobject.media.frames`).
 
 A ``shape`` driver's stored outlines are the rest outline moved: a supplier
 keeps, shape for shape, the contours in the same order, each with as many
@@ -28,7 +37,16 @@ outline is a place along one contour.
 
 from __future__ import annotations
 
-__all__ = ["CHECKS", "FIXTURES", "TOOL", "Asset", "load_asset"]
+__all__ = [
+    "CHECKS",
+    "FIXTURES",
+    "MEDIA_CHECKS",
+    "TOOL",
+    "Asset",
+    "checks_for",
+    "load_asset",
+    "read_file",
+]
 
 import os
 import stat
@@ -43,6 +61,7 @@ from .. import config
 from ..mobject.types.vectorized_mobject import VMobject
 from .manifest import (
     MANIFEST,
+    MEDIA_KINDS,
     AnchorSpec,
     Manifest,
     ParameterSpec,
@@ -60,8 +79,12 @@ from .svg_parts import SvgFile, Unreadable, read_svg, structure
 #: The admission tool's version this engine supports: an asset loads only
 #: with the passing checks of this version recorded at its digest.
 TOOL = "arachne.assets 1"
-#: The checks of :data:`TOOL`, in the order its record lists them.
+#: The checks of :data:`TOOL` an asset of the kind ``parts`` holds, in the
+#: order its record lists them.
 CHECKS = ("hole", "detached_part", "anchor_off_part")
+#: The checks of :data:`TOOL` an asset of a media kind holds, in the order
+#: its record lists them.
+MEDIA_CHECKS = ("frames_exact", "frames_uniform")
 #: The engine's own fixture assets, each a directory named as it is asked
 #: for: ``fixture:<name>``.
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -74,7 +97,8 @@ _OPEN = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
 @dataclass(frozen=True, eq=False)
 class Asset:
     """An asset, loaded: its manifest, its digest, and the shapes of its
-    parts, drawings and stored outlines at rest, in canvas coordinates.
+    parts, drawings and stored outlines at rest, in canvas coordinates (a
+    media asset has none: its frames are read when drawn).
 
     It is a value: nothing of it can be written once loaded (its fields are
     frozen and its manifest deep-immutable), and a copy of it is itself. The
@@ -92,6 +116,11 @@ class Asset:
     def name(self) -> str:
         """The asset's name."""
         return self.manifest.name
+
+    @property
+    def kind(self) -> str:
+        """The asset's kind: ``parts``, or a media kind."""
+        return self.manifest.kind
 
     @property
     def version(self) -> int:
@@ -154,6 +183,15 @@ def load_asset(ref: str | os.PathLike[str] | Asset) -> Asset:
     return asset
 
 
+def checks_for(manifest: Manifest) -> tuple[str, ...]:
+    """The checks of :data:`TOOL` an asset whose manifest is ``manifest``
+    must hold, by its kind (and, as it gains members that change what is
+    drawn, by its ``requires``): :data:`CHECKS` for the kind ``parts``,
+    :data:`MEDIA_CHECKS` for a media kind.
+    """
+    return MEDIA_CHECKS if manifest.kind in MEDIA_KINDS else CHECKS
+
+
 def read_asset(ref: str | os.PathLike[str]) -> Asset:
     """The asset ``ref`` names, checked and read whole as :func:`load_asset`
     reads it, its admission left unasked: the admission tool's own entry
@@ -178,6 +216,18 @@ def read_asset(ref: str | os.PathLike[str]) -> Asset:
                 file=file,
             )
         contents[key] = _bytes(directory, key, label)
+    if manifest.kind in MEDIA_KINDS:
+        from ..mobject.media.frames import refuse_unadmitted_form
+
+        for file, data in contents.items():
+            refuse_unadmitted_form(data, label, file)
+        return Asset(
+            directory,
+            manifest,
+            digest(manifest.document, contents),
+            None,
+            MappingProxyType({}),
+        )
     files = {file: _read(contents[file], file, label) for file in contents}
     canvas = _canvas(files, label)
     shapes = _shapes(manifest, files, label)
@@ -199,8 +249,9 @@ def read_asset(ref: str | os.PathLike[str]) -> Asset:
 
 def _admitted(asset: Asset, label: str) -> None:
     """Refuse ``asset`` (asked for as ``label``) unless its manifest records
-    the passing checks of :data:`TOOL` at its digest, every one:
-    ``asset.unadmitted``, whose ``reason`` says what is not so.
+    the passing checks of :data:`TOOL` at its digest, every one of its check
+    set (:func:`checks_for`): ``asset.unadmitted``, whose ``reason`` says
+    what is not so.
     """
     checks = asset.manifest.checks
     if checks is None:
@@ -230,12 +281,13 @@ def _admitted(asset: Asset, label: str) -> None:
             found=thawed(recorded),
         )
     results = checks.get("results")
+    held = checks_for(asset.manifest)
     passing: dict[str, bool] = {}
     for entry in results if isinstance(results, (list, tuple)) else ():
-        if isinstance(entry, Mapping) and entry.get("name") in CHECKS:
+        if isinstance(entry, Mapping) and entry.get("name") in held:
             name = entry["name"]
             passing[name] = passing.get(name, True) and entry.get("pass") is True
-    missing = [name for name in CHECKS if name not in passing]
+    missing = [name for name in held if name not in passing]
     if missing:
         _unadmitted(
             label,
@@ -244,7 +296,7 @@ def _admitted(asset: Asset, label: str) -> None:
             "missing",
             checks=missing,
         )
-    failing = [name for name in CHECKS if not passing[name]]
+    failing = [name for name in held if not passing[name]]
     if failing:
         _unadmitted(
             label,
@@ -256,6 +308,22 @@ def _admitted(asset: Asset, label: str) -> None:
 
 def _unadmitted(label: str, what: str, reason: str, **detail: Any) -> NoReturn:
     refuse("asset.unadmitted", what, asset=label, reason=reason, **detail)
+
+
+def read_file(directory: Path, file: str, label: str) -> bytes:
+    """The bytes of the file ``file`` (a path as :func:`~.manifest.normalised`
+    gives it) of the asset in ``directory``, asked for as ``label``, read as
+    loading reads them: ``asset.unreadable`` for one that cannot be read,
+    ``asset.file_missing`` for one that is gone.
+    """
+    if not (directory / file).exists():
+        refuse(
+            "asset.file_missing",
+            f"the asset {label} names the file {file}, which is not in its directory",
+            asset=label,
+            file=file,
+        )
+    return _bytes(directory, file, label)
 
 
 def _bytes(directory: Path, file: str, label: str) -> bytes:
