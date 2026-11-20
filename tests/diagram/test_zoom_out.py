@@ -329,3 +329,23 @@ def test_a_return_refuses_an_outer_zoom_while_an_inner_one_holds_the_frame():
     ZoomOut(outer).begin()
     with pytest.raises(ValueError, match="already come back"):
         ZoomOut(outer).begin()
+
+
+def test_an_excursion_that_comes_back_does_not_hold_the_frame():
+    block = Block("b", width=2.2, height=1.4).shift(RIGHT * 2)
+    outer, frame = _played(block)
+    # From the zoomed-in pose, out to another block and back again.
+    trip = ZoomInto(
+        Block("c", width=1.0, height=0.6).shift(RIGHT * 2.2 + UP * 0.2),
+        frame=frame,
+        rate_func=there_and_back,
+    )
+    trip.begin()
+    trip.finish()
+    ZoomOut(outer).begin()
+
+
+def test_a_return_refuses_a_reversed_easing():
+    zoom, _ = _played(Block("b", width=2.2, height=1.4).shift(RIGHT * 2))
+    with pytest.raises(ValueError, match="rate_func"):
+        ZoomOut(zoom, reverse_rate_function=True).begin()

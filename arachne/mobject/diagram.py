@@ -843,7 +843,11 @@ class ZoomInto(Animation):
         #: where it left the frame, which a return starts from.
         self._reached = share
         self._left_points = self.mobject.points
-        _hold_zoom(self)
+        # Only a move standing on its block holds the frame.
+        if abs(share - 1.0) <= _EASED:
+            _hold_zoom(self)
+        else:
+            _release_zoom(self)
 
     def show_share(self, share: float) -> None:
         """Show the move at ``share`` of its way: the frame, the inside's
@@ -868,7 +872,8 @@ class ZoomInto(Animation):
 
 #: The zooms that hold each camera frame, by the frame's id: each entry
 #: holds its frame and its zooms weakly, innermost last, and goes with its
-#: frame. A zoom joins as it plays; its return takes it out.
+#: frame. A zoom joins once its move stands on its block, and leaves when a
+#: later share of it, or its return, takes the frame off.
 _HOLDING: dict[int, tuple[weakref.ref[Mobject], list[weakref.ref[ZoomInto]]]] = {}
 
 
@@ -888,6 +893,12 @@ def _forget_frame(key: int) -> None:
     entry = _HOLDING.get(key)
     if entry is not None and entry[0]() is None:
         del _HOLDING[key]
+
+
+def _release_zoom(zoom: ZoomInto) -> None:
+    """Have ``zoom`` hold its frame no more."""
+    holders = _holders(zoom.mobject)
+    holders[:] = [held for held in holders if held() is not zoom]
 
 
 def _hold_zoom(zoom: ZoomInto) -> None:
@@ -920,12 +931,15 @@ class ZoomOut(Animation):
 
     Nested zooms come back in order, the inner first. A return is refused,
     by name, when its zoom was never played, or ended short of its block;
-    when its own ``rate_func`` does not take 0 to 0 and 1 to 1; when the
+    when its own easing (``rate_func``, after ``reverse_rate_function``)
+    does not take 0 to 0 and 1 to 1; when the
     camera's frame does not stand where that zoom left it, every point
     within :data:`RETURN_TOLERANCE` of its height (a camera moved,
     stretched or turned since); when a zoom played after it on the same
-    frame has not come back (the zooms holding a frame are kept beside it,
-    by identity, innermost last); when it has already come back; when a
+    frame, its move ended on its block, has not come back (the zooms
+    holding a frame are kept beside it, by identity, innermost last; one
+    that went out and came back, a ``there_and_back``, holds nothing);
+    when it has already come back; when a
     piece the zoom faded has left the scene; and in a scene without that
     zoom's moving camera. The move in and the return draw each share alike
     (:meth:`ZoomInto.show_share`).
@@ -997,11 +1011,13 @@ class ZoomOut(Animation):
                 f" one never reached its block (it ended at {zoom._reached:.4g} of"
                 " its way): give the move-in a rate_func that ends at 1"
             )
-        ease = self.rate_func
-        if abs(ease(0.0)) > _EASED or abs(ease(1.0) - 1.0) > _EASED:
+        # The easing as the return applies it, reverse_rate_function and all.
+        first, last = self.get_sub_alpha(0.0, 0, 1), self.get_sub_alpha(1.0, 0, 1)
+        if abs(first) > _EASED or abs(last - 1.0) > _EASED:
             raise ValueError(
-                "a ZoomOut's rate_func must take 0 to 0 and 1 to 1, so the return"
-                " starts on the block and ends where the move-in began"
+                "a ZoomOut's easing (its rate_func, after reverse_rate_function)"
+                " must take 0 to 0 and 1 to 1, so the return starts on the block"
+                " and ends where the move-in began"
             )
         left = np.asarray(zoom._left_points)
         tolerance = RETURN_TOLERANCE * zoom._height(1.0)
