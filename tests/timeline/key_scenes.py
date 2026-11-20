@@ -103,6 +103,8 @@ MADE_WITH_ARGUMENTS = {
     "RightAngle": lambda: RightAngle(Line(ORIGIN, RIGHT), Line(ORIGIN, UP)),
     "SVGMobject": lambda: SVGMobject(SVG),
     "SingleStringMathTex": lambda: SingleStringMathTex("x"),
+    "Sprite": lambda: Sprite("fixture:stepper"),
+    "Still": lambda: Still("fixture:swatch"),
     "StreamLines": lambda: StreamLines(
         _field, x_range=[-1, 1, 1], y_range=[-1, 1, 1], virtual_time=0.5
     ),
@@ -118,6 +120,7 @@ MADE_WITH_ARGUMENTS = {
     "VMobjectFromSVGPath": lambda: SVGMobject(SVG).family_members_with_points()[0],
     "Variable": lambda: Variable(1.5, "x"),
     "VectorField": lambda: VectorField(_field),
+    "VideoMobject": lambda: VideoMobject("fixture:numbered-clip"),
 }
 
 
