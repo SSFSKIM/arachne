@@ -1,0 +1,133 @@
+"""A writer that puts back on a declared family the value on display, while
+what is true has moved on, still writes: the hold keeps it as true, and
+the next boundary shows it.
+
+Every writer writes onto what is true, which the clock puts back before a
+play's animations write: a scene driver (a small whole number, which Python
+shares, as much as a new one, and a program it reads), an animation's
+interpolation (points shared with a copy made as the play began) and the
+methods a move replays as it ends (a z-index, an opacity set to a literal).
+"""
+
+from __future__ import annotations
+
+import math
+from fractions import Fraction
+
+import numpy as np
+
+from arachne import Sprite, Square
+
+from .reading import boundary
+from .timing_scenes import SLOW, SWAPPED
+
+TICK = Fraction(1, 60)
+#: The test sprite: its duration, its drawings a second, its drawings.
+SPRITE = (Fraction(2, 3), Fraction(12), 8)
+
+
+def _of(session, kind: type):
+    return next(m for m in session.record.mobjects() if type(m) is kind)
+
+
+def _ticks(session):
+    """Every 60 Hz tick of the scene before its end."""
+    end = session.record.duration
+    return [k * TICK for k in range(math.ceil(end / TICK))]
+
+
+def _held(session, mobject, t: Fraction):
+    """``mobject``'s recorded state at the scene instant ``t``."""
+    record = session.record
+    return record.node_state(mobject, record.capture_at(t)[1])
+
+
+def _drawing(media: Fraction) -> int:
+    """The sprite's drawing at its media time ``media``."""
+    duration, rate, count = SPRITE
+    return min(math.floor((media % duration) * rate), count - 1)
+
+
+def test_a_driver_s_small_number_equal_to_the_one_on_display_is_written(opened):
+    session = opened("BeatOnItsBoundaries", 60)
+    square = _of(session, Square)
+    ticks = _ticks(session)
+    assert len(ticks) == 90
+    for t in ticks:
+        # floor(12 t) % 4 at the last boundary k / 3: always 0.
+        assert math.floor(boundary(t, SLOW) * 12) % 4 == 0
+        assert _held(session, square, t).get("beat") == 0, t
+
+
+def test_every_boundary_shows_the_drawing_its_instant_names(opened):
+    # The loop comes round to the drawing on display exactly at each
+    # boundary: what the boundary installs is the drawing the program
+    # names there, not the one before it.
+    session = opened("SpriteLoopedOnItsBoundaries", 60)
+    sprite = _of(session, Sprite)
+    for t in _ticks(session):
+        assert _drawing(2 * boundary(t, SLOW)) == 0
+        assert _held(session, sprite, t).get("_frame") == 0, t
+
+
+def test_a_program_changed_between_boundaries_is_shown_from_the_next(opened):
+    # The driver reads the program that is true, not the one on display:
+    # the first boundary after the change shows the new program's drawing.
+    session = opened("SpriteProgramSwapped", 60)
+    sprite = _of(session, Sprite)
+    swapped = Fraction(SWAPPED)
+    for t in _ticks(session):
+        at = boundary(t, SLOW)
+        media = at if at < swapped else at - swapped
+        want = _drawing(media)
+        assert _held(session, sprite, t).get("_frame") == want, (t, want)
+    # The two programs name other drawings at the first boundary after the
+    # change, 2/3.
+    assert _drawing(Fraction(2, 3)) != _drawing(Fraction(2, 3) - swapped)
+
+
+def test_an_animation_ending_on_the_points_on_display_is_written(opened):
+    # The Create begins and ends between the boundaries 1/3 and 2/3, so the
+    # square on display stays whole throughout; its last write is the
+    # square's own points, shared with its starting copy, which the drawing
+    # on display holds. From 2/3 on the square is whole again, not as the
+    # Create stood at its last tick.
+    session = opened("RedrawnWithinOneDrawing", 60)
+    square = _of(session, Square)
+    whole = np.asarray(Square().points)
+    # Every tick, and the scene's end, which the record answers with what
+    # is true.
+    for t in [*_ticks(session), session.record.duration]:
+        points = np.asarray(_held(session, square, t).get("_points"))
+        assert points.shape == whole.shape, t
+        assert np.abs(points - whole).max() < 1e-9, t
+
+
+def test_a_method_a_move_replays_as_it_ends_writes_the_value_on_display(opened):
+    # The square is raised to 1 between plays, off the grid, so the drawing
+    # on display still holds 0; the move puts it back to 0 as it ends, off
+    # the grid too. From 2/3 on, and at the scene's end, it is at 0.
+    session = opened("LayeredBackBetweenDrawings", 60)
+    square = _of(session, Square)
+    for t in [*_ticks(session), session.record.duration]:
+        z = _held(session, square, t).get("z_index")
+        assert z == 0, t
+
+
+def test_a_picture_s_opacity_set_to_the_value_on_display_is_written(opened):
+    # Each picture's opacity is written whole, its pixels' alpha with its
+    # stroke opacity, though the literal it is set to is the one on display:
+    # the two agree at every tick and at the scene's end.
+    session = opened("PicturesShownInTurn", 60)
+    record = session.record
+    pictures = [m for m in record.mobjects() if type(m).__name__ == "ImageMobject"]
+    assert len(pictures) == 2
+    for t in [*_ticks(session), record.duration]:
+        for picture in pictures:
+            state = _held(session, picture, t)
+            alpha = np.asarray(state.get("_pixel_array"))[:, :, 3].max() / 255
+            assert float(state.get("stroke_opacity")) == alpha, t
+    # Both shown at the end.
+    for picture in pictures:
+        state = _held(session, picture, record.duration)
+        assert np.asarray(state.get("_pixel_array"))[:, :, 3].max() == 255

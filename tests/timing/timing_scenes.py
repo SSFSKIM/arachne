@@ -1,10 +1,15 @@
 """Scenes of stepped timing: a declared rig posed, moved, faded in, a part of
 it animated, beside smooth text, off the grid, with line boil, posed by the
 scene's code between plays, with a callout on it; scene drivers beside a
-clock; what is refused; and scenes that declare nothing.
+clock; writes that put back on a declared family the value on display;
+what is refused; and scenes that declare nothing.
 """
 
 from __future__ import annotations
+
+import math
+
+import numpy as np
 
 from arachne import (
     BLUE,
@@ -21,12 +26,15 @@ from arachne import (
     Callout,
     Capsule,
     Circle,
+    Create,
     DecimalNumber,
     Diagram,
     Dot,
     FadeIn,
     FadeOut,
     Flow,
+    Group,
+    ImageMobject,
     Line,
     MaintainPositionRelativeTo,
     MorphParts,
@@ -36,6 +44,8 @@ from arachne import (
     Pose,
     Rig,
     Scene,
+    ShowIncreasingSubsets,
+    Sprite,
     Square,
     Succession,
     Text,
@@ -134,6 +144,83 @@ class MovedThenPosed(Scene):
         set_timing(box, RATE)
         self.play(box.animate(rate_func=linear).shift(RIGHT), run_time=0.45)
         self.play(Pose(box, lid_open=OPEN, rate_func=linear), run_time=0.5)
+
+
+#: The figure's poses below: the drawings a second, when the play begins
+#: (between the boundaries 1/3 and 2/3), its length, and the values.
+FIGURE_RATE = 3
+FIGURE_START = 0.4
+FIGURE_RUN = 0.5
+REACH = 0.75
+HEAD = 12.5
+
+
+def _figure() -> Rig:
+    return Rig("fixture:figure", name="figure")
+
+
+class PosedBetweenDrawings(Scene):
+    """A declared figure's head turned by the scene's code between two
+    boundaries, then a pose of its reach alone: the turn is shown from the
+    next boundary, though the pose never moves it.
+    """
+
+    def construct(self) -> None:
+        figure = _figure()
+        self.add(figure)
+        set_timing(figure, FIGURE_RATE)
+        self.wait(FIGURE_START)
+        figure.pose(head_turn=HEAD)
+        self.play(Pose(figure, reach=REACH, rate_func=linear), run_time=FIGURE_RUN)
+        self.wait(0.5)
+
+
+#: How long the first of two poses in turn lasts: it ends between two
+#: boundaries, well before the next.
+REACHED = 0.1
+
+
+class PosesInTurn(Scene):
+    """Two poses of a declared figure in one play, one after the other:
+    the reach the first ends on stays while the second turns the head.
+    """
+
+    def construct(self) -> None:
+        figure = _figure()
+        self.add(figure)
+        set_timing(figure, FIGURE_RATE)
+        self.wait(FIGURE_START)
+        self.play(
+            AnimationGroup(
+                Pose(figure, reach=1, rate_func=linear, run_time=REACHED),
+                Pose(
+                    figure,
+                    head_turn=2 * HEAD,
+                    rate_func=linear,
+                    run_time=FIGURE_RUN - REACHED,
+                ),
+                lag_ratio=1,
+            )
+        )
+        self.wait(0.5)
+
+
+class PosesTogether(Scene):
+    """Two poses of a declared figure's two parameters in one play, at
+    once: each moves its own.
+    """
+
+    def construct(self) -> None:
+        figure = _figure()
+        self.add(figure)
+        set_timing(figure, FIGURE_RATE)
+        self.wait(FIGURE_START)
+        self.play(
+            Pose(figure, reach=1, rate_func=linear),
+            Pose(figure, head_turn=2 * HEAD, rate_func=linear),
+            run_time=FIGURE_RUN,
+        )
+        self.wait(0.5)
 
 
 class ShortWaitThenPose(Scene):
@@ -508,6 +595,172 @@ class BoundDrivers(Scene):
         timing.drive(self, first)
         set_timing(box, RATE)
         self.play(Pose(box, lid_open=OPEN, rate_func=linear), run_time=0.25)
+
+
+# Writes of the value on display
+
+
+#: The drawings a second of the scenes below: a boundary every 20 ticks.
+SLOW = 3
+
+
+class BeatDriver(StubDriver):
+    """A scene driver that sets its square's ``beat``, a small whole number,
+    from the scene's time: ``floor(12 t) % 4``, which comes round to 0 at
+    every boundary ``k / 3``, the value on display there.
+    """
+
+    def __call__(self) -> None:
+        self.box.beat = math.floor(self.scene.time * 12) % 4
+
+
+class BeatOnItsBoundaries(Scene):
+    """A declared square whose beat a scene driver sets: every boundary
+    shows the beat its instant names, 0.
+    """
+
+    def construct(self) -> None:
+        _register_stubs(self)
+        square = Square()
+        square.beat = 0
+        self.add(square)
+        driver = self.stubs["first"] = BeatDriver(self, "first", square)
+        timing.drive(self, driver)
+        set_timing(square, SLOW)
+        self.wait(1.5)
+
+
+class _Sprited(Scene):
+    """A sprite declared with stepped timing, its clock set by the media
+    driver, which the scene's clock runs.
+    """
+
+    def construct(self) -> None:
+        sprite = Sprite("fixture:stepper")
+        self.add(sprite)
+        set_timing(sprite, SLOW)
+        self.program(sprite)
+
+    def program(self, sprite: Sprite) -> None:
+        raise NotImplementedError
+
+
+class SpriteLoopedOnItsBoundaries(_Sprited):
+    """A sprite looping at twice its rate, 24 drawings a second, declared
+    to be drawn 3 times a second: its 8 drawings come round exactly once
+    between two boundaries, so every boundary shows its first drawing.
+    """
+
+    def program(self, sprite: Sprite) -> None:
+        sprite.loop(rate=2)
+        self.wait(1.5)
+
+
+#: When the sprite's program is changed, between the boundaries 1/3, 2/3.
+SWAPPED = 0.5
+
+
+class SpriteProgramSwapped(_Sprited):
+    """A sprite looping from the start, its loop started again from its
+    first drawing between two boundaries: from the next boundary on, the
+    drawing shown is the one the new program names.
+    """
+
+    def program(self, sprite: Sprite) -> None:
+        sprite.loop()
+        self.wait(SWAPPED)
+        sprite.loop(at=0)
+        self.wait(1)
+
+
+class RedrawnWithinOneDrawing(Scene):
+    """A declared square, on display, drawn again by a ``Create`` that
+    begins and ends between two boundaries, then a wait: the ``Create``
+    ends on the square's own points, which the drawing on display holds.
+    """
+
+    def construct(self) -> None:
+        square = Square()
+        self.add(square)
+        set_timing(square, SLOW)
+        self.wait(0.4)
+        self.play(Create(square, rate_func=linear), run_time=0.2)
+        self.wait(0.5)
+
+
+class LayeredBackBetweenDrawings(Scene):
+    """A declared square raised by the scene's code between two boundaries,
+    then put back by a move that ends between two boundaries: the method
+    the move replays as it ends writes the z-index on display, 0.
+    """
+
+    def construct(self) -> None:
+        square = Square()
+        self.add(square)
+        set_timing(square, SLOW)
+        self.wait(0.4)
+        square.set_z_index(1)
+        self.play(square.animate.set_z_index(0), run_time=0.2)
+        self.wait(0.5)
+
+
+def _pictures() -> Group:
+    pixels = np.full((4, 4, 4), 255, dtype=np.uint8)
+    return Group(ImageMobject(pixels), ImageMobject(pixels)).arrange(RIGHT)
+
+
+class PicturesShownInTurn(Scene):
+    """Two declared pictures, on display, shown one by one again by a play
+    between two boundaries: each picture's opacity is set to the literal 0
+    or 1, which its drawing on display holds.
+    """
+
+    def construct(self) -> None:
+        pictures = _pictures()
+        self.add(pictures)
+        set_timing(pictures, SLOW)
+        self.wait(0.4)
+        self.play(ShowIncreasingSubsets(pictures, rate_func=linear), run_time=0.2)
+        self.wait(0.5)
+
+
+class MovedThenStill(Scene):
+    """A declared square at rest through a wait, moved by the scene's code
+    between two boundaries, then at rest through another wait.
+    """
+
+    def construct(self) -> None:
+        square = Square()
+        self.add(square)
+        set_timing(square, SLOW)
+        self.wait(0.4)
+        square.shift(RIGHT)
+        self.wait(1)
+
+
+class EqualScenes(Scene):
+    """A scene that declares nothing, equal to any scene of its class: it
+    defines ``__eq__`` alone, so it has no hash.
+    """
+
+    def __eq__(self, other: object) -> bool:
+        return type(other) is type(self)
+
+    def construct(self) -> None:
+        square = Square()
+        self.add(square)
+        self.play(square.animate.shift(RIGHT), run_time=0.5)
+
+
+class EqualScenesDeclared(EqualScenes):
+    """:class:`EqualScenes` with its square declared with stepped timing."""
+
+    def construct(self) -> None:
+        square = Square()
+        self.add(square)
+        set_timing(square, SLOW)
+        self.play(square.animate(rate_func=linear).shift(RIGHT), run_time=0.5)
+        self.wait(0.25)
 
 
 # Refused

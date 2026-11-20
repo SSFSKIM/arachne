@@ -61,7 +61,7 @@ import numpy as np
 
 from .clock import TICK_DT, TICK_RATE, frames_in, ticks_in
 from .events import EventPlan
-from .hooks import _alpha, animate, update_mobjects, update_self
+from .hooks import _alpha, animate, before_animations, update_mobjects, update_self
 from .reference import BRUTE_FORCE, BruteForce
 from .ticking import skipping
 
@@ -187,6 +187,7 @@ def _events_at_end(run: PlayRun, plan: EventPlan) -> None:
     end = run.requested_end
     run.set_clock(end)
     plan.begin_instant(end)
+    before_animations(run.scene)
     local = end - run.start
     for animation in run.scene.animations or []:
         animation.interpolate(_alpha(local, animation.run_time))

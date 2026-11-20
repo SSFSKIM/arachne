@@ -41,13 +41,30 @@ installed a state becomes true (only what was written: a held value left in
 place is not a write); the rigs of the family are settled on true; then, if
 the illustration entered the scene, its family changed members, or the
 instant crossed a boundary ``k / r``, shown becomes true; shown is
-installed, with the boil of the instant's boil step added. When a play ends
-the restorer installs true, so the scene's code and the next play's
-animations start from what is true; at a play's first instant the clock
-then installs shown again. So at any frame rate the drawing on display at
-``t`` is true as it was at the last boundary at or before ``t`` (or at the
-instant the illustration entered the scene, or changed members, if that is
-later): a function of the instant.
+installed, with the boil of the instant's boil step added.
+
+Every writer writes onto what is true, and reads it. Before a play's
+animations write, at each evaluated instant and as the play ends, the
+clock puts back what is true in every family in the scene (it registers
+itself with :func:`~arachne.timeline.hooks.run_before_animations`); the
+animations, the mobjects' updaters, the scene drivers and the pose settle
+then write onto it, and the hold tells what they wrote from what is true
+by object identity. Writing the value that is true, whatever object it is
+(a small number, which Python shares), changes nothing, so no write is
+lost, of any type, though the drawing on display holds the same value.
+
+When a play ends the restorer installs true, so the scene's code and the
+next play's animations start from what is true; at a play's first instant
+the clock then installs shown again. So at any frame rate the drawing on
+display at ``t`` is true as it was at the last boundary at or before ``t``
+(or at the instant the illustration entered the scene, or changed
+members, if that is later): a function of the instant.
+
+A scene with the clock ticks every play: the clock is a scene updater,
+and a scene updater makes a play ticked
+(:func:`arachne.timeline.admission.admit`), so no play of it is drawn
+from an earlier capture by interpolating its animations, which would run
+no clock.
 
 An off-grid play end keeps the drawing on display until the next boundary,
 inside whatever play or wait holds it; if the scene ends first, no
@@ -83,15 +100,20 @@ families that share a member, at the declaration or once a member joins a
 second, are a plain ``ValueError``.
 
 - ``timing.updater``: a scene's own updater on a member of a declared
-  family (the hold needs writers that write whole values, and a scene's
-  updater may build on the drawing on display); an animation on a member
-  that is not one of the engine's classes, or is ``UpdateFromFunc`` or
-  ``UpdateFromAlphaFunc``; an engine animation that moves its mobject from
-  where it stands (``MoveAlongPath``, ``PhaseFlow``,
-  ``MaintainPositionRelativeTo``), which between two drawings is the drawing
-  on display; a ``Succession``'s part on a declared family that begins in
-  the middle of a play after a part that does not animate that family (only
-  that part's end restores what is true before the next begins); a member
+  family (the hold vouches only for writers it knows write whole values,
+  and a scene's updater may write part of one, or keep state of its own
+  from one instant to the next); an animation on a member that is not one
+  of the engine's classes, or is ``UpdateFromFunc`` or
+  ``UpdateFromAlphaFunc``, for the same reason; an engine animation that
+  moves its mobject from where it stands (``MoveAlongPath``, ``PhaseFlow``,
+  ``MaintainPositionRelativeTo``), which writes a change to what it finds,
+  not a whole value of its own inputs: it now finds what is true, but no
+  case under the hold proves it, so it stays refused; a ``Succession``'s
+  part on a declared family that begins in the middle of a play after a
+  part that does not restore that family: such a part begins in the
+  composition events, after the clock has put back what is true, but only
+  a part whose previous part's end restores what is true is proven under
+  the hold, so the others stay refused; a member
   whose updating the scene's code suspended, which keeps its restorer from
   running; an animation that takes a declared family out of the scene as
   the play ends without resuming its updating then (it does not suspend it,
@@ -124,7 +146,8 @@ object
 
 When the clock is registered it takes each found driver's updater out of
 the scene's updaters, and at the start of every instant, before its hold,
-calls the drivers in the order the scene registered them. :func:`drive`
+calls the drivers in the order the scene registered them, the families it
+holds holding what is true. :func:`drive`
 hands a driver made in a scene that already has a clock to the clock. A
 module that defines a driver registers its finder at import, without
 editing this one.
@@ -149,6 +172,7 @@ import numpy as np
 from .. import quantities
 from ..mobject.values import FrozenPoints, adopt
 from ..quantities import At, Quantity
+from ..timeline.hooks import run_before_animations
 from ..timeline.record import NodeState
 
 if TYPE_CHECKING:
@@ -473,13 +497,20 @@ _State = dict[int, tuple["Mobject", NodeState]]
 
 def _capture(members: list[Mobject], previous: _State | None = None) -> _State:
     """Each of ``members``' states now, by id: a previous state itself where
-    nothing changed.
+    nothing changed, and ``previous`` itself when nothing in the family did
+    (the same members, in its order, each in the state it held), so that a
+    family held still keeps one state.
     """
     captured: _State = {}
+    same = previous is not None and len(previous) == len(members)
     for member in members:
         before = previous.get(id(member)) if previous is not None else None
         state = NodeState.of(member, before[1] if before is not None else None)
+        if before is None or before[0] is not member or before[1] is not state:
+            same = False
         captured[id(member)] = (member, state)
+    if same and previous is not None and list(previous) == list(captured):
+        return previous
     return captured
 
 
@@ -870,8 +901,8 @@ def _check_animations(animations: Any, declared: dict[int, Illustration]) -> Non
     from ..animation.updaters.update import MaintainPositionRelativeTo, UpdateFromFunc
     from ..timeline.frozen import engine_class
 
-    # Engine animations that move their mobject from where it stands, which
-    # between two drawings is the drawing on display.
+    # Engine animations that move their mobject from where it stands: they
+    # write a change to what they find, not a whole value of their inputs.
     relative = (MoveAlongPath, PhaseFlow, MaintainPositionRelativeTo)
     for animation in _animation_nodes(animations):
         if isinstance(animation, Succession):
@@ -900,9 +931,9 @@ def _check_animations(animations: Any, declared: dict[int, Illustration]) -> Non
             _refuse(
                 "timing.updater",
                 f"the animation {kind} moves the family declared with stepped"
-                f" timing on a {root} from where it stands, which between two"
-                " drawings is the drawing on display: the engine can hold only"
-                " animations that write whole values",
+                f" timing on a {root} from where it stands, writing a change to"
+                " what it finds rather than a whole value of its own inputs: the"
+                " engine can hold only animations that write whole values",
                 kind="animation",
                 name=kind,
             )
@@ -980,7 +1011,10 @@ def _check_removals(animations: Any, declared: dict[int, Illustration]) -> None:
 def _check_parts(succession: Succession, declared: dict[int, Illustration]) -> None:
     """Refuse a part of ``succession`` that begins in the middle of the
     play and animates a declared family the part before it does not
-    restore: it would begin from the drawing on display.
+    restore. It begins in the composition events, after the clock has put
+    back what is true; the hold is proven only for a part that begins as
+    the part before it ends restoring what is true, so the others stay
+    refused.
     """
     parts = list(succession.animations)
     for before, part in zip(parts, parts[1:], strict=False):
@@ -993,8 +1027,9 @@ def _check_parts(succession: Succession, declared: dict[int, Illustration]) -> N
                 f"the {kind}'s part {type(part).__name__} animates the family"
                 f" declared with stepped timing on a {type(touched.root).__name__}"
                 f" and begins in the middle of the play, after a"
-                f" {type(before).__name__} that does not animate that family: it"
-                " would begin from the drawing on display",
+                f" {type(before).__name__} that does not restore that family: the"
+                " engine holds a part that begins in the middle of a play only"
+                " after a part whose end restores what is true",
                 kind="animation",
                 name=kind,
             )
@@ -1072,6 +1107,16 @@ class TimingClock:
     def arms(self, mobject: Mobject) -> bool:
         """Whether ``mobject`` holds the restorer this clock gave it."""
         return self._armed.get(id(mobject)) is mobject
+
+    def put_back_true(self) -> None:
+        """Before the play's animations write, at each instant and as the
+        play ends: have every family in the scene hold what is true, so
+        that every writer writes onto it and reads it
+        (:func:`~arachne.timeline.hooks.run_before_animations`).
+        """
+        for illustration in self.illustrations:
+            if illustration.present:
+                illustration.restore()
 
     def end_play(self) -> None:
         """A play's end: have every family in the scene hold what is true,
@@ -1151,10 +1196,13 @@ class TimingClock:
 
     def _hold(self, scene: Scene) -> None:
         self._last_in(scene)
-        for driver in self.drivers:
-            driver()
         from .motion import pose_settle
 
+        # The scene's animations, its mobjects' updaters, and now its
+        # drivers and its pose settle write onto what is true: the clock put
+        # it back before the animations wrote (:meth:`put_back_true`).
+        for driver in self.drivers:
+            driver()
         settle = pose_settle(scene)
         posed: frozenset[int] = frozenset()
         if settle is not None:
@@ -1260,17 +1308,53 @@ def _shared(root: Mobject, other: Mobject) -> ValueError:
     )
 
 
-#: Each scene's clock, by the scene, both held weakly: the scene owns its
-#: clock, through the scene updater it runs as.
-_CLOCKS: weakref.WeakKeyDictionary[Scene, weakref.ref[TimingClock]] = (
-    weakref.WeakKeyDictionary()
-)
+#: Each scene's clock, by the scene's id, with the scene and the execution
+#: it was made in (the scene's recorder), all held weakly: the scene owns
+#: its clock, through the scene updater it runs as. Kept by identity, so a
+#: scene's own hash or equality is never asked, and an entry answers only
+#: for its very scene in that execution: a scene executed again in place
+#: (made anew on the same object) has no clock until it declares again.
+#: An entry goes with its scene.
+_CLOCKS: dict[
+    int, tuple[weakref.ref[Scene], weakref.ref[Any], weakref.ref[TimingClock]]
+] = {}
 
 
 def clock_of(scene: Scene) -> TimingClock | None:
-    """``scene``'s clock, or ``None`` before its first declaration."""
-    held = _CLOCKS.get(scene)
-    return held() if held is not None else None
+    """``scene``'s clock in its current execution, or ``None`` before its
+    first declaration there.
+    """
+    held = _CLOCKS.get(id(scene))
+    if held is None or held[0]() is not scene:
+        return None
+    if held[1]() is not scene.__dict__.get("_arachne_timeline"):
+        return None
+    return held[2]()
+
+
+def _keep_clock(scene: Scene, clock: TimingClock) -> None:
+    key = id(scene)
+    held = _CLOCKS.get(key)
+    if held is None or held[0]() is not scene:
+        weakref.finalize(scene, _forget_clock, key)
+    execution = weakref.ref(scene._arachne_timeline)
+    _CLOCKS[key] = (weakref.ref(scene), execution, weakref.ref(clock))
+
+
+def _forget_clock(key: int) -> None:
+    held = _CLOCKS.get(key)
+    if held is not None and held[0]() is None:
+        del _CLOCKS[key]
+
+
+def _put_back_true(scene: Scene) -> None:
+    """Before ``scene``'s animations write: its clock puts back what is
+    true. A plain function, so the hook's registry holds nothing of the
+    scene.
+    """
+    clock = clock_of(scene)
+    if clock is not None:
+        clock.put_back_true()
 
 
 def _running_scene() -> Scene | None:
@@ -1308,6 +1392,7 @@ def set_timing(
         # Checked first, so a refused declaration leaves the scene as it was.
         clock.check(scene, root)
         clock.take_over(scene)
-        _CLOCKS[scene] = weakref.ref(clock)
+        _keep_clock(scene, clock)
+        run_before_animations(scene, _put_back_true)
         scene.add_updater(clock.updater)
     clock.declare(scene, root, timing)
