@@ -15,6 +15,7 @@ and stores nothing.
 from __future__ import annotations
 
 __all__ = [
+    "DEPENDENCIES",
     "Capture",
     "Identity",
     "Marker",
@@ -56,6 +57,13 @@ if TYPE_CHECKING:
     from .recorder import Bridge
     from .state import State
     from .ticking import TickPlan
+
+#: The attribute of a mobject holding its capture dependencies: objects it
+#: draws only through itself (a mask, the content of a window), which need
+#: not be in the scene. Every capture that reaches the mobject records them
+#: too, as it records its submobjects, and walks from them as from any node
+#: (:func:`dependencies`); nothing paints them on their own.
+DEPENDENCIES = "_capture_dependencies"
 
 #: How many decimals :meth:`PlayRecord.sample_keys` compares numbers to: a
 #: callback stepping skips computes the same values along another float path
@@ -127,6 +135,16 @@ class NodeState:
         updaters = own.get("updaters")
         if updaters is not None:
             updaters[:] = self.updaters
+
+
+def dependencies(state: NodeState) -> tuple[Mobject, ...]:
+    """The capture dependencies a mobject holds in ``state``
+    (:data:`DEPENDENCIES`): ``()`` for nearly every mobject.
+    """
+    if DEPENDENCIES not in state.keys:
+        return ()
+    found: tuple[Mobject, ...] = state.get(DEPENDENCIES)
+    return found
 
 
 class _Node:
@@ -735,6 +753,7 @@ class Record:
                 if names is None:
                     names = draw_names(scene.renderer.camera)
                 self._entry_refusal = draw_member_refusal(names, mob, classes)
+            stack.extend(reversed(dependencies(state)))
             stack.extend(reversed(state.submobjects))
         capture = Capture(
             seq, instant, kind, roots, foreground, moving, updaters, camera, until
@@ -826,7 +845,8 @@ class Record:
         self, capture: Capture, roots: Iterable[Mobject]
     ) -> Iterator[tuple[Mobject, NodeState]]:
         """The nodes reachable from ``roots`` at ``capture``, depth first,
-        each once, with their states there.
+        each once, with their states there: through submobjects, and through
+        capture dependencies, each after its holder's family.
         """
         seen: set[int] = set()
         stack = list(roots)
@@ -840,6 +860,7 @@ class Record:
             if state is None:
                 continue
             yield mob, state
+            stack.extend(reversed(dependencies(state)))
             stack.extend(reversed(state.submobjects))
 
     def play_at(self, t: Fraction) -> PlayRecord | None:

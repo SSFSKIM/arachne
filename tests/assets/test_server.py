@@ -426,3 +426,19 @@ def test_a_stored_session_whose_code_found_an_unknown_anchor_refuses_a_render(
     assert opened == []
     assert server.session is None
     server.handle("close", {})
+
+
+def test_a_stored_session_whose_code_found_an_unknown_anchor_refuses_a_frame(
+    tmp_path, monkeypatch
+):
+    server, opened = _stored_render(tmp_path, LATE_ANCHOR, monkeypatch)
+    line = _line_of(tmp_path / "stage.py", "# @anchor")
+    with pytest.raises(RpcError) as answer:
+        server.handle("frame", {"t": 0.25, "path": str(tmp_path / "frame.png")})
+    assert answer.value.code == REFUSED
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not (tmp_path / "frame.png").exists()
+    # Refused from what the store kept: the scene was not executed for it.
+    assert opened == []
+    assert server.session is None
+    server.handle("close", {})

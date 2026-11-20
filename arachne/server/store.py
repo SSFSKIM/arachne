@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING, Any
 
 from .._config import config as global_config
 from .._config import tempconfig
+from ..compose import session as compose_session
 from ..timeline.execution import ExecutionSummary
 from ..timeline.inputs import file_digests, source_files
 
@@ -228,7 +229,12 @@ class Manifest:
     real path, ``scene`` and ``config``), the files it came from (``files``,
     its source, and ``reads``, the files its execution read, each as
     ``(path relative to the scene's directory, sha256)``), its execution's
-    ``identity``, and ``record``, the record's form ``open`` answered.
+    ``identity``, ``record``, the record's form ``open`` answered, and
+    ``route``, the renderer its record chose (``"cpu"`` or ``"gpu"``), with
+    ``gpu``, the form of a ``gpu`` route (:meth:`.compose.session.Route.form`):
+    a frame drawn on the GPU is never kept, since the store's key names no
+    device, and what a ``gpu``-route scene can't do on this host is refused
+    from the manifest, without executing the scene.
     ``refuses`` is the finding its scene's code recorded that refuses
     drawing it, as the server answers a finding (``None``: none, and what a
     manifest kept without it says).
@@ -243,6 +249,8 @@ class Manifest:
     identity: dict[str, Any]
     record: dict[str, Any]
     refuses: dict[str, Any] | None = None
+    route: str = "cpu"
+    gpu: dict[str, Any] | None = None
 
     @property
     def answers_key(self) -> str:
@@ -280,6 +288,8 @@ class Manifest:
             "identity": self.identity,
             "record": self.record,
             "refuses": self.refuses,
+            "route": self.route,
+            "gpu": self.gpu,
         }
 
     @classmethod
@@ -294,6 +304,8 @@ class Manifest:
             identity=data["identity"],
             record=data["record"],
             refuses=data.get("refuses"),
+            route=data["route"],
+            gpu=data["gpu"],
         )
 
 
@@ -363,6 +375,8 @@ class Store:
             identity=identity_form(session.record.identity),
             record=record,
             refuses=refuses,
+            route=session.route,
+            gpu=compose_session.route_of(session).form(),
         )
         self._write(self._manifest_path(manifest.key), manifest.to_json())
         return manifest

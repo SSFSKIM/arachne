@@ -18,7 +18,14 @@ under it; it is never an entry of a map or of a changed set.
 Cairo only: on another draw path, under a camera that draws into displays
 (a ``MultiCamera``), or for a scene or an instant the record cannot draw,
 every call raises :class:`ReplayUnsupported`, and so does making a
-:class:`SessionFrames` or :class:`ReplayMaps` of such a session.
+:class:`SessionFrames` or :class:`ReplayMaps` of such a session. A frame on
+the ``gpu`` route is drawn again as the session draws it, its runs by Cairo.
+
+An object drawn only through another, as its capture dependency (a layer's
+mask, a window's content; :data:`~.record.DEPENDENCIES`), is no drawable: it
+is in no map and in no changed set, and asking for it by id raises
+:class:`ReplayUnsupported`. Its versions count as its holder's: when it
+changes, every drawable under its holder has changed.
 """
 
 from __future__ import annotations
@@ -55,14 +62,14 @@ from arachne.utils.family import extract_mobject_family_members
 
 from .clock import exact, frames_in
 from .draw import CameraExtras, _constant, _same_value
-from .record import SAMPLE_DECIMALS, NodeState, content_fields
+from .record import SAMPLE_DECIMALS, NodeState, content_fields, dependencies
 from .restore import Unrestorable
 from .routes import RecordRefused, _resolve
 
 if TYPE_CHECKING:
     from arachne.session import Session
 
-    from .record import Capture
+    from .record import Capture, Record
     from .routes import _Resolved
 
 
@@ -217,6 +224,11 @@ class _Filter:
         self.seen = _Seen()
         #: The tree's members the asked ids name, found at the first capture.
         self._named: list[Mobject] | None = None
+        #: The nodes the capture dependencies of each member's holders
+        #: reach, by member, found at the first capture.
+        self._depends: dict[int, list[Mobject]] = {}
+        if self.ids:
+            _refuse_dependencies(self.record, self.capture, self.ids)
 
     def __call__(
         self, handed: Sequence[Mobject], leaves: list[Mobject]
@@ -279,6 +291,7 @@ class _Filter:
                         self.seen.groups.add(name)
         self._named = named
         if self.watch:
+            self._depends = _held_through(self.record, self.capture)
             camera = self.camera
             light = getattr(camera, "light_source", None)
             self.seen.camera = _CameraView(
@@ -324,6 +337,8 @@ class _Filter:
                 None if origin.source_line is None else str(origin.source_line)
             )
             mobs = [owner, *(leaf for leaf in painted[key] if leaf is not owner)]
+            # What it is drawn through changes it too.
+            mobs.extend(self._depends.get(key, ()))
             seen.versions[name] = self._states(mobs)
             evaluated = self._evaluated_key(mobs)
             if evaluated is not None:
@@ -345,6 +360,70 @@ class _Filter:
         ):
             return None
         return _content_key(NodeState.of(mob) for mob in mobs)
+
+
+def _holders(record: Record, capture: Capture) -> Iterator[tuple[Mobject, Mobject]]:
+    """Each member of the frame's tree at ``capture`` under a holder of
+    capture dependencies, with that holder, nearest first.
+    """
+    stack: list[tuple[Mobject, tuple[Mobject, ...]]] = [
+        (mob, ()) for mob in reversed([*capture.draw_list(), *capture.moving])
+    ]
+    seen: set[int] = set()
+    while stack:
+        mob, above = stack.pop()
+        if id(mob) in seen:
+            continue
+        seen.add(id(mob))
+        state = record.node_state(mob, capture)
+        if state is None:
+            continue
+        if dependencies(state):
+            above = (mob, *above)
+        for holder in above:
+            yield mob, holder
+        stack.extend((sub, above) for sub in reversed(state.submobjects))
+
+
+def _reached(record: Record, capture: Capture, holder: Mobject) -> list[Mobject]:
+    """The nodes ``holder``'s capture dependencies reach at ``capture``."""
+    state = record.node_state(holder, capture)
+    assert state is not None
+    return [mob for mob, _ in record._walk(capture, dependencies(state))]
+
+
+def _held_through(record: Record, capture: Capture) -> dict[int, list[Mobject]]:
+    """For each member of the frame's tree under a holder of capture
+    dependencies, the nodes they reach, by the member's id.
+    """
+    reached: dict[int, list[Mobject]] = {}
+    found: dict[int, list[Mobject]] = {}
+    for mob, holder in _holders(record, capture):
+        if id(holder) not in reached:
+            reached[id(holder)] = _reached(record, capture, holder)
+        found.setdefault(id(mob), []).extend(reached[id(holder)])
+    return found
+
+
+def _refuse_dependencies(
+    record: Record, capture: Capture, ids: Collection[str]
+) -> None:
+    """Raise :class:`ReplayUnsupported` for an id of ``ids`` naming a node
+    drawn only through its holder, as a capture dependency.
+    """
+    done: set[int] = set()
+    for _, holder in _holders(record, capture):
+        if id(holder) in done:
+            continue
+        done.add(id(holder))
+        for mob in _reached(record, capture, holder):
+            name = record.origin(mob).id
+            if name in ids:
+                raise ReplayUnsupported(
+                    f"{name} is drawn only through {record.origin(holder).id}, as"
+                    " what its layer reads (a mask, or a window's content): it has"
+                    " no footprint of its own and is not left out alone"
+                )
 
 
 def _paints_itself(mob: Mobject) -> bool:
