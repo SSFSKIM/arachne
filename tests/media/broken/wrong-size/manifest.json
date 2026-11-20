@@ -1,0 +1,38 @@
+{
+  "manifest_version": "1.1",
+  "name": "wrong-size",
+  "version": 1,
+  "kind": "clip",
+  "requires": [],
+  "size": {"width": 1, "height": 1},
+  "media": {
+    "pixels": [16, 16],
+    "alpha": true,
+    "rate": [12, 1],
+    "frames": [
+      {
+        "file": "frames/0000.png",
+        "digest": "sha256:854498055527b3f83b5a2d7d8fa2429c4d5e0ac72542087867c2b5ae65c9a073"
+      },
+      {
+        "file": "frames/0001.png",
+        "digest": "sha256:cf7df9479458f10e971317809d198b406981441e984d2726daef4b6cf31842d2"
+      }
+    ]
+  },
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:628d924574be5d594741d52507887fad1c055bd458221290532121df8ab8d437",
+    "results": [
+      {"name": "frames_exact", "pass": true},
+      {"name": "frames_uniform", "pass": false}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

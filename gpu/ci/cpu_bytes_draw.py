@@ -1,6 +1,7 @@
-"""Draws ``cpu_bytes_scenes`` at 480 x 270 through the render path and through a session's
-``frame``, and writes the sha256 of every raw frame: as it reaches the file writer for a render,
-as the session returns it for a frame. Fails if a scene yields no frame from a path.
+"""Draws ``cpu_bytes_scenes``, then ``cpu_bytes_added`` (scenes that exist only at the head), at
+480 x 270 through the render path and through a session's ``frame``, and writes the sha256 of every
+raw frame: as it reaches the file writer for a render, as the session returns it for a frame. Fails
+if a scene yields no frame from a path.
 
 ``python cpu_bytes_draw.py <roots> <digests.json>``, run from the repository's root with the
 interpreter of the environment drawn in. ``<roots>`` gets this run's media, partial movies and
@@ -33,6 +34,7 @@ def main() -> None:
     os.environ["ARACHNE_STORE"] = str(roots / "store")
     sys.path[:0] = [str(REPOSITORY), str(HERE)]
 
+    import cpu_bytes_added as added
     import cpu_bytes_scenes as scenes
     import numpy as np
 
@@ -55,7 +57,9 @@ def main() -> None:
     SceneFileWriter.save_image = hashed_save_image
 
     digests: dict[str, list] = {}
-    for scene in scenes.SCENES:
+    listed = [(scenes, scene) for scene in scenes.SCENES]
+    listed += [(added, scene) for scene in added.SCENES]
+    for module, scene in listed:
         name = scene.__name__
         config = {
             "pixel_width": 480,
@@ -68,7 +72,7 @@ def main() -> None:
         digests[f"render {name}"] = written[:]
         written.clear()
 
-        session = Session.open(Path(scenes.__file__), name, config=config)
+        session = Session.open(Path(module.__file__), name, config=config)
         try:
             digests[f"frame {name}"] = [
                 [digest(np.asarray(session.frame(t))), 1] for t in scenes.INSTANTS
