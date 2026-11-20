@@ -28,7 +28,8 @@ setup:
   install: pipx install uv==0.12.3 && uv sync --all-extras --locked
 gates:
   - name: tests-py312
-    run: uv run python -m pytest --ignore=tests/test_docs_examples
+    # Spike branch only (do not merge): the removal-instant spike alone, its prints shown.
+    run: uv run python -m pytest tests/sim/test_removal_spike.py -s -v -o addopts=""
     env: {UV_PYTHON: "3.12"}
     timeout: 45
   # Ubuntu 24.04's system Python. Code positions differ between 3.12 patch releases (3.12.3
