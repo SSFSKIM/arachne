@@ -398,15 +398,18 @@ def _content_key(value: Any, keying: _Keying) -> bytes:
         return each(tuple.__iter__(value))
     if isinstance(value, list):
         return each(list.__iter__(value))
-    if isinstance(value, (dict, set, frozenset)):
+    if isinstance(value, (dict, types.MappingProxyType, set, frozenset)):
         # A dict in the order it holds its items, which code iterating it
         # reads (a colour map applied in order); a set, which has no order a
         # program can rely on, in the order of its parts' keys. Each part
-        # with the mobjects it refers to.
+        # with the mobjects it refers to. A read-only view of a mapping (an
+        # asset's manifest) is keyed as the mapping it shows.
         pairs: Any
         parts: Any
         if isinstance(value, dict):
             ordered, pairs = True, dict.items(value)
+        elif isinstance(value, types.MappingProxyType):
+            ordered, pairs = True, types.MappingProxyType.items(value)
         else:
             if isinstance(value, set):
                 parts = set.__iter__(value)
