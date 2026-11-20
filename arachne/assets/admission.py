@@ -28,6 +28,16 @@ absence of paint, never its opacity. Three checks are run over them:
 - ``anchor_off_part``: an anchor whose point lies outside its part's mask
   grown by :data:`REACH` pixels, at any pose, the default included.
 
+A media asset (a still, a clip or a sprite) is admitted by its frames, not
+its geometry, with two checks:
+
+- ``frames_exact``: every frame file is in a form the engine decodes exactly
+  (:data:`~arachne.mobject.media.frames.ADMITTED`, which loading holds too)
+  and decodes, twice, to the frame digest its manifest lists;
+- ``frames_uniform``: every frame is the manifest's ``media.pixels`` in
+  size, and, where the manifest says the asset has no alpha, no pixel of it
+  is less than opaque.
+
 The tool writes nothing but, asked to, the record of what it found into the
 asset's manifest (:func:`write_checks`): the tool version
 :data:`~.reader.TOOL`, the asset's digest, and each check's result by name.
@@ -84,8 +94,8 @@ from ..mobject.types.vectorized_mobject import VMobject
 from ..utils.color import BLACK, WHITE
 from .anchor import attachments
 from .joins import ENGINE_LIMIT
-from .manifest import MANIFEST, PartSpec, read_json
-from .reader import CHECKS, TOOL, Asset, read_asset
+from .manifest import MANIFEST, MEDIA_KINDS, Media, PartSpec, normalised, read_json
+from .reader import TOOL, Asset, checks_for, read_asset, read_file
 from .rig import Rig, unadmitted_rig
 
 #: The longer side of every mask, in pixels.
@@ -124,7 +134,8 @@ class CheckResult:
     default pose's; pixels between a part and its parent, for the parts that
     meet their parents at the default pose; pixels between an anchor and its
     part), and the ``pose`` it was taken at; ``failure``, what is wrong
-    where it failed.
+    where it failed. A frame check's ``worst`` is how many frames fail it,
+    and its ``pose`` the first failing frame's file.
     """
 
     name: str
@@ -145,8 +156,8 @@ class CheckResult:
 @dataclass(frozen=True)
 class AdmissionReport:
     """What :func:`admit` found of an asset: its name, version, kind and
-    digest, and one :class:`CheckResult` per check of
-    :data:`~.reader.CHECKS`, in that order.
+    digest, and one :class:`CheckResult` per check of its kind's check set
+    (:func:`~.reader.checks_for`), in that order.
     """
 
     name: str
@@ -193,13 +204,22 @@ def _by_name(result: CheckResult) -> str:
 def admit(asset: Asset | str | os.PathLike[str]) -> AdmissionReport:
     """Draw ``asset`` (an :class:`~.reader.Asset`, or a reference
     :func:`~.reader.load_asset` takes, read without asking for its
-    admission) at every pose the module names, and run the three checks.
-    What makes the asset unreadable is raised as loading raises it. The
-    poses are drawn one at a time: only the default pose's masks and the
-    current pose's are held.
+    admission) at every pose the module names, and run the three checks; or
+    decode the frames of a media asset and run its two. What makes the
+    asset unreadable is raised as loading raises it. The poses are drawn one
+    at a time: only the default pose's masks and the current pose's are
+    held.
     """
     if not isinstance(asset, Asset):
         asset = read_asset(asset)
+    manifest = asset.manifest
+    if manifest.kind in MEDIA_KINDS:
+        assert manifest.media is not None
+        results = _frame_checks(asset, manifest.media)
+        assert tuple(result.name for result in results) == checks_for(manifest)
+        return AdmissionReport(
+            manifest.name, manifest.version, manifest.kind, asset.digest, results
+        )
     rig = unadmitted_rig(asset)
     poses = list(_poses(rig))
     grid = _Grid(rig, poses)
@@ -210,8 +230,7 @@ def admit(asset: Asset | str | os.PathLike[str]) -> AdmissionReport:
         for check in checks:
             check.see(pose, masks)
     results = tuple(check.result() for check in checks)
-    assert tuple(result.name for result in results) == CHECKS
-    manifest = asset.manifest
+    assert tuple(result.name for result in results) == checks_for(manifest)
     return AdmissionReport(
         manifest.name, manifest.version, manifest.kind, asset.digest, results
     )
@@ -565,3 +584,71 @@ class _Anchors:
             self.where,
             self.failure,
         )
+
+
+# The frame checks
+
+
+def _frame_checks(asset: Asset, media: Media) -> tuple[CheckResult, ...]:
+    """``frames_exact`` and ``frames_uniform`` over every frame of the media
+    asset ``asset``, each frame file decoded twice. A check's ``worst`` is
+    how many frames fail it, and its ``pose`` the first failing frame's file.
+    """
+    from ..mobject.media.frames import EXPECTED_FORM, decode, form_of, frame_digest
+
+    inexact: list[tuple[str, str]] = []
+    unlike: list[tuple[str, str]] = []
+    width, height = media.pixels
+    for frame in media.frames:
+        data = read_file(asset.directory, normalised(frame.file), asset.name)
+        found = form_of(data)
+        if isinstance(found, str):
+            inexact.append(
+                (frame.file, f"{frame.file} is {found}, and not {EXPECTED_FORM}")
+            )
+            continue
+        try:
+            pixels, again = decode(data), decode(data)
+        except ValueError as error:
+            inexact.append((frame.file, f"{frame.file} is {error}"))
+            continue
+        digests = {frame_digest(pixels), frame_digest(again)}
+        if digests != {frame.digest}:
+            inexact.append(
+                (
+                    frame.file,
+                    f"{frame.file} decodes to {' and '.join(sorted(digests))}, and"
+                    f" its listed digest is {frame.digest}",
+                )
+            )
+        rows, columns = pixels.shape[:2]
+        if (columns, rows) != (width, height):
+            unlike.append(
+                (
+                    frame.file,
+                    f"{frame.file} is {columns} x {rows} pixels, and the manifest"
+                    f" says {width} x {height}",
+                )
+            )
+        elif not media.alpha and int(pixels[:, :, 3].min()) < 255:
+            unlike.append(
+                (
+                    frame.file,
+                    f"{frame.file} has a pixel of alpha {int(pixels[:, :, 3].min())},"
+                    " and the manifest says the asset has no alpha",
+                )
+            )
+    return (
+        _frames_result("frames_exact", inexact, len(media.frames)),
+        _frames_result("frames_uniform", unlike, len(media.frames)),
+    )
+
+
+def _frames_result(
+    name: str, failing: list[tuple[str, str]], frames: int
+) -> CheckResult:
+    if not failing:
+        return CheckResult(name, True, 0, None)
+    first_file, first = failing[0]
+    more = f" ({len(failing)} of {frames} frames fail)" if len(failing) > 1 else ""
+    return CheckResult(name, False, len(failing), first_file, first + more)

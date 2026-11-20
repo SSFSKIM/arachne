@@ -351,6 +351,64 @@ def test_tree_features_by_package() -> None:
     }
 
 
+def vendored_metadata(
+    vendor: Path, **override: tuple[str | None, str]
+) -> dict[str, Any]:
+    packages = []
+    for name, directory in tree_check.VENDORED.items():
+        source, path = override.get(
+            name, (None, str(vendor / directory / "Cargo.toml"))
+        )
+        packages.append({"name": name, "source": source, "manifest_path": path})
+    return {"packages": packages}
+
+
+def test_tree_vendored_crates_from_vendor_pass() -> None:
+    vendor = Path("/w/sim/vendor")
+    lock = '[[package]]\nname = "rapier2d"\nversion = "0.36.1"\n'
+    assert tree_check.check_vendored(vendored_metadata(vendor), lock, vendor) == []
+
+
+def test_tree_a_vendored_crate_from_elsewhere_fails() -> None:
+    vendor = Path("/w/sim/vendor")
+    git = "git+https://github.com/dimforge/parry?rev=dbcce40#dbcce40"
+    elsewhere = vendored_metadata(
+        vendor,
+        parry2d=(git, "/home/.cargo/git/checkouts/parry/crates/parry2d/Cargo.toml"),
+        glamx=(None, "/w/other/glamx/Cargo.toml"),
+    )
+    problems = tree_check.check_vendored(elsewhere, "", vendor)
+    assert len(problems) == 2, problems
+    assert problems[0].startswith("parry2d resolves from git+")
+    assert problems[1].startswith("glamx is built from /w/other/glamx/Cargo.toml")
+
+
+def test_tree_a_git_source_in_the_lock_fails() -> None:
+    vendor = Path("/w/sim/vendor")
+    lock = (
+        '[[package]]\nname = "glamx"\nversion = "0.3.1"\n'
+        'source = "git+https://github.com/dimforge/glamx?rev=78c97db#78c97db"\n'
+    )
+    problems = tree_check.check_vendored(vendored_metadata(vendor), lock, vendor)
+    assert problems == [
+        "Cargo.lock holds a git source: glamx "
+        "git+https://github.com/dimforge/glamx?rev=78c97db#78c97db"
+    ]
+
+
+def test_tree_a_vendored_crate_missing_or_twice_fails() -> None:
+    vendor = Path("/w/sim/vendor")
+    metadata = vendored_metadata(vendor)
+    metadata["packages"] = [
+        p for p in metadata["packages"] if p["name"] != "rapier3d"
+    ] + [{"name": "glamx", "source": None, "manifest_path": "/x/Cargo.toml"}]
+    problems = tree_check.check_vendored(metadata, "", vendor)
+    assert problems == [
+        "rapier3d: 0 packages in the tree, not 1",
+        "glamx: 2 packages in the tree, not 1",
+    ]
+
+
 if __name__ == "__main__":
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

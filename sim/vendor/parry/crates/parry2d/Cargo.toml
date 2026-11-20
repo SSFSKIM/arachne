@@ -1,0 +1,93 @@
+# Modified by the Arachne authors: this manifest is trimmed from upstream's at the commit
+# sim/vendor/VENDORED.md names, to what Arachne's build compiles (that file lists the changes).
+
+[package]
+name = "parry2d"
+version.workspace = true
+authors.workspace = true
+description = "2 dimensional collision detection library in Rust."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[lints]
+workspace = true
+
+[features]
+default = ["required-features", "std", "spade"]
+required-features = ["dim2", "f32"]
+std = [
+    "alloc",
+    "glamx/std",
+    "slab",
+    "simba/std",
+    "arrayvec/std",
+    "spade?/std",
+    "thiserror/std",
+    "ena",
+]
+dim2 = []
+f32 = []
+serde-serialize = [
+    "serde",
+    "serde_arrays",
+    "glamx/serde",
+    "arrayvec/serde",
+    "bitflags/serde",
+    "hashbrown?/serde",
+    "spade?/serde",
+]
+rkyv = ["dep:rkyv", "glamx/rkyv"]
+bytemuck-serialize = ["bytemuck", "glamx/bytemuck"]
+# Widens SIMD from 4 to 8 lanes (f32 only). Needs an AVX-enabled target to
+# emit 256-bit code.
+simd8 = []
+enhanced-determinism = ["simba/libm_force", "indexmap", "glamx/libm", "glamx/scalar-math"]
+parallel = ["rayon"]
+alloc = ["hashbrown", "smallvec", "downcast-rs", "glamx/approx"]
+spade = ["dep:spade", "alloc"]
+improved_fixed_point_support = []
+encase = [ "dep:encase", "glamx/encase" ]
+
+[lib]
+name = "parry2d"
+path = "../../src/lib.rs"
+required-features = ["required-features"]
+
+[dependencies]
+either = { workspace = true }
+bitflags = { workspace = true }
+downcast-rs = { workspace = true, optional = true }
+num-traits = { workspace = true }
+slab = { workspace = true, optional = true }
+arrayvec = { workspace = true }
+simba = { workspace = true, features = ["wide"] }
+glamx = { workspace = true, features = ["i32"] }
+approx = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_arrays = { workspace = true, optional = true }
+rkyv = { workspace = true, optional = true }
+num-derive = { workspace = true }
+indexmap = { workspace = true, optional = true }
+hashbrown = { workspace = true, optional = true }
+spade = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+ordered-float = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+ena = { workspace = true, optional = true }
+smallvec = { workspace = true, optional = true }
+foldhash = { workspace = true }
+encase = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["-Zunstable-options", "--generate-link-to-definition"]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]

@@ -10,13 +10,16 @@ from arachne import Square
 from arachne.routing import GPU_ONLY, Capability, declare, held, table, withdraw
 
 
-def test_the_rows_are_the_compositing_effects_and_a_layers_depth():
+def test_the_rows_are_the_compositing_effects_a_layers_depth_and_media():
     assert list(GPU_ONLY) == [
         "effect.blur",
         "effect.depth_of_field",
         "effect.soft_mask",
         "effect.window",
         "layer.depth",
+        "media.video",
+        "media.sprite",
+        "media.raster_part",
     ]
 
 

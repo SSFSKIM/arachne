@@ -233,3 +233,32 @@ def test_the_store_is_kept_under_the_native_core_too(monkeypatch):
     finally:
         store.engine_fingerprint.cache_clear()
     assert store.engine_fingerprint() == found
+
+
+def test_the_store_is_kept_under_the_simulation_extension_too(monkeypatch):
+    sim = importlib.util.find_spec("arachne_sim")
+    if sim is None:
+        assert store._sim_identity() == "absent"
+    else:
+        assert store._sim_identity().startswith("arachne-sim ")
+
+
+def test_a_store_filled_under_one_simulation_build_answers_nothing_under_another(
+    tmp_path, monkeypatch
+):
+    path = _write(tmp_path, "scene.py", READS_AT_LOAD)
+    (tmp_path / "size.txt").write_text("1")
+    params = {"file": str(path), "scene": "Input", "config": SMALL}
+    kept = (str(path.resolve()), "Input", SMALL)
+    store.engine_fingerprint.cache_clear()
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "_sim_identity", lambda: "arachne-sim 0.1.0\none")
+            _answered(params, "state_at", {"t": 0}, kept=True)
+            assert Store().manifest(*kept) is not None
+        store.engine_fingerprint.cache_clear()
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "_sim_identity", lambda: "arachne-sim 0.1.0\ntwo")
+            assert Store().manifest(*kept) is None
+    finally:
+        store.engine_fingerprint.cache_clear()

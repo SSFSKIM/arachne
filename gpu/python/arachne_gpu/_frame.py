@@ -31,14 +31,32 @@ class Quad:
 
 @dataclass(frozen=True)
 class Window:
-    """Another stack, ``frame``, composed at the frame's size and placed at four corners as a
-    :class:`Quad` is. Windows nest at most four deep. Its stack is drawn on 8-bit integers as any
-    frame is and its texels are copied, not filtered, so it rounds nothing.
+    """Another stack, ``frame``, composed as a frame of its own of ``size`` (width, height) pixels,
+    or of the size of the frame holding it when ``size`` is None, then placed at four corners as
+    a :class:`Quad` is. Its pictures and masks are of its size, and its effects run at its
+    size, so they stay inside it. Windows nest at most four deep, each with its own size. Inside
+    a sized window, a picture or mask of another size raises
+    :class:`~arachne_gpu.SizeMismatch`; with no size, every refusal is the one it was before
+    windows had sizes.
+
+    ``resampling`` is PIL's value: nearest (0) copies texels; a sized window at an axis-aligned
+    rectangle, and only there, may be placed by bilinear (2), which weights the four texels round
+    each pixel's centre in fixed point, times the area of the pixel's cell inside the rectangle,
+    so the edge is antialiased, nothing lands in a pixel the rectangle does not touch, and a
+    window moved by a fraction of a pixel moves by that fraction. Bilinear at other corners
+    raises :class:`~arachne_gpu.Unsupported`. At whole-pixel corners spanning exactly ``size``, both copy the frame texel for
+    texel.
+
+    Sizing a window shown at an axis-aligned rectangle is one rule: per axis, ``size`` is the
+    true rectangle's size rounded to the nearest whole pixel, ties half up, at least 1; the true
+    corners pass unchanged; resampling is nearest when the rectangle is integral and 1:1 with
+    ``size``, bilinear otherwise. Other quads keep the unsized window.
     """
 
     frame: Frame
     corners: Sequence[tuple[float, float]]
     resampling: int
+    size: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)

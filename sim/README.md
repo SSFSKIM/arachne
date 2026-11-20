@@ -6,24 +6,74 @@ per second, whose results are the same bytes on every machine of one architectur
 (`core/`): its own manifest, lock file, toolchain and clippy rules, and no dependency on
 `arachne-core` either way.
 
-At this stage the crate holds the pinned solver, the determinism probe and the checks; the Python
-binding comes next.
+A world is given bodies (with shapes: balls, boxes, capsules, convex hulls, and compounds of
+these), joints (pin, slide, weld, ball in 3D, rope, spring) and the engine's own force laws
+(uniform gravity, attraction by the inverse square, a damped spring between anchors, linear and
+quadratic drag, a constant force or torque, a motor on a joint), every number already in the stored
+type (`f32`). `advance_to(i)` computes its rows up to `i`, each one step of exactly 1/60 s, in order,
+the first time any is asked for; nothing takes a time step. Everything a world was given is kept
+as its **declaration bytes**, and what it computed as its **trace bytes**, the canonical bytes of the
+bake content its rows make (channels `pose` and `velocity`, event table `contact`), so two runs are
+compared byte for byte. An **open** world also feels forces its caller gives at each tick (`step`),
+which enter its declaration.
+
+Two integrators, named in a bake's identity: the solver, for contacts, joints and rotation; and
+velocity Verlet in 8 substeps per tick, for worlds of point masses (no shape, no joint: springs,
+orbits, N bodies, damped oscillators, projectiles), whose energy stays within 1% at the periods a
+lesson uses where the solver's, which holds an applied force through the tick, does not. The
+solver's semi-implicit Euler also drifts a projectile's energy at first order: under uniform
+gravity a body falls `g h t / 2` too far by time `t`, `h` its substep, about `g^2 h t / v0^2` of a
+launch's energy (1.2% over a one-second flight at 4 substeps, 12% over 10 s), and velocity
+Verlet is exact there but for rounding.
+
+What the numbers mean where the solver leaves a choice:
+
+- **Substeps.** The solver steps a world in 4 substeps per tick, and the bodies connected to a
+  joint (through joints and contacts, fixed bodies not connecting) in 128: each dynamic body a
+  joint joins asks for them, and the solver takes, per connected component, the most its bodies
+  ask. Its pass that removes its position corrections' velocity takes energy from a swinging
+  joint in proportion to the substep; at 4 a swing of 2 rad loses 15% of its energy in 10 s, at
+  128 under 1%, and a component with no joint keeps the cost of 4.
+- **A joint's frame** is one frame in the world as its bodies are posed when it is declared, at
+  the first anchor, its x axis along the joint's axis (given in the first body's frame, at any
+  length but zero), seen from each body. A pin's angle and a slide's offset (what limits and a
+  motor act on) are zero as declared: a slide's offset is its anchors' separation along the axis
+  less the separation they have when it is declared.
+- **A motor** takes force coefficients: its stiffness is a force (a torque, for a pin) per unit
+  of offset and its damping one per unit of rate, whatever the masses it drives (the solver's
+  force-based model, in the declaration's settings; its default scales them by mass).
+- **A spring force** acts along the line between its anchors, `k (|d| - rest) + c (dv . n)`, `d`
+  the second anchor's offset from the first, `n` its direction and `dv` their relative velocity;
+  at a rest length of 0 its elastic part is `k d`, which needs no direction. For a tick at which
+  the anchors coincide, where the line is undefined, it is zero.
+- **A contact** between two bodies begins at the first row, row 0 included, at which a shape of
+  each is at most the allowed linear error apart (touching or overlapping: 0.005 units, in the
+  declaration's settings), and ends at the first later row at which none is. It is found at each
+  row by the solver's geometric query, not read from its contact pairs, which hold pairs within
+  the prediction distance (0.02) and points computed before the step's motion. Two fixed bodies,
+  and two bodies a joint keeps from colliding, have none. The query looks at every pair of shapes
+  whose boxes overlap, so its cost grows with the square of the shapes.
 
 | Path | What it is |
 | --- | --- |
-| `Cargo.toml`, `Cargo.lock` | the solver pinned by exact version and commit, its features listed one by one |
+| `Cargo.toml`, `Cargo.lock` | the solver pinned by exact version, its features listed one by one, patched to the vendored sources |
+| `vendor/` | the solver's three corrected crates, as upstream wrote them (`vendor/VENDORED.md`) |
 | `rust-toolchain.toml` | the core's toolchain, 1.99.1 |
 | `clippy.toml` | the core's rules: no fused multiply-add, no platform transcendental function, in this crate's code |
+| `src/` | the world (`world.rs`), what it is given (`spec.rs`), its two encodings (`encode.rs`), the solver in each dimension (`solver.rs`, compiled as `two` and `three`), the point-mass integrator (`points.rs`) and the Python binding (`python.rs`) |
+| `python/arachne_sim/`, `pyproject.toml` | the Python package, the engine's `sim` extra; its `World` hands rows out as read-only arrays |
 | `examples/probe/` | the determinism probe (below) |
-| `tests/stepping.rs` | a world's bytes do not depend on how its steps are grouped, nor on a world before it |
+| `tests/` | the closed-form cases (`closed_forms.rs`), a world's bytes and refusals (`world.rs`), the probe's worlds in pieces (`stepping.rs`), the binding's tests (`python/`) |
 | `ci/` | the gates' scripts and the checks they run |
 
 The gates (`.github/ci-kit.yml`) run when `sim/` changes: `sim-lint` (format, clippy, the checks'
-own tests, the dependency tree, the census of run-time CPU detection, the probe's import list),
-`sim-test` (`cargo test --release --locked`), `sim-identity` (the probe built for `x86-64` and
-for `x86-64-v3`, run twice, against the output committed in `ci/probe-x86_64.txt`) and
-`sim-macos`. The workflow `sim-probe.yml` runs the probe on Linux x86-64, Windows x86-64 and macOS
-arm64 and compares the outputs.
+own tests, the dependency tree and the vendored sources' origin, the census of run-time CPU
+detection, the probe's import list), `sim-test` (`cargo test --release --locked`; each closed-form
+case prints its closed form, tolerance and measured value), `sim-identity` (the probe built for
+`x86-64` and for `x86-64-v3`, run twice, against the output committed in `ci/probe-x86_64.txt`),
+`sim-binding` (the wheel; its extension's import list and links; the binding's tests under Python
+3.12 and 3.14) and `sim-macos`. The workflow `sim-probe.yml` runs the probe on Linux x86-64, Windows
+x86-64 and macOS arm64 and compares the outputs; `sim-wheels.yml` builds the wheels.
 
 ## Determinism
 
@@ -39,10 +89,10 @@ Read on 2026-11-19, when rapier 0.36.1 (2026-10-10) was the newest release.
 
 | Crate | Version | Source | Features |
 | --- | --- | --- | --- |
-| `rapier2d` | 0.36.1 | [dimforge/rapier@b303bc13](https://github.com/dimforge/rapier/commit/b303bc13e7e69abcec31c595f095de71edf2d3d3): the v0.36.1 tag, two commits to `bevy_rapier` only, then the fix | `dim2`, `f32`, `alloc`, `block-solver`, `enhanced-determinism` |
+| `rapier2d` | 0.36.1 | `vendor/rapier`, upstream's [dimforge/rapier@b303bc13](https://github.com/dimforge/rapier/commit/b303bc13e7e69abcec31c595f095de71edf2d3d3): the v0.36.1 tag, two commits to `bevy_rapier` only, then the fix | `dim2`, `f32`, `alloc`, `block-solver`, `enhanced-determinism` |
 | `rapier3d` | 0.36.1 | the same commit | `dim3`, `f32`, `alloc`, `enhanced-determinism` |
-| `parry2d`, `parry3d` | 0.31.1 | [dimforge/parry@dbcce409](https://github.com/dimforge/parry/commit/dbcce4095c5c65277de1d3363d59c9a75cc02a87): the v0.31.1 tag, one commit to restoring deserialized contact workspaces (built only with `serde-serialize`, which is off), then the fix | as rapier asks: `required-features`, `alloc`, `enhanced-determinism` |
-| `glamx` | 0.3.1 | [dimforge/glamx@78c97db7](https://github.com/dimforge/glamx/commit/78c97db71c2724b096cf751d2024c405c65d8612): the v0.3.1 tag, then the fix | as parry asks |
+| `parry2d`, `parry3d` | 0.31.1 | `vendor/parry`, upstream's [dimforge/parry@dbcce409](https://github.com/dimforge/parry/commit/dbcce4095c5c65277de1d3363d59c9a75cc02a87): the v0.31.1 tag, one commit to restoring deserialized contact workspaces (built only with `serde-serialize`, which is off), then the fix | as rapier asks: `required-features`, `alloc`, `enhanced-determinism` |
+| `glamx` | 0.3.1 | `vendor/glamx`, upstream's [dimforge/glamx@78c97db7](https://github.com/dimforge/glamx/commit/78c97db71c2724b096cf751d2024c405c65d8612): the v0.3.1 tag, then the fix | as parry asks |
 | `simba` | 0.10.2 | crates.io | `libm_force` (from `enhanced-determinism`) |
 | `nalgebra` | 0.35.0 | crates.io | `macros`, no `std` |
 | `libm` | 0.2.16 | crates.io | the pure-Rust maths every transcendental function goes to |
@@ -51,14 +101,13 @@ Single precision, no `std`, no `parallel`, no `simd8`. `block-solver` is each di
 default (on in 2D, off in 3D), named rather than left to the default.
 
 The three commits are upstream's own fix for the calls described below, open as pull requests on
-the day of the pin: [rapier#1074](https://github.com/dimforge/rapier/pull/1074),
-[parry#468](https://github.com/dimforge/parry/pull/468) and
-[glamx#10](https://github.com/dimforge/glamx/pull/10) (issue
-[rapier#1054](https://github.com/dimforge/rapier/issues/1054)). The fix commits' source changes
+the day of the pin: rapier pull request 1074, parry pull request 468 and glamx pull request 10
+(rapier issue 1054). Their sources are vendored under `vendor/`, byte for byte, so the pin does not
+depend on a branch staying reachable (`vendor/VENDORED.md`). The fix commits' source changes
 are the call sites in the table of paths, each rewritten from a method call (`x.sin()`) to the
 trait's function (`<Real as ComplexField>::sin(x)`), plus tests and changelog lines; the other
 commits between each release tag and its pin are named in the table above. The pin moves to the
-first release that carries the fixes.
+first release that carries the fixes, and the vendored copy is deleted.
 
 ### Why the calls needed a correction
 
@@ -102,7 +151,9 @@ The solver defaults read at the pin, each of which the crate sets explicitly:
   `normalized_contact_recycle_distance` (0.05, set explicitly) keeps its previous contact points,
   so contact data can be stale by up to that distance.
 - **Contact clustering** (3D, default on), **joint warm-starting** (off), **friction in the bias
-  pass** (off), 4 solver iterations, 1 internal and 1 stabilization iteration, a step of 1/60 s.
+  pass** (off), 4 solver iterations (128 for a component with a joint, above), 1 internal and 1
+  stabilization iteration, a step of 1/60 s, an allowed linear error of 0.005 and a prediction
+  distance of 0.02, and the motors' force-based model.
 - **`block-solver`** is a compile-time feature, on by default in 2D only; **precision** is the
   crate's choice of `rapier2d`/`rapier3d` (`f32`) over the `-f64` crates.
 

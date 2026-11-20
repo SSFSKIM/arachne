@@ -1,0 +1,38 @@
+[build-system]
+# Pinned, as the toolchain is (rust-toolchain.toml): how the crate is compiled and packaged is fixed.
+requires = ["maturin==1.16.0"]
+build-backend = "maturin"
+
+[project]
+name = "arachne-sim"
+# Static, so that locking the engine's dependencies reads it without a toolchain. Cargo.toml's
+# version is the same (tests/python checks).
+version = "0.1.0"
+description = "Arachne's simulation crate: rigid-body worlds stepped on a fixed clock"
+requires-python = ">=3.12"
+dependencies = ["numpy>=2.1"]
+# The vendored solver crates' upstream licenses, compiled into the extension (vendor/VENDORED.md);
+# they ship under the wheel's .dist-info/licenses/ (ci/binding.sh checks each is there).
+license-files = [
+    "vendor/rapier/LICENSE",
+    "vendor/parry/LICENSE",
+    "vendor/glamx/LICENSE-APACHE",
+    "vendor/glamx/LICENSE-MIT",
+]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "arachne_sim._sim"
+features = ["python"]
+# Build from Cargo.lock as committed: a lock that does not match Cargo.toml fails the build rather
+# than being rewritten from the registry (a PEP 517 build passes no --locked of its own).
+locked = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]

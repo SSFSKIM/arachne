@@ -2,8 +2,15 @@
 
 use crate::keys::Key;
 
-/// PIL's value for nearest resampling, the one resampling this build draws.
+/// PIL's value for nearest resampling: the one resampling of a quad and of a window of no stated
+/// size, and a sized window's at whole-pixel corners.
 pub const NEAREST: u8 = 0;
+/// PIL's value for bilinear resampling, which a sized window may be placed with at an
+/// axis-aligned rectangle only (other corners are refused): each pixel takes the four texels round
+/// its centre (the edge texel continued past the edge), weighted in fixed point, times the area of
+/// its cell inside the rectangle. So the edge is antialiased, nothing lands in a pixel the
+/// rectangle does not touch, and a window moved by a fraction of a pixel moves by that fraction.
+pub const BILINEAR: u8 = 2;
 
 /// One frame: a background colour under every layer, then the layers, bottom first. `focus`, when
 /// set, blurs every layer with a declared depth by its distance from the focus.
@@ -63,13 +70,18 @@ pub enum Source {
         corners: [[f64; 2]; 4],
         resampling: u8,
     },
-    /// Another stack, composed at the frame's size, placed at four corners as a quad is. Its
-    /// stack is drawn as any frame is, on 8-bit integers, and its texels are copied, not
-    /// filtered, so it rounds nothing; only its placement is floating point.
+    /// Another stack, composed as a frame of its own of `size` (width, height) pixels, or of the
+    /// size of the frame that holds it when `size` is `None`, then placed at four corners as a
+    /// quad is. Its pictures and masks are of its size, and its effects run on textures of its
+    /// size, so they stay inside it. Its stack is drawn as any frame is, on 8-bit integers. Placed
+    /// by [`NEAREST`] its texels are copied; a window given a size may instead be placed by
+    /// [`BILINEAR`]. At whole-pixel corners spanning exactly its size, either is a texel-for-texel
+    /// copy. With no size, every refusal is the one it was before windows had sizes.
     Window {
         frame: Box<Frame>,
         corners: [[f64; 2]; 4],
         resampling: u8,
+        size: Option<[u32; 2]>,
     },
 }
 
@@ -135,12 +147,30 @@ impl Layer {
         })
     }
 
-    /// A window onto `frame` at full opacity, with no effect.
+    /// A window onto `frame`, composed at the size of the frame that holds it, at full opacity,
+    /// with no effect.
     pub fn window(frame: Frame, corners: [[f64; 2]; 4], resampling: u8) -> Self {
         Layer::of(Source::Window {
             frame: Box::new(frame),
             corners,
             resampling,
+            size: None,
+        })
+    }
+
+    /// A window onto `frame`, composed as a frame of `size` (width, height) pixels, at full
+    /// opacity, with no effect.
+    pub fn sized_window(
+        frame: Frame,
+        corners: [[f64; 2]; 4],
+        resampling: u8,
+        size: [u32; 2],
+    ) -> Self {
+        Layer::of(Source::Window {
+            frame: Box::new(frame),
+            corners,
+            resampling,
+            size: Some(size),
         })
     }
 

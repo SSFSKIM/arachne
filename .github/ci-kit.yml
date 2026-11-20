@@ -140,7 +140,7 @@ gates:
     setup: false
     paths: ["sim/**", ".github/ci-kit.yml"]
     run: bash sim/ci/macos.sh
-    timeout: 40
+    timeout: 60
 
   # The GPU build (gpu/, the arachne-gpu crate and its Python binding): a build of its own, never
   # an extra of the engine. Its drawing tests run on a software adapter (lavapipe) that each gate
@@ -158,7 +158,7 @@ gates:
     run: bash gpu/ci/test.sh
     timeout: 30
   - name: gpu-binding
-    run: bash gpu/ci/binding.sh gpu/tests/python tests/routing tests/compose
+    run: bash gpu/ci/binding.sh gpu/tests/python tests/routing tests/compose tests/media tests/effects
     env: {UV_PYTHON: "3.12"}
     timeout: 30
   - name: cpu-bytes
@@ -173,6 +173,7 @@ gates:
     on: [pr]
     paths:
       - "arachne/compose/**"
+      - "arachne/effects/**"
       - "arachne/manager.py"
       - "arachne/renderer/**"
       - "arachne/scene/**"
@@ -180,6 +181,17 @@ gates:
       - "arachne/timeline/draw.py"
       - "arachne/timeline/record.py"
       - "gpu/ci/base_head*"
+      - "arachne/mobject/media/**"
+      - "arachne/assets/**"
     run: bash gpu/ci/base_head.sh "$CI_KIT_BASE"
     env: {UV_PYTHON: "3.12"}
     timeout: 60
+
+  # The simulation crate's Python binding (sim/python, the engine's `sim` extra): its wheel, built
+  # with the pinned toolchain; its extension's import list (no platform maths) and links (no GPU
+  # library); and its tests under 3.12 and 3.14.
+  - name: sim-binding
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/binding.sh 3.12 3.14
+    timeout: 30

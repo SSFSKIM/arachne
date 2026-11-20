@@ -8,3 +8,6 @@
 *.wav binary
 
 manim/grpc/gen/** linguist-generated=true
+
+# Upstream sources kept byte for byte (sim/vendor/VENDORED.md); the pre-commit hooks skip them too.
+sim/vendor/** linguist-vendored=true
