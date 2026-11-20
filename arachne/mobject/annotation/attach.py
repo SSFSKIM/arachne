@@ -39,6 +39,7 @@ __all__ = [
     "anchor",
     "checked_hold",
     "keep_attached",
+    "placed_point",
 ]
 
 from dataclasses import dataclass
@@ -258,6 +259,10 @@ class Annotation(VGroup):
         #: Where the held point stands from the anchor's point plus the
         #: offset, read-only for the same reason.
         self._held_from_place: FrozenArray = freeze(np.zeros(3), FrozenArray)
+        #: Where the held point stood from the body's centre when placement
+        #: last measured it: what the lint reads, from the record alone,
+        #: in place of calling :meth:`held_point`.
+        self._held_from_centre: FrozenArray = freeze(np.zeros(3), FrozenArray)
         #: How the annotation is attached, or ``None`` when it is not.
         self.attached: Attached | None = None
         if at is None:
@@ -276,9 +281,9 @@ class Annotation(VGroup):
             return
         # Placed at its anchor first, whether it follows or stays there.
         body.move_to(point + place)
-        self._held_from_place = freeze(
-            self.held_point(body) - (point + place), FrozenArray
-        )
+        held = self.held_point(body)
+        self._held_from_place = freeze(held - (point + place), FrozenArray)
+        self.note_held(body, held)
         if self.attached.follow or self.leader is not None:
             self.add_updater(keep_attached)
         self.attach()
@@ -290,19 +295,27 @@ class Annotation(VGroup):
         overrides it with this signature. It is called while
         :class:`Annotation` is constructed, once the body is first placed,
         so what an override reads must be set before ``Annotation.__init__``
-        runs; then at every :meth:`attach`, and by :meth:`points_at`.
+        runs; then at every :meth:`attach` that follows. It runs only while
+        the scene runs: the lint never calls it.
         """
         return np.array(body.get_critical_point(self.hold), dtype=float)
 
-    def points_at(self) -> np.ndarray | None:
-        """The anchor's point that the body's placement says, by the held
-        point; ``None`` when the annotation is not attached. Following puts
-        the body where this is the anchor's point.
+    def note_held(self, body: Mobject, held: np.ndarray) -> None:
+        """Record that ``held`` is where ``body`` (the body as it now
+        stands, or a replacement about to become it) puts the held point,
+        as where it stands from the body's centre: what :meth:`points_at`
+        and the lint read. Placement calls it each time it measures; a
+        subclass that replaces its body calls it for the replacement.
         """
-        if self.attached is None:
-            return None
-        held = self.held_point(self.body)
-        return held - self._held_from_place - np.array(self.attached.offset)
+        self._held_from_centre = freeze(
+            np.asarray(held, dtype=float) - body.get_center(), FrozenArray
+        )
+
+    def points_at(self) -> np.ndarray | None:
+        """The anchor's point that the body's placement says
+        (:func:`placed_point`); ``None`` when it is not attached.
+        """
+        return placed_point(self)
 
     def attach(self) -> None:
         """Put the body at the anchor's point plus the offset, when it
@@ -317,9 +330,31 @@ class Annotation(VGroup):
             return
         if attached.follow:
             place = point + np.array(attached.offset) + self._held_from_place
-            self.body.shift(place - self.held_point(self.body))
+            held = self.held_point(self.body)
+            self.note_held(self.body, held)
+            self.body.shift(place - held)
         if self.leader is not None:
             self.leader.put_between(_edge_toward(self.body, point), point)
+
+
+def placed_point(annotation: Annotation) -> np.ndarray | None:
+    """The anchor's point that ``annotation``'s placement says: its body's
+    centre plus where the held point stood from it when placement last
+    measured, less where the held point stands from the anchor's point plus
+    the offset, less the offset; ``None`` when it is not attached. It reads
+    the annotation's fields and its body's points alone, never a method a
+    subclass overrides, so it answers from a capture as from the live
+    object; following puts the body where it is the anchor's point.
+    """
+    attached = annotation.attached
+    if attached is None:
+        return None
+    return (
+        annotation.body.get_center()
+        + np.asarray(annotation._held_from_centre)
+        - np.asarray(annotation._held_from_place)
+        - np.array(attached.offset)
+    )
 
 
 def checked_hold(given: Sequence[float] | np.ndarray) -> FrozenArray:
@@ -329,7 +364,10 @@ def checked_hold(given: Sequence[float] | np.ndarray) -> FrozenArray:
     otherwise.
     """
     try:
-        flat = np.asarray(given, dtype=float)
+        # Complex input would lose its imaginary part to the conversion:
+        # refused before it.
+        raw = np.asarray(given)
+        flat = np.full(1, np.nan) if raw.dtype.kind == "c" else raw.astype(float)
     except (TypeError, ValueError):
         flat = np.full(1, np.nan)
     if (

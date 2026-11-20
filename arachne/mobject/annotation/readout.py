@@ -177,12 +177,13 @@ class Readout(Annotation):
     bottom, for any format.
 
     Attached and following, the held point keeps where it stood from the
-    anchor's point plus the offset as the anchor moves; with ``follow``
-    false the readout is placed once and the held point stays where it
-    was put. Either way the gap across from the anchor to the held edge
-    stays as set, but a leader, which runs from the box's edge toward the
-    anchor, changes its length as the box widens unless it runs straight
-    across. :meth:`held_point` reads the held point of a text; a subclass
+    anchor's point plus the offset as the anchor moves, so the gap across
+    from the anchor to the held edge stays as set. With ``follow`` false
+    the readout is placed once and the held point stays where it was put,
+    in the scene: the gap stays only while the anchor does not move. A
+    leader, which runs from the box's edge toward the anchor's point, keeps
+    its length only if neither the box's width nor, unfollowed, the anchor
+    changes; as the box widens it changes unless it runs straight across. :meth:`held_point` reads the held point of a text; a subclass
     that overrides it keeps its signature.
     """
 
@@ -251,7 +252,9 @@ class Readout(Annotation):
         label = self.label
         if said != label.original_text:
             made = self._label_class(said, font_size=label.font_size)
-            made.shift(self.held_point(label) - self.held_point(made))
+            held = self.held_point(label)
+            made.shift(held - self.held_point(made))
+            self.note_held(made, held)
             _restyle(made, label)
             # A play draws its moving mobjects as listed when it began (CE's
             # moving list), so the glyphs replaced draw nothing from now on,

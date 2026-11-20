@@ -669,3 +669,32 @@ def test_a_switch_stretched_unevenly_closes_onto_its_rings_as_drawn():
         if closed:
             gap = _off_outline(switch.contacts[1], ends[1])
             assert gap < 1e-5, gap
+
+
+def _inside_ring(ring, point: np.ndarray) -> bool:
+    """Whether ``point`` lies inside ``ring``'s drawn outline (even-odd)."""
+    outline = np.concatenate([_bezier_polyline(c, 400) for c in _curves(ring)])
+    a, b = outline[:-1], outline[1:]
+    straddle = (a[:, 1] > point[1]) != (b[:, 1] > point[1])
+    x = a[:, 0] + (point[1] - a[:, 1]) * (b[:, 0] - a[:, 0]) / np.where(
+        b[:, 1] == a[:, 1], 1.0, b[:, 1] - a[:, 1]
+    )
+    return bool((straddle & (x > point[0])).sum() % 2)
+
+
+@pytest.mark.parametrize(
+    "shaped",
+    [lambda s: s.stretch(2.0, 0), lambda s: s.rotate(0.3).stretch(0.5, 1)],
+    ids=["stretched", "turned-and-squashed"],
+)
+@pytest.mark.parametrize("open_angle", [0.01, 0.05])
+def test_an_open_switch_s_blade_stops_short_of_its_far_ring(shaped, open_angle):
+    switch = Switch(LEFT + DOWN, RIGHT + UP, contact_radius=0.1, open_angle=open_angle)
+    shaped(switch)
+    switch.set_closed(False)
+    blade = np.concatenate([_bezier_polyline(c, 200) for c in _curves(switch.blade)])
+    far = switch.contacts[1]
+    assert not any(_inside_ring(far, p) for p in blade)
+    # And short of it by a visible clearance: a quarter of the ring's size.
+    clearance = 0.25 * min(far.width, far.height) / 2
+    assert _off_outline(far, blade[-1]) >= clearance

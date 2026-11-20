@@ -638,3 +638,10 @@ def test_a_readout_s_hold_is_in_the_content_keys():
     near = Readout(0, format="{:.0f}", at=anchor(dot), offset=RIGHT, hold=LEFT)
     far = Readout(0, format="{:.0f}", at=anchor(dot), offset=RIGHT, hold=RIGHT)
     assert apart(keyed(near, "_held_from_place"), keyed(far, "_held_from_place"))
+    assert apart(keyed(near, "_held_from_centre"), keyed(far, "_held_from_centre"))
+
+
+@pytest.mark.parametrize("hold", [np.array([1 + 2j, 0]), [1j, 0, 0], (1 + 0j, 0)])
+def test_a_complex_hold_is_refused(hold):
+    with pytest.raises(ValueError, match="hold is a point of a box"):
+        Readout(0, format="{:.0f}", hold=hold)

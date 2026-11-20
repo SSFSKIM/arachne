@@ -509,3 +509,30 @@ class WideningReadouts(Scene):
             CountUp(left, 100000, rate_func=linear),
             run_time=1,
         )
+
+
+class HookedReadout(Readout):
+    """A readout whose held point is an author's override: it counts its
+    calls, and raises once :attr:`refuse` is set.
+    """
+
+    calls = 0
+    refuse = False
+
+    def held_point(self, body):
+        if type(self).refuse:
+            raise RuntimeError("the hook was called")
+        type(self).calls += 1
+        return super().held_point(body)
+
+
+class HookedReadoutWidening(Scene):
+    """A :class:`HookedReadout` attached to the right of a moving dot,
+    counting from one digit to six.
+    """
+
+    def construct(self) -> None:
+        dot = _moving_dot()
+        reading = HookedReadout(0, format="{:.0f}", at=anchor(dot), offset=1.2 * RIGHT)
+        self.add(dot, reading)
+        self.play(CountUp(reading, 100000, rate_func=linear), run_time=1)

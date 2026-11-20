@@ -213,3 +213,22 @@ def test_a_lint_s_instants_are_read_only_on_its_frames():
     assert frames.lint_instants == ()
     with pytest.raises(AttributeError):
         frames.lint_instants = ()  # type: ignore[misc]
+
+
+def test_the_rule_reads_an_attachment_without_running_its_hook(opened):
+    # The rule reads what the record holds: an author's held_point, which
+    # could read later state or fail, is never called while it lints.
+    session = opened("HookedReadoutWidening")
+    hooked = next(
+        m for m in session.record.mobjects() if type(m).__name__ == "HookedReadout"
+    )
+    kind = type(hooked)
+    assert kind.calls > 0  # the scene ran it, placing and counting
+    ran = kind.calls
+    kind.refuse = True
+    try:
+        found = lint(session, rules=(anchored,)).findings
+    finally:
+        kind.refuse = False
+    assert kind.calls == ran
+    assert [f.code for f in found] == [], [f.message for f in found]
