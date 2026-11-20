@@ -173,7 +173,7 @@ def attachments(model: Model) -> Mapping[str, OnOutline | Inside]:
         found = _ATTACHMENTS[model] = MappingProxyType(
             {
                 spec.name: _attach(model, spec, i)
-                for i, spec in enumerate(model.asset.manifest.anchors)
+                for i, spec in enumerate(model.manifest.anchors)
             }
         )
     return found
@@ -182,7 +182,7 @@ def attachments(model: Model) -> Mapping[str, OnOutline | Inside]:
 def _attach(model: Model, spec: AnchorSpec, index: int) -> OnOutline | Inside:
     if spec.attach == "interior":
         return Inside(spec.part, spec.at, tuple(k.point for k in spec.keys))
-    name = model.asset.name
+    name = model.name
     if not isinstance(model.placed[spec.part], PartSpec):
         reason = (
             f"the outline anchor {spec.name!r} is on the slot {spec.part!r}, whose"

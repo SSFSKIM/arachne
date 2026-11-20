@@ -490,7 +490,16 @@ class Session:
         the record's execution (:attr:`forward_runs`, :attr:`divergences`).
         A forward run of a source changed since the record is compared with
         nothing: its answers say ``source-changed``, and :attr:`stale` is set.
+
+        Frames are refused, before anything is drawn, for a finding the
+        scene's code recorded for the lint that refuses drawing
+        (:func:`~.lint.raised.found`), wherever in the scene it was found;
+        states alone are answered.
         """
+        if frames and self.record.bridge.calls:
+            from .lint.raised import refuse_drawing
+
+            refuse_drawing(self.record)
         return answer_instants(self, instants, quality, frames=frames)
 
     @_under_its_settings

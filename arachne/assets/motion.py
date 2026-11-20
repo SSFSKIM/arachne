@@ -157,12 +157,15 @@ class Pose(Animation):
     (names to values, and slot names to drawing names) over the play.
 
     Each parameter named runs from its value when the play begins to its
-    target, through ``rate_func``; the others keep theirs. A slot named
-    switches at the play's first instant. A value outside its parameter's
-    tested range is ``rig.range``, and a name the manifest does not have
-    ``rig.name_unknown``, both when the animation is made, at the line that
-    asks. A parameter named ``run_time``, ``rate_func`` or ``name`` is posed
-    with :meth:`Rig.pose` instead.
+    target, through ``rate_func``; the others keep theirs, and a pose writes
+    no other: two poses of one rig in one play each move their own. A slot
+    named switches at the play's first instant, in the rig and in the
+    copies of it the play's animations already hold, so a whole-rig
+    animation in the same play pairs each shape with its own copy. A value
+    outside its parameter's tested range is ``rig.range``, and a name the
+    manifest does not have ``rig.name_unknown``, both when the animation is
+    made, at the line that asks; a rate function that carries a value out
+    of the range is ``rig.range`` at that instant of the play.
     """
 
     def __init__(
@@ -195,6 +198,7 @@ class Pose(Animation):
             given["rate_func"] = rate_func
         super().__init__(rig, **given)
         self.rig = rig
+        self._scene: weakref.ref[Scene] | None = None
 
     def create_starting_mobject(self) -> Mobject:
         # The values it starts from are all it reads of the rig's start.
@@ -203,35 +207,96 @@ class Pose(Animation):
     def _setup_scene(self, scene: Scene) -> None:
         super()._setup_scene(scene)
         if scene is not None:
+            self._scene = weakref.ref(scene)
             hold_pose(scene, self.rig)
 
     def begin(self) -> None:
         rig = self.rig
         if rig.placement() is None:
             raise _no_placement(rig)
-        rig.write_choices(self.switches)
-        self._start = np.array(rig._values, dtype=float)
-        self._end = self._start.copy()
-        self._posed = np.zeros(len(self._start), dtype=bool)
-        for index, value in self.targets.items():
-            self._end[index] = value
-            self._posed[index] = True
+        if self.switches:
+            rig.write_choices(self.switches)
+            self._switch_copies()
+        indices = sorted(self.targets)
+        #: The parameters it moves, by index, and where each starts and ends.
+        self._indices = np.array(indices, dtype=int)
+        self._start = np.array([rig._values[i] for i in indices], dtype=float)
+        self._end = np.array([self.targets[i] for i in indices], dtype=float)
         super().begin()
         # The play's start state shows the drawings switched in.
         rig.settle()
 
+    def _switch_copies(self) -> None:
+        """Have the copies of the rig that the play's animations begun
+        before this one hold (an animation's starting copy, a transform's
+        aligned target) show what the rig shows now: each stands in the
+        animation's family where the rig stands in its mobject's.
+        """
+        scene = self._scene() if self._scene is not None else None
+        if scene is None:
+            return
+        rig = self.rig
+        for animation in _flattened(getattr(scene, "animations", None) or ()):
+            if isinstance(animation, Pose):
+                continue
+            family = animation.mobject.get_family()
+            index = next((i for i, m in enumerate(family) if m is rig), None)
+            if index is None:
+                continue
+            for held in (
+                getattr(animation, "starting_mobject", None),
+                getattr(animation, "target_copy", None),
+            ):
+                if held is None or held is animation.mobject:
+                    continue
+                members = held.get_family()
+                if index < len(members):
+                    copy = members[index]
+                    if isinstance(copy, Rig) and copy.model is rig.model:
+                        copy.adopt_choices(rig)
+
     def interpolate_mobject(self, alpha: float) -> None:
+        if not len(self._indices):
+            return
         progress = self.get_sub_alpha(alpha, 0, 1)
         if abs(progress - 1) < _END:
             progress = 1.0
         elif abs(progress) < _END:
             progress = 0.0
         blended = (1 - progress) * self._start + progress * self._end
-        self.rig._values = _values(np.where(self._posed, blended, self._start))
+        rig = self.rig
+        parameters = rig.model.parameters
+        lows = np.array([parameters[i].min for i in self._indices])
+        highs = np.array([parameters[i].max for i in self._indices])
+        if 0 <= progress <= 1:
+            # Between two values in range: in range, but for rounding.
+            blended = np.clip(blended, lows, highs)
+        else:
+            rig.checked_values(
+                {
+                    parameters[i].name: value
+                    for i, value in zip(self._indices, blended, strict=True)
+                },
+                eased=True,
+            )
+        values = np.array(rig._values, dtype=float)
+        values[self._indices] = blended
+        rig._values = _values(values)
 
     def clean_up_from_scene(self, scene: Scene) -> None:
         super().clean_up_from_scene(scene)
         release_pose(scene, self.rig)
+
+
+def _flattened(animations: Any) -> list[Animation]:
+    """``animations`` and the animations of every group among them, in the
+    order they begin.
+    """
+    found: list[Animation] = []
+    for animation in animations:
+        found.append(animation)
+        found += _flattened(getattr(animation, "animations", None) or ())
+    return found
 
 
 class MorphParts(Animation):
@@ -239,7 +304,8 @@ class MorphParts(Animation):
 
     Each part or slot the two share by name is transformed from its drawing
     in ``source`` into its drawing in ``destination``; those only ``source``
-    has fade out, and copies of those only ``destination`` has fade in. The
+    has fade out, and copies of those only ``destination`` has fade in,
+    each at its layer in ``destination`` from the first instant. The
     destination is posed at its own values and slot drawings, where the
     source stands: each moved alike from where its manifest places it. When
     the play is done the scene holds ``destination`` where ``source`` was,
@@ -288,11 +354,17 @@ class MorphParts(Animation):
             if name in theirs
         ]
         self._leaving = [_drawn(self._stand_in, n) for n in ours if n not in theirs]
-        self._arriving = [
-            _drawn(destination, n).copy() for n in theirs if n not in ours
-        ]
-        if self._arriving:
-            scene.add(*self._arriving)
+        arriving = {n: _drawn(destination, n).copy() for n in theirs if n not in ours}
+        self._arriving = list(arriving.values())
+        if arriving:
+            # Each comes in at its layer in the destination, among the parts
+            # of the stand-in, and stays there.
+            groups = [
+                ours[name] if name in ours else arriving[name]
+                for name in _layered(list(ours), list(theirs))
+            ]
+            self._stand_in.remove(*ours.values())
+            self._stand_in.add(*groups)
         super()._setup_scene(scene)
 
     def begin(self) -> None:
@@ -324,9 +396,27 @@ class MorphParts(Animation):
 
     def clean_up_from_scene(self, scene: Scene) -> None:
         scene.replace(self._stand_in, self.destination)
-        if self._arriving:
-            scene.remove(*self._arriving)
         super().clean_up_from_scene(scene)
+
+
+def _layered(ours: list[str], theirs: list[str]) -> list[str]:
+    """Names of both rigs' parts and slots in one drawing order: ``ours``
+    in their order, each of ``theirs`` that ``ours`` lacks placed where
+    ``theirs`` puts it, after the parts of ``ours`` that ``theirs`` puts
+    below it.
+    """
+    pending = list(ours)
+    found: list[str] = []
+    for name in theirs:
+        if name in ours:
+            while pending:
+                taken = pending.pop(0)
+                found.append(taken)
+                if taken == name:
+                    break
+        else:
+            found.append(name)
+    return found + pending
 
 
 def _drawn(rig: Rig, name: str) -> VMobject:

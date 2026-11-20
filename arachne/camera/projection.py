@@ -209,8 +209,11 @@ def record_view(record: Record) -> View:
 
 def draw_kind(mob: Mobject) -> DrawKind | None:
     """How a camera draws ``mob`` itself: a path, a point cloud, an image,
-    or nothing (``Camera.display_funcs``, in its order).
+    or nothing (``Camera.display_funcs``, in its order). A member whose
+    class is scaffolding (``_scaffold``: a rig's carrier) draws nothing.
     """
+    if getattr(type(mob), "_scaffold", False):
+        return None
     for kind_type, kind in _draw_kinds():
         if isinstance(mob, kind_type):
             return kind
@@ -555,6 +558,8 @@ def _box(
     lows: list[np.ndarray] = []
     highs: list[np.ndarray] = []
     for member in mob.family_members_with_points():
+        if not len(member.points) or draw_kind(member) is None:
+            continue
         found = (
             _ink_box(camera, view, member, home=home)
             if ink

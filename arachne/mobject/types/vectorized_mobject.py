@@ -1944,6 +1944,9 @@ class VMobject(Mobject):
         family = self.get_family()
         for mob in family:
             kind = type(mob)
+            if getattr(kind, "_scaffold", False):
+                # Its kept bounds are none, as its anchors are.
+                continue
             if not (
                 isinstance(mob, VMobject)
                 and kind.get_anchors is VMobject.get_anchors

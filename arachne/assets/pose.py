@@ -25,13 +25,15 @@ never on the poses before it. A slot is placed as a part is (it takes no
 A :class:`Model` holds what an asset's rigs share and never write: the rest
 outlines, the stored outlines and lattices as read-only arrays, the parts in
 an order that puts every parent before its children, and the canvas points
-the carrier holds the images of.
+the carrier holds the images of. It holds the asset's manifest, never the
+asset, so it lives exactly as long as the asset does.
 """
 
 from __future__ import annotations
 
 __all__ = [
     "CARRIER_WIDTH",
+    "POSE_OPTIONS",
     "CanvasMap",
     "Model",
     "RigValues",
@@ -56,12 +58,24 @@ from typing import Any, TypeAlias
 import numpy as np
 
 from ..mobject.values import FrozenArray
-from .manifest import DriverSpec, Manifest, ParameterSpec, PartSpec, SlotSpec
+from .manifest import (
+    DriverSpec,
+    Manifest,
+    ParameterSpec,
+    PartSpec,
+    SlotSpec,
+    refuse,
+)
 from .reader import Asset
 
 #: How wide, in scene units, the triangle the carrier holds is at the
 #: asset's own size: small enough that a rig's box is its art's.
 CARRIER_WIDTH = 1e-4
+
+#: The keywords :class:`~.motion.Pose` takes for itself: no parameter or
+#: slot is named so, nor a slot as a parameter is, so a pose's every
+#: keyword names one thing.
+POSE_OPTIONS = ("run_time", "rate_func", "name")
 
 #: An affine map of the canvas: ``(2, 3)``, applied as ``m[:, :2] @ p +
 #: m[:, 2]``.
@@ -86,7 +100,8 @@ def _frozen(array: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True, eq=False)
 class Model:
-    """What every rig of one asset shares, read once from it.
+    """What every rig of one asset shares, read once from it: its
+    ``manifest`` and ``name``, and
 
     ``order`` names every part and slot, parents first. ``rest`` holds each
     part's shapes, and ``drawings`` each slot's drawings' shapes (by slot,
@@ -101,7 +116,8 @@ class Model:
     triangle :data:`CARRIER_WIDTH` scene units wide at the asset's size.
     """
 
-    asset: Asset
+    manifest: Manifest
+    name: str
     order: tuple[str, ...]
     placed: Mapping[str, PartSpec | SlotSpec]
     parameters: tuple[ParameterSpec, ...]
@@ -125,7 +141,7 @@ class Model:
         point ``origin`` at the scene's origin, ``scene_units_per_unit``
         scene units to a canvas unit, y up.
         """
-        size = self.asset.manifest.size
+        size = self.manifest.size
         scale = size.scene_units_per_unit
         origin_x, origin_y = size.origin
         return CanvasMap(
@@ -134,12 +150,16 @@ class Model:
         )
 
 
-#: Each asset's model, made with its first rig.
+#: Each asset's model, made with its first rig; gone with the asset, which
+#: its model does not hold.
 _MODELS: weakref.WeakKeyDictionary[Asset, Model] = weakref.WeakKeyDictionary()
 
 
 def model_of(asset: Asset) -> Model:
-    """The model of ``asset``, shared by all its rigs."""
+    """The model of ``asset``, shared by all its rigs. A parameter or slot
+    named as one of :data:`POSE_OPTIONS`, or a slot named as a parameter,
+    is ``asset.manifest_invalid``.
+    """
     model = _MODELS.get(asset)
     if model is None:
         model = _MODELS[asset] = _model(asset)
@@ -150,8 +170,41 @@ def _canvas_points(shapes: Sequence[Any]) -> tuple[np.ndarray, ...]:
     return tuple(_frozen(np.asarray(shape.points)[:, :2]) for shape in shapes)
 
 
+def _check_names(manifest: Manifest) -> None:
+    """Refuse a manifest one of whose names a pose could not tell apart."""
+    parameters = {parameter.name for parameter in manifest.parameters}
+    named: list[tuple[str, tuple[str, ...]]] = [
+        ("parameters", tuple(p.name for p in manifest.parameters)),
+        ("slots", tuple(s.name for s in manifest.slots)),
+    ]
+    for kind, names in named:
+        for index, name in enumerate(names):
+            if name in POSE_OPTIONS:
+                reason = (
+                    f"{name!r} is one of Pose's own options"
+                    f" ({', '.join(POSE_OPTIONS)}), so no pose could name it"
+                )
+            elif kind == "slots" and name in parameters:
+                reason = (
+                    f"the slot {name!r} has the name of a parameter, so a"
+                    " pose naming it could mean either"
+                )
+            else:
+                continue
+            member = f"{kind}[{index}].name"
+            refuse(
+                "asset.manifest_invalid",
+                f"the manifest of the asset {manifest.name} is invalid at {member}:"
+                f" {reason}",
+                asset=manifest.name,
+                member=member,
+                reason=reason,
+            )
+
+
 def _model(asset: Asset) -> Model:
     manifest = asset.manifest
+    _check_names(manifest)
     placed: dict[str, PartSpec | SlotSpec] = {p.name: p for p in manifest.parts}
     placed |= {s.name: s for s in manifest.slots}
     order: list[str] = []
@@ -188,7 +241,8 @@ def _model(asset: Asset) -> Model:
     }
     scale = manifest.size.scene_units_per_unit
     model = Model(
-        asset=asset,
+        manifest=manifest,
+        name=manifest.name,
         order=tuple(order),
         placed=MappingProxyType(placed),
         parameters=manifest.parameters,
@@ -429,7 +483,7 @@ class CanvasMap:
         rig of ``model``, stands: each moved alike from where its own
         manifest's ``size`` places it.
         """
-        here, there = model.asset.manifest.size, other.asset.manifest.size
+        here, there = model.manifest.size, other.manifest.size
         ratio = there.scene_units_per_unit / here.scene_units_per_unit
         shift = np.array(
             [

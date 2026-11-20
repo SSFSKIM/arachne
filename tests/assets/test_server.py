@@ -259,3 +259,99 @@ def test_an_unknown_anchor_is_found_by_the_lint_and_refuses_drawing(tmp_path):
     assert answer.value.code == REFUSED
     _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
     assert not clip.exists()
+
+
+EASED = """\
+from arachne import *
+from arachne.utils.rate_functions import ease_out_back
+
+
+class Stage(Scene):
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        self.play(Pose(box, lid_open=110, rate_func=ease_out_back))  # @asks
+"""
+
+
+def test_a_pose_eased_past_its_tested_range_refuses_the_opening_at_its_play(tmp_path):
+    scene = tmp_path / "stage.py"
+    scene.write_text(EASED)
+    server = Dispatcher()
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    with pytest.raises(RpcError) as answer:
+        server.handle("open", {"file": str(scene), "scene": "Stage", "config": config})
+    assert answer.value.code == REFUSED
+    detail = _assert_refused(answer.value.data, "rig.range", _line_of(scene, "# @asks"))
+    assert detail["parameter"] == "lid_open"
+    assert detail["value"] > 110
+
+
+LATE_ANCHOR = """\
+from arachne import *
+
+
+class Stage(Scene):
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        self.play(Pose(box, lid_open=60), run_time=0.5)
+        self.play(box.animate.shift(UP), run_time=0.5)
+        tip = box.anchor("knbo")  # @anchor
+        self.wait(0.5)
+"""
+
+
+def test_a_clip_that_ends_before_an_unknown_anchor_is_asked_is_refused(tmp_path):
+    scene = tmp_path / "stage.py"
+    scene.write_text(LATE_ANCHOR)
+    line = _line_of(scene, "# @anchor")
+    server = Dispatcher()
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    server.handle("open", {"file": str(scene), "scene": "Stage", "config": config})
+    clip = tmp_path / "clip.mp4"
+    with pytest.raises(RpcError) as answer:
+        server.handle("clip", {"t0": 0, "t1": 0.25, "out": str(clip)})
+    assert answer.value.code == REFUSED
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not clip.exists()
+    rendered = tmp_path / "plays.mp4"
+    with pytest.raises(RpcError) as answer:
+        server.handle("render", {"plays": [0], "out": str(rendered)})
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not rendered.exists()
+
+
+LIVE_ONLY = """\
+from arachne import *
+
+
+class Stage(Scene):
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=MappingCamera, **kwargs)
+
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        tip = box.anchor("knbo")  # @anchor
+        self.play(Pose(box, lid_open=60), run_time=0.5)
+"""
+
+
+def test_a_scene_drawn_only_as_it_runs_lints_and_answers_states_with_an_unknown_anchor(
+    tmp_path,
+):
+    scene = tmp_path / "stage.py"
+    scene.write_text(LIVE_ONLY)
+    line = _line_of(scene, "# @anchor")
+    server = Dispatcher()
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    server.handle("open", {"file": str(scene), "scene": "Stage", "config": config})
+    report = server.handle("lint", {})["lint_result"]["report"]
+    codes = [found["code"] for found in report["violations"]]
+    assert "annotation.anchor_unknown" in codes
+    assert server.handle("state_at", {"t": 0.25})
+    with pytest.raises(RpcError) as answer:
+        server.handle("frame", {"t": 0.25, "path": str(tmp_path / "frame.png")})
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not (tmp_path / "frame.png").exists()

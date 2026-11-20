@@ -23,6 +23,13 @@ Three things are kept apart, each with one writer:
 - the art, every part's points, written by :meth:`Rig.settle` alone, from
   rest (:mod:`.pose`).
 
+An animation pairs a rig with its copies member by member, by the members
+that hold points. A copy shows what its rig shows: a copy aligned with the
+rig for an animation takes its slot choices (:meth:`Rig.align_data`), and a
+:class:`~.motion.Pose` that switches a slot switches it in the copies the
+play's animations already hold. So a whole-rig animation and a slot switch
+in one play pair each shape with its own copy, in either order.
+
 A rig settles at once when it is posed or shown, from its own updater
 (:func:`keep_settled`: after a play, and after the scene's code moved it),
 and during a play that poses it from the scene's settle (:mod:`.motion`). A
@@ -33,7 +40,7 @@ settled until it has a size again.
 
 from __future__ import annotations
 
-__all__ = ["Rig", "keep_settled"]
+__all__ = ["CarrierPoint", "Rig", "keep_settled"]
 
 import difflib
 import math
@@ -56,6 +63,32 @@ if TYPE_CHECKING:
 
 #: The points of a shape that draws nothing.
 _EMPTY = adopt(np.zeros((0, 3)), FrozenPoints)
+
+
+class CarrierPoint(VectorizedPoint):
+    """One of a carrier's three points: moved with its rig, drawn by
+    nothing, and no part of any box or measure of a family that holds it
+    (its bounds, extremes and anchors are none), so a rig's box, its size
+    and where it stands are its art's.
+    """
+
+    #: Passed over by the camera's reading of what is drawn and by the
+    #: anchors a family's box is read from.
+    _scaffold = True
+
+    def _point_bounds(self, anchors_every: int | None = None) -> Any:
+        return None
+
+    def reduce_across_dimension(self, reduce_func: Any, dim: int) -> float | None:
+        return None
+
+    def get_merged_array(self, array_attr: str) -> np.ndarray:
+        if array_attr == "points":
+            return np.zeros((0, self.dim))
+        return super().get_merged_array(array_attr)
+
+    def get_anchors(self) -> np.ndarray:
+        return np.zeros((0, self.dim))
 
 
 def keep_settled(rig: Mobject) -> None:
@@ -88,7 +121,7 @@ class Rig(VGroup):
         self.model = model
         manifest = asset.manifest
         self.carrier = VGroup(
-            *(VectorizedPoint(point) for point in model.natural.carrier(model)),
+            *(CarrierPoint(point) for point in model.natural.carrier(model)),
             name="carrier",
         )
         entries: list[tuple[int, int, str, VGroup]] = [
@@ -182,10 +215,13 @@ class Rig(VGroup):
     def _choices(self) -> list[str]:
         return self._shown.split(",") if self._shown else []
 
-    def checked_values(self, values: dict[str, Any]) -> dict[int, float]:
+    def checked_values(
+        self, values: dict[str, Any], *, eased: bool = False
+    ) -> dict[int, float]:
         """``values``, parameter names to values, as values by parameter
         index, each in its tested range: ``rig.name_unknown`` for a name the
-        manifest does not have, ``rig.range`` for a value outside the range.
+        manifest does not have, ``rig.range`` for a value outside the range
+        (``eased``: one a pose's rate function carried there).
         """
         checked: dict[int, float] = {}
         for name, given in values.items():
@@ -193,11 +229,15 @@ class Rig(VGroup):
             spec = self.model.parameters[index]
             value = float(given)
             if not (math.isfinite(value) and spec.min <= value <= spec.max):
+                how = (
+                    f"carried to {value:g} by its pose's rate function"
+                    if eased
+                    else f"given {given!r}"
+                )
                 refuse(
                     "rig.range",
-                    f"the parameter {name} of the asset {self.asset.name} is given"
-                    f" {given!r}, outside its tested range from {spec.min:g} to"
-                    f" {spec.max:g}",
+                    f"the parameter {name} of the asset {self.asset.name} is {how},"
+                    f" outside its tested range from {spec.min:g} to {spec.max:g}",
                     asset=self.asset.name,
                     parameter=name,
                     value=value if math.isfinite(value) else repr(value),
@@ -350,6 +390,31 @@ class Rig(VGroup):
         )
         return self
 
+    # Pairing with copies
+
+    def align_data(self, mobject: Mobject, skip_point_alignment: bool = False) -> Self:
+        """Align with ``mobject`` for an animation between them, as any
+        group is. A copy of the rig (a rig of its asset, both whole) first
+        takes the rig's slot choices: which drawing a slot shows is the
+        rig's to say, through :meth:`show` and :class:`~.motion.Pose`, never
+        an animation's, so each shape is paired with its own copy and keeps
+        its own paint.
+        """
+        if (
+            isinstance(mobject, Rig)
+            and mobject.model is self.model
+            and mobject._shown != self._shown
+            and self._intact()
+            and mobject._intact()
+        ):
+            mobject.adopt_choices(self)
+        return super().align_data(mobject, skip_point_alignment)
+
+    def adopt_choices(self, rig: Rig) -> None:
+        """Show what ``rig``, a rig of the same asset, shows, and settle."""
+        self._shown = rig._shown
+        self.settle()
+
     def _shapes(self) -> list[VMobject]:
         """Every shape of the art, the parts' and every drawing's."""
         found: list[VMobject] = []
@@ -361,9 +426,9 @@ class Rig(VGroup):
                     found += drawing.submobjects
         return found
 
-    def _whole(self) -> None:
-        """Raise unless the rig holds its carrier and parts as it made them."""
-        intact = (
+    def _intact(self) -> bool:
+        """Whether the rig holds its carrier and parts as it made them."""
+        return (
             self.carrier in self.submobjects
             and all(group in self.submobjects for _, group in self._members)
             and all(
@@ -372,7 +437,10 @@ class Rig(VGroup):
             )
             and all(len(point.points) == 1 for point in self.carrier.submobjects)
         )
-        if not intact:
+
+    def _whole(self) -> None:
+        """Raise unless the rig holds its carrier and parts as it made them."""
+        if not self._intact():
             raise ValueError(
                 f"A rig of the asset {self.asset.name} was changed into something its"
                 " asset does not draw (its carrier or its parts are not as the rig"

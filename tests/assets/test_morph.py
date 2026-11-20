@@ -112,17 +112,84 @@ def test_a_morph_draws_its_parts_between_the_two_rigs(pair):
     play = record.plays[0]
     assert play.route == "ticked"
     # Mid-morph, the source's part only it has is fading and the
-    # destination's is coming in; at the end, only the destination is drawn.
+    # destination's is coming in, both in the one rig the morph draws; at
+    # the end, only the destination is drawn.
     _, capture = record.capture_at(Fraction(3, 10))
-    names = [m.name for m in capture.roots]
-    assert names[0] == "source"
-    assert len(names) == 2
-    arriving = capture.roots[1]
-    assert arriving.name == "pointer"
+    assert [m.name for m in capture.roots] == ["source"]
     with Drawing(record) as drawing:
         drawing.show(capture, capture.roots)
+        (morphing,) = capture.roots
+        arriving = next(m for m in morphing.submobjects if m.name == "pointer")
         opacity = arriving.submobjects[0].get_fill_opacity()
     assert 0 < opacity < 1
+
+
+BACKED = """\
+from arachne import *
+
+
+class Backed(Scene):
+    def construct(self):
+        source = Rig({source!r}, name="source")
+        destination = Rig({destination!r}, name="destination")
+        self.add(source)
+        self.play(MorphParts(source, destination), run_time=0.5)
+"""
+
+
+def _backed(document: dict) -> None:
+    """The dial with a plate drawn behind its face: a part the dial lacks,
+    lowest in the drawing order.
+    """
+    document["name"] = "backed-dial"
+    for part in document["parts"]:
+        part["order"] += 1
+    for slot in document["slots"]:
+        slot["order"] += 1
+    document["parts"].insert(
+        0,
+        {
+            "name": "backplate",
+            "file": "pieces/face.svg",
+            "parent": None,
+            "pivot": [150, 160],
+            "order": 0,
+        },
+    )
+
+
+def _layers(roots) -> list[str]:
+    """The names of the groups ``roots`` draw, in the order drawn."""
+    return [
+        m.name
+        for root in roots
+        for m in root.get_family()
+        if m.name in ("backplate", "face", "lamp", "needle")
+    ]
+
+
+def test_a_part_only_the_destination_has_comes_in_at_its_own_layer(tmp_path):
+    source = copied(tmp_path, "dial")
+    destination = edited(copied(tmp_path, "dial", "backed-dial"), _backed)
+    scene = tmp_path / "backed.py"
+    scene.write_text(BACKED.format(source=str(source), destination=str(destination)))
+    admission.DEMOTED.clear()
+    session = Session.open(
+        scene,
+        "Backed",
+        config={**SMALL, "frame_rate": 10, "media_dir": str(tmp_path / "media")},
+    )
+    try:
+        record = session.record
+        expected = ["backplate", "face", "lamp", "needle"]
+        with Drawing(record) as drawing:
+            for capture in record.plays[0].samples:
+                drawing.show(capture, capture.roots)
+                assert _layers(capture.roots) == expected
+        assert _layers(session.scene.mobjects) == expected
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
 
 
 def test_a_destination_already_in_the_scene_is_refused():

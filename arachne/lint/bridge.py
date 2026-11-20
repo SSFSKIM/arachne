@@ -913,10 +913,13 @@ def _points(operands: Any) -> np.ndarray:
 def _outline(mobject: Any) -> np.ndarray:
     """Points along ``mobject``'s family: each cubic curve of a member
     sampled about every :data:`SPACING` units of its longest control
-    polygon, other points as they are; its centre when it has none.
+    polygon, other points as they are; its centre when it has none. A
+    member that draws nothing by its class (a rig's carrier) is passed over.
     """
     out: list[np.ndarray] = []
     for member in mobject.family_members_with_points():
+        if getattr(type(member), "_scaffold", False):
+            continue
         points = np.asarray(member.points, dtype=float)
         per_curve = getattr(member, "n_points_per_curve", 4)
         whole = len(points) - len(points) % per_curve

@@ -193,10 +193,6 @@ class CairoRenderer:
             draw = False
         live = None
         opened = False
-        if draw and timeline.ensure_record().bridge.calls:
-            from ..lint.raised import refuse_drawing
-
-            refuse_drawing(timeline.ensure_record())
         if draw:
             # The play's segment opens at its first frame: a stop condition
             # can end the play before the frame grid reaches it, and then it
@@ -248,10 +244,7 @@ class CairoRenderer:
         span, from its recorded samples, and return its static picture.
         """
         record = scene._arachne_timeline.ensure_record()
-        if record.bridge.calls:
-            from ..lint.raised import refuse_drawing
-
-            refuse_drawing(record)
+        self._refuse_found(record)
         self.file_writer.begin_animation(True, animation_index=self.num_plays)
         with Drawing(record) as drawing:
             static = drawing.static(play)
@@ -417,11 +410,9 @@ class CairoRenderer:
     def scene_finished(self, scene: Scene) -> None:
         output = self.file_writer.output_spec
         record = scene._arachne_timeline.record
-        if record is not None and record.bridge.calls and scene._arachne_timeline.draws:
+        if record is not None and scene._arachne_timeline.draws:
             # What the scene's code found after its last play drawn.
-            from ..lint.raised import refuse_drawing
-
-            refuse_drawing(record)
+            self._refuse_found(record)
         if self.num_plays and (output.is_video or output.is_image_sequence):
             self.file_writer.finish()
         elif not self.num_plays:
@@ -433,6 +424,19 @@ class CairoRenderer:
             if self.num_plays:
                 self._draw_final(scene)
             self.file_writer.save_image(self.get_frame())
+
+    @staticmethod
+    def _refuse_found(record: Any) -> None:
+        """Raise what the scene's code found for the lint that refuses
+        drawing (:func:`~arachne.lint.raised.found`), in a run that writes
+        files. A run that writes none (a session's, and the forward runs
+        that answer its states and lint) draws on: a session refuses a
+        request for pictures itself.
+        """
+        if record.bridge.calls and not config.dry_run:
+            from ..lint.raised import refuse_drawing
+
+            refuse_drawing(record)
 
     def _draw_final(self, scene: Scene) -> None:
         """Draw the scene as its script left it into the camera: from the

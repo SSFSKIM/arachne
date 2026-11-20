@@ -1,6 +1,7 @@
 """Where a rig is placed, kept apart from its pose: a whole-rig move moves
 its carrier and a part's own move does not, a one-part rig and a rig that is
-one straight line are placed alike, and a pose and a whole-rig move in one
+one straight line are placed alike, a rig's every measure is its art's, the
+carrier taking no space, and a pose and a whole-rig move in one
 play give, at every tick and at the end, the pose of the interpolated values
 in the interpolated place, whichever comes first.
 """
@@ -14,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from arachne import RIGHT, Square
+from arachne import DL, RIGHT, UR, Square, VGroup
 from arachne.assets import Rig
 from arachne.assets.pose import CARRIER_WIDTH
 from arachne.session import Session
@@ -85,15 +86,38 @@ def _art(rig: Rig) -> np.ndarray:
     return np.concatenate([np.asarray(m.points) for m in rig.part("rod").submobjects])
 
 
+def _assert_measured_as_art(rig: Rig) -> None:
+    """Every measure of ``rig`` is its art's, wherever its carrier stands."""
+    art = _art(rig)
+    low, high = art.min(axis=0), art.max(axis=0)
+    assert rig.width == pytest.approx(high[0] - low[0], abs=1e-12)
+    assert rig.height == pytest.approx(high[1] - low[1], abs=1e-12)
+    np.testing.assert_allclose(rig.get_center(), (low + high) / 2, atol=1e-12)
+    np.testing.assert_allclose(rig.get_corner(UR), high, atol=1e-12)
+    np.testing.assert_allclose(rig.get_critical_point(DL), low, atol=1e-12)
+    # Placed beside something, and centred, by its art.
+    square = Square()
+    rig.next_to(square, RIGHT, buff=0.5)
+    assert _art(rig)[:, 0].min() == pytest.approx(square.get_right()[0] + 0.5)
+    rig.center()
+    art = _art(rig)
+    np.testing.assert_allclose((art.min(axis=0) + art.max(axis=0)) / 2, 0, atol=1e-12)
+    # The same in a group that holds it.
+    group = VGroup(rig)
+    assert group.width == pytest.approx(rig.width, abs=1e-12)
+    np.testing.assert_allclose(group.get_center(), rig.get_center(), atol=1e-12)
+
+
 def test_a_one_part_rig_that_is_one_straight_line_poses_where_it_is_placed(rod):
     rig = Rig(rod)
     line = _scene_of(rig.asset, np.asarray(rig.asset.rest("rod")[0].points)[:, :2])
     pivot = _scene_of(rig.asset, np.array([[10.0, 50.0]]))[0]
     np.testing.assert_allclose(_art(rig), line, atol=1e-12)
-    # The box is the line's, give or take the carrier.
-    assert rig.height == pytest.approx(0, abs=CARRIER_WIDTH)
+    # The box is the line's: the carrier takes no space.
+    assert rig.height == 0
     rig.pose(tilt=90)
     np.testing.assert_allclose(_art(rig), _turned(line, pivot, 90), atol=1e-12)
+    _assert_measured_as_art(Rig(rod).pose(tilt=90))
     rig.pose(tilt=0, grow=2)
     grown = pivot + (line - pivot) * 1.5
     np.testing.assert_allclose(_art(rig), grown, atol=1e-12)
@@ -285,3 +309,58 @@ def test_a_pose_beside_a_flow_leaves_the_flows_driver_running(opened):
         np.testing.assert_allclose(got, want, atol=1e-9)
     (flow,) = driver.flows
     assert flow.elapsed == pytest.approx(1.5)
+
+
+def test_the_lint_reads_a_rigs_art_and_not_its_carrier(opened):
+    from arachne.lint.parts import build_parts
+
+    session = opened("MoveThenPose", 4)
+    record = session.record
+    box = _rig(session, "box")
+    shapes = {id(m) for m in box.family_members_with_points()} - {
+        id(point) for point in box.carrier.submobjects
+    }
+    parts = build_parts(
+        record,
+        record.duration,
+        None,
+        record.final,
+        answer="recorded",
+        target=(96, 54),
+    )
+    leaves = [leaf for part in parts.parts for leaf in part.leaves]
+    assert leaves
+    assert all(leaf.type != "CarrierPoint" for leaf in leaves)
+    assert len(leaves) == len(shapes)
+
+
+ROD_SCENE = """\
+from arachne import *
+
+
+class Tilted(Scene):
+    def construct(self):
+        rod = Rig({rod!r}, name="rod").pose(tilt=90)
+        self.add(rod)
+        self.wait(0.5)
+"""
+
+
+def test_the_lint_boxes_a_rig_by_its_art(rod, tmp_path):
+    scene = tmp_path / "tilted.py"
+    scene.write_text(ROD_SCENE.format(rod=str(rod)))
+    admission.DEMOTED.clear()
+    session = Session.open(
+        scene, "Tilted", config={**SMALL, "frame_rate": 4, "media_dir": str(tmp_path)}
+    )
+    try:
+        rig = _rig(session, "rod")
+        art = _art(rig)
+        query = session.query(Fraction(1, 4))
+        x0, y0, x1, y1 = query.bbox(session.record.origin(rig).id)
+        # The line stands upright: the box is the line's, as thin as it is.
+        assert x1 - x0 == pytest.approx(0, abs=1e-9)
+        assert y1 - y0 == pytest.approx(art[:, 1].max() - art[:, 1].min(), abs=1e-9)
+    finally:
+        session.close()
+        admission.DEMOTED.clear()

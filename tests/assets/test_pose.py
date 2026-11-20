@@ -2,7 +2,10 @@
 warp through their lattices and reshape through their stored outlines, each
 checked against a computation made here from the part files; a value
 outside its tested range, or a name the manifest does not have, is a
-finding; a rig's states are values the record keys apart.
+finding, at the instant a rate function carries a pose there too; a rig's
+states are values the record keys apart; two poses of one rig in one play
+each move their own parameters; a parameter or slot named as a pose's own
+option, or both named alike, is refused with the manifest.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from arachne.timeline import admission
 from arachne.timeline.record import RegisteredState
 
 from . import rig_scenes
-from .helpers import refused
+from .helpers import copied, edited, refused
 
 SCENES = Path(rig_scenes.__file__)
 
@@ -225,3 +228,122 @@ def test_two_rig_states_key_apart_and_an_earlier_capture_is_unchanged(states):
         record.node_state(lid, held).get("_points"),
         record.node_state(lid, after).get("_points"),
     )
+
+
+@pytest.fixture
+def opened():
+    sessions: list[Session] = []
+    admission.DEMOTED.clear()
+
+    def open_scene(scene: str) -> Session:
+        session = Session.open(
+            SCENES,
+            scene,
+            config={"pixel_width": 96, "pixel_height": 54, "frame_rate": 30},
+        )
+        sessions.append(session)
+        return session
+
+    yield open_scene
+    for session in sessions:
+        session.close()
+    admission.DEMOTED.clear()
+
+
+def test_a_pose_eased_past_its_target_inside_the_range_draws_the_value_it_gives(
+    opened,
+):
+    session = opened("Overshooting")
+    record = session.record
+    box = next(m for m in session.scene.mobjects if isinstance(m, Rig))
+    hinge = _pivot(box, "lid")
+    rest = _rest(box, "lid")
+    past = 0
+    for capture in record.plays[0].samples:
+        value = float(record.node_state(box, capture).get("_values")[0])
+        lid = [
+            np.asarray(record.node_state(m, capture).get("_points"))
+            for m in box.part("lid").submobjects
+        ]
+        _close(lid, [_turned(points, hinge, value) for points in rest])
+        past += value > 50
+    # The rate function ran past the target, and the lid went with it.
+    assert past > 3
+    assert box.value("lid_open") == 50
+
+
+def test_a_pose_eased_past_its_tested_range_is_refused_at_the_play():
+    from arachne.utils.rate_functions import ease_in_back, ease_out_back
+
+    box = Rig("fixture:lidded-box")
+    eased = Pose(box, lid_open=110, rate_func=ease_out_back)
+    eased.begin()
+    found = refused("rig.range", lambda: eased.interpolate(0.8))
+    assert found.detail["parameter"] == "lid_open"
+    assert found.detail["value"] > 110
+    assert (found.detail["min"], found.detail["max"]) == (0, 110)
+    # The rig keeps the last value in range it was given.
+    assert 0 <= box.value("lid_open") <= 110
+    below = Rig("fixture:lidded-box").pose(lid_open=0)
+    dipping = Pose(below, lid_open=60, rate_func=ease_in_back)
+    dipping.begin()
+    found = refused("rig.range", lambda: dipping.interpolate(0.1))
+    assert found.detail["value"] < 0
+
+
+@pytest.mark.parametrize("scene", ["TwoPoses", "TwoPosesReversed"])
+def test_two_poses_of_one_rig_in_one_play_each_move_their_own_parameter(opened, scene):
+    session = opened(scene)
+    record = session.record
+    figure = next(m for m in session.scene.mobjects if isinstance(m, Rig))
+    reach, turn = figure.model.index["reach"], figure.model.index["head_turn"]
+    _, middle = record.capture_at(Fraction(3, 10))
+    values = record.node_state(figure, middle).get("_values")
+    assert 0 < values[reach] < 1
+    assert 0 < values[turn] < 25
+    assert (figure.value("reach"), figure.value("head_turn")) == (1, 25)
+    reference = Rig(figure.asset).pose(reach=1, head_turn=25)
+    _close(_drawn(figure), _drawn(reference))
+
+
+@pytest.mark.parametrize("option", ["run_time", "rate_func", "name"])
+def test_a_parameter_or_slot_named_as_a_pose_option_is_refused(tmp_path, option):
+    def parameter(document: dict) -> None:
+        document["parameters"][0]["name"] = option
+
+    def slot(document: dict) -> None:
+        document["slots"][0]["name"] = option
+
+    for edit, member in ((parameter, "parameters[0].name"), (slot, "slots[0].name")):
+        directory = edited(copied(tmp_path / edit.__name__ / option, "dial"), edit)
+        found = refused("asset.manifest_invalid", lambda d=directory: Rig(d))
+        assert found.detail["member"] == member
+        assert option in found.detail["reason"]
+
+
+def test_a_slot_and_a_parameter_sharing_a_name_are_refused(tmp_path):
+    def shared(document: dict) -> None:
+        document["slots"][0]["name"] = "reading"
+
+    directory = edited(copied(tmp_path, "dial"), shared)
+    found = refused("asset.manifest_invalid", lambda: Rig(directory))
+    assert found.detail["member"] == "slots[0].name"
+    assert "reading" in found.detail["reason"]
+
+
+def test_a_model_lives_as_long_as_its_asset():
+    import gc
+    import weakref
+
+    from arachne.assets import load_asset
+    from arachne.assets.pose import model_of
+
+    asset = load_asset("fixture:dial")
+    rig = Rig(asset)
+    assert rig.model is model_of(asset)
+    gone = weakref.ref(asset)
+    model = weakref.ref(rig.model)
+    del asset, rig
+    gc.collect()
+    assert gone() is None
+    assert model() is None

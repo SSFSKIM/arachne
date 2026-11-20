@@ -1,11 +1,26 @@
 """Scenes of rigs: posed in a play with a whole-rig move, in either order;
-a pose through the keys of a reshaped part; a slot switched by a pose; one
-rig morphed into another.
+a pose through the keys of a reshaped part; a slot switched by a pose, alone
+and while the rig moves; two poses of one rig in one play; one rig morphed
+into another.
 """
 
 from __future__ import annotations
 
-from arachne import DOWN, LEFT, RIGHT, UP, Flow, Line, MorphParts, Pose, Rig, Scene
+from arachne import (
+    DOWN,
+    LEFT,
+    RIGHT,
+    UP,
+    Dot,
+    Flow,
+    Line,
+    MorphParts,
+    Pose,
+    Rig,
+    Scene,
+    VGroup,
+)
+from arachne.utils.rate_functions import ease_out_back
 
 #: How far the box moves while it opens.
 MOVE = 2 * RIGHT + 0.5 * UP
@@ -58,6 +73,89 @@ class Switching(Scene):
         self.play(dial.animate.shift(UP), run_time=0.5)
 
 
+class SwitchThenMove(Scene):
+    """A pose that switches a slot, and a whole-rig move, in one play: the
+    pose first.
+    """
+
+    def construct(self) -> None:
+        dial = Rig("fixture:dial", name="dial")
+        self.add(dial)
+        self.play(
+            Pose(dial, reading=90, lamp="on"), dial.animate.shift(UP), run_time=0.5
+        )
+
+
+class MoveThenSwitch(Scene):
+    """A whole-rig move and a pose that switches a slot, in one play: the
+    move first.
+    """
+
+    def construct(self) -> None:
+        dial = Rig("fixture:dial", name="dial")
+        self.add(dial)
+        self.play(
+            dial.animate.shift(UP), Pose(dial, reading=90, lamp="on"), run_time=0.5
+        )
+
+
+class GroupMoveThenSwitch(Scene):
+    """A move of a group that holds a rig, then a pose that switches the
+    rig's slot, in one play.
+    """
+
+    def construct(self) -> None:
+        dial = Rig("fixture:dial", name="dial")
+        group = VGroup(dial, Dot(2 * LEFT))
+        self.add(group)
+        self.play(
+            group.animate.shift(UP), Pose(dial, reading=90, lamp="on"), run_time=0.5
+        )
+
+
+class SwitchThenGroupMove(Scene):
+    """:class:`GroupMoveThenSwitch` with the pose first."""
+
+    def construct(self) -> None:
+        dial = Rig("fixture:dial", name="dial")
+        group = VGroup(dial, Dot(2 * LEFT))
+        self.add(group)
+        self.play(
+            Pose(dial, reading=90, lamp="on"), group.animate.shift(UP), run_time=0.5
+        )
+
+
+class FadedThenSwitched(Scene):
+    """A rig faded by an animation, then a slot switched to a drawing hidden
+    while it faded.
+    """
+
+    def construct(self) -> None:
+        dial = Rig("fixture:dial", name="dial")
+        self.add(dial)
+        self.play(dial.animate.set_opacity(0.4), run_time=0.25)
+        dial.show(lamp="on")
+        self.wait(0.25)
+
+
+class TwoPoses(Scene):
+    """Two poses of one rig's two parameters in one play."""
+
+    def construct(self) -> None:
+        figure = Rig("fixture:figure", name="figure")
+        self.add(figure)
+        self.play(Pose(figure, reach=1), Pose(figure, head_turn=25), run_time=0.5)
+
+
+class TwoPosesReversed(Scene):
+    """:class:`TwoPoses` with its poses in the other order."""
+
+    def construct(self) -> None:
+        figure = Rig("fixture:figure", name="figure")
+        self.add(figure)
+        self.play(Pose(figure, head_turn=25), Pose(figure, reach=1), run_time=0.5)
+
+
 class States(Scene):
     """A rig posed twice between plays, the second time after a wait."""
 
@@ -102,3 +200,14 @@ class PoseBesideFlow(Scene):
         self.add(box)
         self.play(Pose(box, lid_open=OPEN), run_time=1)
         self.wait(0.5)
+
+
+class Overshooting(Scene):
+    """A pose whose rate function runs past its target, well inside the
+    parameter's tested range.
+    """
+
+    def construct(self) -> None:
+        box = Rig("fixture:lidded-box", name="box")
+        self.add(box)
+        self.play(Pose(box, lid_open=50, rate_func=ease_out_back), run_time=1)
