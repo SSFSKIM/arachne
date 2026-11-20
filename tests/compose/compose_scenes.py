@@ -244,6 +244,20 @@ class LiveLayer(Scene):
         self.play(FadeIn(dot))
 
 
+class LiveLayerFound(Scene):
+    """A scene drawn as it runs, holding a blurred layer, whose code also
+    found what refuses drawing it.
+    """
+
+    def construct(self):
+        from arachne.lint.raised import found
+
+        found("annotation.anchor_unknown", "an anchor no rig has")  # @found
+        dot = HashDot()
+        set_layer(dot, LayerSpec(blur=0.1))
+        self.play(FadeIn(dot))
+
+
 SHIFT = 0.0
 
 

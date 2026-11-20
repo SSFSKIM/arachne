@@ -14,6 +14,7 @@ import pytest
 from arachne.compose import guard
 from arachne.compose.stack import Unsupported as StackUnsupported
 from arachne.lint.keyframes import _refusals_apart
+from arachne.lint.raised import RaisedFinding
 from arachne.routing import GpuLive, GpuRequired
 from arachne.server import dispatch
 from arachne.server.dispatch import Dispatcher
@@ -82,6 +83,42 @@ def test_a_scene_drawn_as_it_runs_refuses_every_answer_but_its_lint(
         session.answers([HALF], frames=False)
     (finding,) = session.lint().findings
     assert (finding.code, finding.severity) == ("render.gpu_live", "error")
+
+
+@pytest.mark.parametrize("host", ["no_gpu", "a_gpu"])
+def test_what_a_scene_drawn_as_it_runs_found_refuses_its_pictures_first(
+    tmp_path, request, session_of, host
+):
+    """Every picture of a scene whose code found what refuses drawing it is
+    refused for that finding, at its line, before its route is: a frame
+    asked directly, a framed answer, and a frame asked of its stored
+    session.
+    """
+    request.getfixturevalue(host)
+    line = next(
+        number
+        for number, text in enumerate(SCENES.read_text().splitlines(), start=1)
+        if text.endswith("# @found")
+    )
+    session = session_of("LiveLayerFound")
+    assert session.record.refusal is not None
+    refusals = []
+    for ask in (session.frame, lambda t: session.answers([t])):
+        with pytest.raises(RaisedFinding) as refused:
+            ask(HALF)
+        refusals.append((refused.value.code, refused.value.line))
+    _open("LiveLayerFound").handle("close", {})
+    server = _open("LiveLayerFound")
+    try:
+        assert server.session is None
+        with pytest.raises(RpcError) as answered:
+            server.handle("frame", {"t": 0.5, "path": str(tmp_path / "frame.png")})
+    finally:
+        server.handle("close", {})
+    finding = answered.value.data["finding"]
+    refusals.append((finding["code"], finding["line"]))
+    assert refusals == [("annotation.anchor_unknown", line)] * 3
+    assert snapshot(tmp_path) == {}
 
 
 def test_a_forward_run_draws_on_the_route_of_the_whole_scene(session_of, no_gpu):

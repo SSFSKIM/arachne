@@ -450,9 +450,13 @@ class Session:
         can't be, and :class:`~arachne.timeline.routes.RecordRefused` for a
         scene whose camera the record can't draw. A scene on the ``gpu``
         route is drawn on this host's GPU (:mod:`arachne.compose`), and
-        refused with ``render.gpu_required`` where it has none.
+        refused with ``render.gpu_required`` where it has none. What the
+        scene's code found that refuses drawing it is refused first
+        (:func:`~arachne.compose.session.refuse_pictures`).
         """
-        self._live_refused()
+        from .compose.session import refuse_pictures
+
+        refuse_pictures(self, self.record)
         self._use_quality(quality)
         record = self.record
         (pixels,) = self._drawn(
