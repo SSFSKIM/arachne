@@ -10,7 +10,10 @@ scene declares::
 - :data:`contact`: ``contact.held``, ``overlap.text`` and ``gap.text``;
 - :data:`occlusion`: ``occlusion.glyph``, text something is drawn over;
 - :data:`sweep`: the three at once, one sweep of the frame;
-- :data:`text_small`: ``text.small``, a note.
+- :data:`text_small`: ``text.small``, a note;
+- :data:`diagram_clear`: ``overlap.text``, ``gap.text``,
+  ``clip.frame_edge`` and ``text.small`` for the labels inside a diagram,
+  whose pieces the pair rules let touch.
 
 They read the parts the frame draws (:mod:`arachne.lint.parts`), in
 home-frame units, the camera's projection applied, and a pair's two sides
@@ -24,6 +27,7 @@ __all__ = [
     "InstantRule",
     "Terms",
     "contact",
+    "diagram_clear",
     "frame_edge",
     "occlusion",
     "sweep",
@@ -36,6 +40,7 @@ from ..parts import Parts
 from ._pairs import pair_findings
 from ._rule import DEFAULT_PAD, InstantRule, Terms
 from .contact import contact
+from .diagram_clear import diagram_clear
 from .frame_edge import edge_findings, frame_edge
 from .occlusion import occlusion
 from .text_small import text_small

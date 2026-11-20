@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Arachne record",
-  "description": "A session's record: its timeline, the identity of the execution that made it, where each mobject was made, and the divergences found. It holds no samples, values or content keys. A field added is a minor version, a field changed or removed a major one.",
+  "description": "A session's record: its timeline, the identity of the execution that made it, where each mobject was made, the divergences found, and its bakes' identities and stays. It holds no samples, values or content keys of mobjects, and no bake's values. A field added is a minor version, a field changed or removed a major one.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -21,7 +21,8 @@
     "markers",
     "mobjects",
     "divergences",
-    "probe"
+    "probe",
+    "bakes"
   ],
   "properties": {
     "schema_version": {"$ref": "#/$defs/schema_version"},
@@ -137,10 +138,151 @@
           }
         }
       }
+    },
+    "bakes": {
+      "description": "What the scene's simulations computed, without its values: each content (immutable, holding nothing of the scene) by its key, and each occurrence, a stay that places one content in the scene, by ordinal. Empty lists when the scene made none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contents", "occurrences"],
+      "properties": {
+        "contents": {
+          "description": "By key.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "identity", "ticks", "channels", "events"],
+            "properties": {
+              "key": {
+                "description": "The BLAKE2b-128 digest of the content's canonical bytes, in hex.",
+                "$ref": "#/$defs/digest"
+              },
+              "identity": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "producer",
+                  "producer_version",
+                  "solver",
+                  "solver_version",
+                  "integrator",
+                  "build",
+                  "features"
+                ],
+                "properties": {
+                  "producer": {"type": "string"},
+                  "producer_version": {"type": "string"},
+                  "solver": {"type": "string"},
+                  "solver_version": {"type": "string"},
+                  "integrator": {"type": "string"},
+                  "build": {"type": "string"},
+                  "features": {"type": "array", "items": {"type": "string"}}
+                }
+              },
+              "ticks": {"description": "Its rows, one a tick.", "type": "integer", "minimum": 1},
+              "channels": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "dtype", "shape", "unit"],
+                  "properties": {
+                    "name": {"type": "string"},
+                    "dtype": {"enum": ["f32", "f64", "i32", "u32"]},
+                    "shape": {
+                      "description": "The shape of one row.",
+                      "type": "array",
+                      "items": {"type": "integer", "minimum": 0}
+                    },
+                    "unit": {"type": "string"}
+                  }
+                }
+              },
+              "events": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "columns", "rows"],
+                  "properties": {
+                    "name": {"type": "string"},
+                    "columns": {"type": "integer", "minimum": 1},
+                    "rows": {"type": "integer", "minimum": 0}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "occurrences": {
+          "description": "By ordinal, the order their stays began in.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ordinal",
+              "content",
+              "first_tick",
+              "last_tick",
+              "closed",
+              "declaration",
+              "bindings",
+              "findings"
+            ],
+            "properties": {
+              "ordinal": {"type": "integer", "minimum": 0},
+              "content": {"description": "Its content's key.", "$ref": "#/$defs/digest"},
+              "first_tick": {
+                "description": "The stay's first tick: row i is tick first_tick + i, shown from (first_tick + i)/60 s.",
+                "type": "integer",
+                "minimum": 0
+              },
+              "last_tick": {"type": "integer", "minimum": 0},
+              "closed": {
+                "description": "Whether no scene code ran as it was stepped.",
+                "type": "boolean"
+              },
+              "declaration": {
+                "description": "The digest of the declaration it was computed from, in hex.",
+                "$ref": "#/$defs/digest"
+              },
+              "bindings": {
+                "description": "Which mobject, by stable id, a row of a channel's first axis (index), or the whole channel (index null), is about.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "channel", "index"],
+                  "properties": {
+                    "id": {"type": "string"},
+                    "channel": {"type": "string"},
+                    "index": {"type": ["integer", "null"], "minimum": 0}
+                  }
+                }
+              },
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["code", "row", "ids", "detail"],
+                  "properties": {
+                    "code": {"type": "string"},
+                    "row": {"type": "integer", "minimum": 0},
+                    "ids": {"type": "array", "items": {"type": "string"}},
+                    "detail": {"type": "object"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"const": "1.1"},
     "time": {"description": "Seconds of scene time.", "type": "number"},
     "exact": {
       "description": "An exact instant or rate, the rational \"n/d\".",
@@ -152,6 +294,7 @@
       "pattern": "^-?[0-9]+/[0-9]+$"
     },
     "line": {"type": ["integer", "null"], "minimum": 1},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
     "source": {
       "description": "The path:line of the scene's code, its path relative to the scene file's directory when inside it.",
       "type": ["string", "null"]

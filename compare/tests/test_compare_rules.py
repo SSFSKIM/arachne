@@ -8,8 +8,10 @@ import numpy as np
 import pytest
 from arachne_compare import (
     ArrayFrames,
+    ChangedSet,
     EdgeBudget,
     Footprint,
+    HandedMaps,
     ObjectMap,
     Thresholds,
     cheap,
@@ -330,3 +332,83 @@ def test_a_mode_other_than_the_two_is_refused():
     frame = plain(27, 48)
     with pytest.raises(ValueError, match="mode"):
         verdict_of(frame, frame, "loose")
+
+
+def test_an_empty_comparison_is_refused():
+    none = ArrayFrames([], Fraction(15))
+    with pytest.raises(ValueError, match="no frames"):
+        compare(
+            none,
+            none,
+            mode="same",
+            maps=HandedMaps({}, {}),
+            changed=lambda i, j: None,
+            plays=[],
+            fps=Fraction(15),
+            seed=0,
+            key="empty",
+        )
+
+
+def test_frames_with_different_channels_are_refused():
+    size = (270, 480)
+    rgb = plain(*size)
+    rgba = np.dstack([rgb, np.full(size, 255, np.uint8)])
+    with pytest.raises(ValueError, match="channels"):
+        verdict_of(rgb, rgba, "same")
+
+
+def faces_case(parent: str | None):
+    """Ten faces, apart, one edge pixel of each differing by more than 16: each
+    under its own budget, ten together over the budget of one drawable.
+    """
+    size = (270, 480)
+    reference = plain(*size)
+    candidate = reference.copy()
+    objects = {}
+    for k in range(10):
+        box = (20 + 40 * k, 50, 40 + 40 * k, 60)
+        objects[f"face-{k}"] = Footprint(box, np.ones((10, 20), bool), parent=parent)
+        candidate[50, 20 + 40 * k] += 30
+    found = ObjectMap(size, objects, complete=False)
+    thresholds = Thresholds(edge_budget=EdgeBudget(delta=16, share=0.01, floor_px=4))
+    return verdict_of(reference, candidate, "cross", found, found, thresholds)
+
+
+def test_the_edge_budget_holds_a_drawable_with_all_its_parts():
+    assert faces_case(None).verdict == "pass"
+    over = faces_case("surface")
+    assert over.codes == {"gate.edge.over_budget"}
+    (finding,) = over.findings
+    assert finding.object == "surface"
+    assert finding.detail["edge_pixels"] == 560
+    assert finding.detail["differing"] == 10
+    # Each face's own counts are kept.
+    assert over.edges["face-0"] == {"pixels": 56, "changed": 1, "strong": 1}
+
+
+def test_flicker_is_not_judged_where_a_changed_object_drew_is_unknown():
+    """A square the record says moved, and no candidate map of the frame before:
+    where it drew then is unknown, never read as nowhere.
+    """
+    size = (270, 480)
+    before = plain(*size)
+    before[100:120, 100:120] = 200
+    after = plain(*size)
+    after[100:120, 200:220] = 200
+    square = {"square": Footprint((200, 100, 220, 120), np.ones((20, 20), bool))}
+    found = ObjectMap(size, square, complete=False)
+    frames = ArrayFrames([before, after], Fraction(15))
+    verdict = compare(
+        frames,
+        frames,
+        mode="same",
+        maps=HandedMaps({0: found, 1: found}, {1: found}),
+        changed=lambda i, j: ChangedSet(frozenset({"square"})),
+        plays=[(0, 2)],
+        fps=Fraction(15),
+        seed=0,
+        key="unknown",
+    )
+    assert verdict.verdict == "pass"
+    assert verdict.counts["flicker_unjudged"] == 1

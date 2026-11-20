@@ -49,6 +49,10 @@ gates:
     timeout: 45
   - name: macos
     lane: hosted-macos
+    # GitHub runs five hosted macOS jobs at a time for the whole account, shared with the account's other
+    # repositories, so a ci-gate push does not start this one: the pull request's run carries it, and
+    # `ci-gate --gates macos` runs it by name.
+    on: [pr, dispatch]
     run: uv run python -m pytest --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.14"}
     timeout: 60
@@ -86,6 +90,10 @@ gates:
     timeout: 20
   - name: core-macos
     lane: hosted-macos
+    # GitHub runs five hosted macOS jobs at a time for the whole account, shared with the account's other
+    # repositories, so a ci-gate push does not start this one: the pull request's run carries it, and
+    # `ci-gate --gates core-macos` runs it by name.
+    on: [pr, dispatch]
     setup: false
     paths: ["core/**", ".github/ci-kit.yml"]
     run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
@@ -133,3 +141,27 @@ gates:
     paths: ["sim/**", ".github/ci-kit.yml"]
     run: bash sim/ci/macos.sh
     timeout: 40
+
+  # The GPU build (gpu/, the arachne-gpu crate and its Python binding): a build of its own, never
+  # an extra of the engine. Its drawing tests run on a software adapter (lavapipe) that each gate
+  # installs itself. gpu-binding and cpu-bytes run on every pull request, whatever it changes:
+  # cpu-bytes shows that a scene using nothing new draws the same bytes with the GPU build
+  # installed and without it.
+  - name: gpu-lint
+    setup: false
+    paths: ["gpu/**", ".github/ci-kit.yml"]
+    run: bash gpu/ci/lint.sh
+    timeout: 20
+  - name: gpu-test
+    setup: false
+    paths: ["gpu/**", ".github/ci-kit.yml"]
+    run: bash gpu/ci/test.sh
+    timeout: 30
+  - name: gpu-binding
+    run: bash gpu/ci/binding.sh gpu/tests/python
+    env: {UV_PYTHON: "3.12"}
+    timeout: 30
+  - name: cpu-bytes
+    run: bash gpu/ci/cpu_bytes.sh
+    env: {UV_PYTHON: "3.12"}
+    timeout: 45

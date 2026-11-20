@@ -202,6 +202,19 @@ _TABLE = (
         "Scale the text up, or give it a larger font size.",
         ("height_px",),
     ),
+    Code(
+        "sim.quantity_unreadable",
+        "error",
+        "QuantityUnreadable",
+        "a declared quantity of an object in the scene has no readable value"
+        " at the instant: its name has no registered prefix, its unit is not"
+        " registered, its value is not finite or not of its kind, or its source"
+        " holds no value there (a simulation's quantity outside the stay it was"
+        " baked over); it is answered as null with the reason, never as a number",
+        "Declare the quantity under a registered prefix and unit with a finite"
+        " value of its kind, and read it only where its source holds a value.",
+        ("name", "unit", "reason"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

@@ -25,6 +25,7 @@ PUBLISHED = [
     ("render.unsupported", "error", "Unsupported"),
     ("render.fallback", "warning", "RenderFallback"),
     ("text.small", "note", "TextSmall"),
+    ("sim.quantity_unreadable", "error", "QuantityUnreadable"),
 ]
 
 

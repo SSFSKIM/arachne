@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from arachne.scene.scene import Scene
 
     from .admission import Admission
+    from .bake import Bakes
     from .bodies import Exit
     from .camera_code import Replaced
     from .draw import CameraExtras
@@ -304,6 +305,9 @@ class PlayRecord:
     random_state: tuple[Any, Any] | None = field(default=None, repr=False)
     #: The partial movie key its frames are cached under, if any.
     cache_key: str | None = None
+    #: The frame rate its frames are drawn at: its camera's as it began, which
+    #: the renderer reads then; ``None`` for a renderer with no camera rate.
+    frame_rate: Fraction | None = None
     #: Why its frames can't be drawn from the record though they were to be:
     #: a mobject joined while it ran whose drawing runs the scene's code.
     draw_refusal: str | None = None
@@ -596,6 +600,10 @@ class Record:
     #: The assertion bridge's calls, per play (:class:`.recorder.Bridge`),
     #: given by the recorder that makes the record.
     bridge: Bridge
+    #: The record's bakes (:class:`.bake.Bakes`): immutable contents by
+    #: digest, and the occurrences that place them in this execution;
+    #: ``None`` on a record of a scene that made none.
+    bakes: Bakes | None = None
 
     def __init__(
         self,
