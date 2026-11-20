@@ -191,6 +191,34 @@ def test_a_body_held_on_screen_after_its_world_left_reads_as_of_its_capture(open
     assert read == _read(session.state_at(Fraction(1, 2)), body)
 
 
+@pytest.mark.parametrize("scene", ["BackAfterItsWorld", "BackAfterItsWorldTicked"])
+def test_a_body_back_on_screen_after_its_world_left_reads_its_stay_s_last_row(
+    opened, scene
+):
+    """Added back unmoving after its world left at 1/2 s, a body reads the
+    row its placement shows, its stay's last (tick 30), whatever the route
+    that answers: a held wait's one capture or a ticked wait's own.
+    """
+    session = opened(scene)
+    (body,) = _bodies(session)
+    bakes = session.record.bakes
+    (occurrence,) = bakes.occurrences
+    assert occurrence.last_tick == 30
+    channels = bakes.contents[occurrence.content].channels
+    x, y = channels["pose"].values[30, 0, :2].astype(float)
+    vx, vy = channels["velocity"].values[30, 0, :2].astype(float)
+    state = session.state_at(Fraction(3, 4))
+    read = _read(state, body)
+    assert all(q.unreadable is None for q in read.values()), read
+    assert read["sim.position"].value == (x, y, 0.0)
+    assert read["sim.velocity"].value == (vx, vy, 0.0)
+    # Its placement shows that row.
+    x0, y0, x1, y1 = state.node(body).scene_box
+    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((x, y), abs=1e-6)
+    result, found = _simulation(session)
+    assert found == [], [f.message for f in found]
+
+
 def test_a_body_shown_after_its_world_left_is_unreadable(opened):
     session = opened("ShownAfterItsWorld")
     (body,) = _bodies(session)
