@@ -69,6 +69,7 @@ __all__ = [
     "Quantity",
     "SOURCES",
     "attach",
+    "carriable",
     "declares",
     "point_answers",
     "point_source",
@@ -259,9 +260,17 @@ def register(prefix: str, *, owner: str, units: Iterable[str] = ()) -> None:
 
 def register_unit(unit: str) -> None:
     """Register ``unit``: a non-empty string without white space."""
-    if not isinstance(unit, str) or not unit or any(c.isspace() for c in unit):
-        raise ValueError(f"A unit is a non-empty string without spaces: {unit!r}.")
+    why = _unit_fault(unit)
+    if why is not None:
+        raise ValueError(why)
     _UNITS.add(unit)
+
+
+def _unit_fault(unit: Any) -> str | None:
+    """Why ``unit`` could not be registered, or ``None``."""
+    if not isinstance(unit, str) or not unit or any(c.isspace() for c in unit):
+        return f"A unit is a non-empty string without spaces: {unit!r}."
+    return None
 
 
 def provider(cls: type) -> Callable[[_P], _P]:
@@ -430,6 +439,19 @@ def _check(quantity: Quantity) -> Quantity:
 
 
 def _name_fault(name: str) -> str | None:
+    why = _name_shape_fault(name)
+    if why is not None:
+        return why
+    head = name.partition(".")[0]
+    if f"{head}." not in _PREFIXES:
+        return f"the prefix {head + '.'!r} is not registered"
+    return None
+
+
+def _name_shape_fault(name: str) -> str | None:
+    """Why ``name`` is not ``<prefix>.<rest>`` in segments the check
+    accepts, or ``None``; whether the prefix is registered is not asked.
+    """
     head, dot, rest = name.partition(".")
     if not dot or not _SEGMENT.fullmatch(head) or not rest:
         return f"the name {name!r} is not <prefix>.<rest>"
@@ -438,8 +460,40 @@ def _name_fault(name: str) -> str | None:
             f"the name {name!r} is not dot-separated segments of letters,"
             " digits, '_' and '-'"
         )
-    if f"{head}." not in _PREFIXES:
-        return f"the prefix {head + '.'!r} is not registered"
+    return None
+
+
+def carriable(
+    name: str | None = None, unit: str | None = None, *, segment: bool = False
+) -> str | None:
+    """Why a quantity cannot carry ``name`` and ``unit``, or ``None`` when it
+    can. The reason is the read-time check's own wording, from the same code.
+
+    With ``segment`` false ``name`` is a whole name, checked as a read checks
+    it: ``<prefix>.<rest>``, every segment of letters, digits, ``_`` and
+    ``-``, and the prefix registered. With ``segment`` true it is one segment,
+    or dot-separated segments, of those characters; no prefix is asked for
+    or looked up. ``unit`` need not be registered: it is carriable when it
+    could be (a non-empty string without white space, as
+    :func:`register_unit` asks); a read still answers a unit nobody has
+    registered as unreadable. An argument left as ``None`` is not asked about.
+    The answer is a value, never an exception, whatever the arguments are.
+    """
+    if name is not None:
+        if not isinstance(name, str):
+            return f"a name is a string, not {name!r}"
+        if segment:
+            if not all(_SEGMENT.fullmatch(part) for part in name.split(".")):
+                return (
+                    f"the name {name!r} is not dot-separated segments of letters,"
+                    " digits, '_' and '-'"
+                )
+        else:
+            why = _name_fault(name)
+            if why is not None:
+                return why
+    if unit is not None:
+        return _unit_fault(unit)
     return None
 
 
