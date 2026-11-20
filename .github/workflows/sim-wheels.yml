@@ -36,7 +36,7 @@ jobs:
       - name: The pinned toolchain
         id: toolchain
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' sim/rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1 (v1.51.0)
         with:
           working-directory: sim
           target: ${{ matrix.target }}
