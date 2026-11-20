@@ -17,8 +17,8 @@ A server asked to open a session whose manifest's files still hold what
 they held, by digest, answers from the store until a request needs what the
 store does not hold, and only then executes the scene. Everything is kept
 under the engine that made it (:func:`engine_fingerprint`, its native core
-included): another engine, or this one edited or built again, reads none of
-it.
+and its simulation extension included): another engine, or this one edited
+or built again, reads none of it.
 
 The store is the directory ``ARACHNE_STORE`` names, else the user's cache
 directory's ``arachne/store``. Each file is written whole, under another
@@ -88,16 +88,17 @@ def store_dir() -> Path:
     return cache / "arachne" / "store"
 
 
-def _core_identity() -> str:
-    """The native core this process would load: ``arachne_core``'s version
-    and the sha256 of each of its compiled extensions, by name; ``"absent"``
-    when it is not installed. Read without importing it.
+def _extension_identity(module: str, distribution: str) -> str:
+    """The native extension package ``module`` this process would load: its
+    distribution's version and the sha256 of each of its compiled
+    extensions, by name; ``"absent"`` when it is not installed. Read without
+    importing it.
     """
-    spec = importlib.util.find_spec("arachne_core")
+    spec = importlib.util.find_spec(module)
     if spec is None or not spec.submodule_search_locations:
         return "absent"
     try:
-        version = importlib.metadata.version("arachne-core")
+        version = importlib.metadata.version(distribution)
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
     built = tuple(importlib.machinery.EXTENSION_SUFFIXES)
@@ -107,22 +108,36 @@ def _core_identity() -> str:
         for path in sorted(Path(location).iterdir())
         if path.name.endswith(built)
     ]
-    found = [f"arachne-core {version}"]
+    found = [f"{distribution} {version}"]
     found += [
         f"{p.name} {hashlib.sha256(p.read_bytes()).hexdigest()}" for p in extensions
     ]
     return "\n".join(found)
 
 
+def _core_identity() -> str:
+    """The native core this process would load (``arachne_core``)."""
+    return _extension_identity("arachne_core", "arachne-core")
+
+
+def _sim_identity() -> str:
+    """The simulation extension this process would load (``arachne_sim``),
+    whose solver build computes every bake.
+    """
+    return _extension_identity("arachne_sim", "arachne-sim")
+
+
 @functools.cache
 def engine_fingerprint() -> str:
     """The digest of the engine answering: the interpreter's version, every
-    source file of the ``arachne`` package, by path and content, and its
-    native core (:func:`_core_identity`).
+    source file of the ``arachne`` package, by path and content, its native
+    core (:func:`_core_identity`) and its simulation extension
+    (:func:`_sim_identity`).
     """
     root = Path(__file__).resolve().parent.parent
     digest = hashlib.sha256(sys.version.encode())
     digest.update(_core_identity().encode() + b"\0")
+    digest.update(_sim_identity().encode() + b"\0")
     for directory, names, files in os.walk(root):
         names[:] = sorted(n for n in names if n != "__pycache__")
         for name in sorted(files):

@@ -101,11 +101,18 @@ def undefined_from_pe(listing: str) -> list[str]:
 
 
 def undefined(binary: str) -> list[str]:
-    """The binary's undefined symbols (its imported functions, for a Windows executable)."""
+    """The binary's undefined symbols (its imported functions, for a Windows executable). On
+    Linux, those of its dynamic symbol table too, which a stripped shared object (the Python
+    extension) keeps alone.
+    """
     if binary.endswith(".exe"):
         out = run([llvm_objdump(), "-p", binary])
         return undefined_from_pe(out)
-    return undefined_from_nm(run(["nm", "-u", binary]))
+    symbols = undefined_from_nm(run(["nm", "-u", binary]))
+    if platform.system() == "Linux":
+        dynamic = undefined_from_nm(run(["nm", "-D", "-u", binary]))
+        symbols += [s for s in dynamic if s not in symbols]
+    return symbols
 
 
 def llvm_objdump() -> str:

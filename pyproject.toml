@@ -70,6 +70,11 @@ core = [
 compare = [
     "arachne-compare",
 ]
+# The simulation crate (sim/): the solver that computes simulated motion, needed
+# only by scenes that declare a world; the default path never imports it.
+sim = [
+    "arachne-sim",
+]
 
 [dependency-groups]
 dev = [
@@ -105,6 +110,7 @@ required-version = ">=0.10.0"
 [tool.uv.sources]
 arachne-core = { path = "core" }
 arachne-compare = { path = "compare" }
+arachne-sim = { path = "sim" }
 
 [tool.uv.build-backend]
 module-root = ""

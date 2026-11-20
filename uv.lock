@@ -115,6 +115,9 @@ jupyterlab = [
     { name = "jupyterlab" },
     { name = "notebook" },
 ]
+sim = [
+    { name = "arachne-sim" },
+]
 typst = [
     { name = "typst" },
 ]
@@ -147,6 +150,7 @@ dev = [
 requires-dist = [
     { name = "arachne-compare", marker = "extra == 'compare'", directory = "compare" },
     { name = "arachne-core", marker = "extra == 'core'", directory = "core" },
+    { name = "arachne-sim", marker = "extra == 'sim'", directory = "sim" },
     { name = "audioop-lts", marker = "python_full_version >= '3.13'", specifier = ">=0.2.1" },
     { name = "av", specifier = ">=15.0" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
@@ -174,7 +178,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12.0" },
     { name = "typst", marker = "extra == 'typst'", specifier = ">=0.14" },
 ]
-provides-extras = ["jupyterlab", "typst", "core", "compare"]
+provides-extras = ["jupyterlab", "typst", "core", "compare", "sim"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -199,6 +203,17 @@ dev = [
     { name = "types-pillow", specifier = ">=10.2.0.20240822" },
     { name = "types-pygments", specifier = ">=2.19.0.20250107" },
 ]
+
+[[package]]
+name = "arachne-sim"
+version = "0.1.0"
+source = { directory = "sim" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=2.1" }]
 
 [[package]]
 name = "argon2-cffi"

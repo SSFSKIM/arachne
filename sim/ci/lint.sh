@@ -6,7 +6,7 @@
 set -euo pipefail
 source "$(dirname "$0")/toolchain.sh"
 cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 python3 ci/selftest.py
 python3 ci/tree_check.py deps
 python3 ci/census.py
