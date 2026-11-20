@@ -342,6 +342,12 @@ class Stay:
         self.sealed = False
         #: The solver's row the bodies were last placed at.
         self._placed = -1
+        #: Each body's own drawing as the stay last left it (:func:`_drawing`):
+        #: as it began, then as each placement made it. A body whose drawing
+        #: is another when the stay ends was redrawn since.
+        self._drawings: list[object | None] = [
+            _drawing(mobject) for mobject in world._body_mobjects
+        ]
 
     @classmethod
     def begin(
@@ -480,6 +486,7 @@ class Stay:
         ):
             if not item.fixed:
                 _place_body(mobject, item, pose[number], world.dimension)
+                self._drawings[number] = _drawing(mobject)
 
     def leave(self, at: Fraction) -> None:
         """The world left the scene at ``at``: a closed world's stay is
@@ -493,18 +500,20 @@ class Stay:
         self.left_at = at
         self.left_tick = min(tick, self.computed_tick)
         self.left_declaration = self.crate.declaration_bytes()
-        # Each body's drawing as it is left, when it is placed at the stay's
-        # last row: a body shown unchanged after this reads that row
-        # (:mod:`.measures`). One its world last placed at an older row (its
-        # updating held until it left) is not of the last row, and reads
-        # nothing past the stay.
+        # Each body's drawing as it is left, when it is the one its world's
+        # placement at the stay's last row made: a body shown unchanged after
+        # this reads that row (:mod:`.measures`). One its world last placed at
+        # an older row (its updating held until it left), or that the scene's
+        # code moved or redrew since its placement, is not of the last row,
+        # and reads nothing past the stay.
         placed = self._placed == self._solver_row(self.left_tick)
         for number, mobject in enumerate(self.world._body_mobjects):
+            kept = placed and _drawing(mobject) is self._drawings[number]
             measures.bind(
                 mobject,
                 self.ordinal,
                 number,
-                measures.drawn_key(mobject.__dict__) if placed else None,
+                measures.drawn_key(mobject.__dict__) if kept else None,
             )
 
     # The record's side
@@ -862,6 +871,18 @@ def placeable(member: Mobject) -> bool:
 def rest_points(mobject: Mobject) -> tuple[FrozenPoints, ...]:
     """The drawing a body moves, as declared."""
     return tuple(freeze(own_points(m), FrozenPoints) for m in drawn_members(mobject))
+
+
+def _drawing(mobject: Mobject) -> object | None:
+    """What holds a mobject's own points: its placement, or else its points
+    array; a move or a redraw replaces it.
+    """
+    own = mobject.__dict__
+    placement = own.get("_placement")
+    points: object | None = own.get("_points")
+    if placement is not None and (points is None or points is placement.materialized):
+        return placement  # type: ignore[no-any-return]
+    return points
 
 
 def _place_body(

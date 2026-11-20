@@ -78,7 +78,7 @@ def _read(
     scene_tick = math.floor(capture.instant * TICK_RATE)
     names = play.names if play is not None else record.final_names
     walked = list(record._walk(capture, capture.draw_list()))
-    present = {id(mob) for mob, _ in walked}
+    present = _members(record, capture)
     found: list[_Stale] = []
     for mob, state in walked:
         if not isinstance(mob, BodyReadout):
@@ -89,7 +89,8 @@ def _read(
             continue
         if scene_tick - shown.tick <= LAG:
             continue
-        # Its world in the scene at the capture: a member of what it holds.
+        # Its world in the scene at the capture: a member of its mobjects'
+        # families, as a world's stay counts it (not a capture dependency).
         shows = state.get("_shows")
         if shows is None or id(shows.world) not in present:
             continue
@@ -108,6 +109,25 @@ def _read(
         )
         found.append(_Stale(thing, origin.source_line, body, shown.tick, scene_tick))
     return tuple(found)
+
+
+def _members(record: Record, capture: Capture) -> set[int]:
+    """The ids of the scene's mobjects at ``capture`` and their families,
+    through submobjects only: what is in the scene, as a world's stay counts
+    it (``Scene._membership_changed``), and not what a mobject keeps as a
+    capture dependency (an effect's mask or window).
+    """
+    seen: set[int] = set()
+    pending = list(capture.draw_list())
+    while pending:
+        mob = pending.pop()
+        if id(mob) in seen:
+            continue
+        seen.add(id(mob))
+        state = record.node_state(mob, capture)
+        if state is not None:
+            pending.extend(state.submobjects)
+    return seen
 
 
 def _body_id(record: Record, bakes: Bakes, ordinal: int, body: int) -> str | None:
