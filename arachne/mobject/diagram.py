@@ -33,7 +33,7 @@ __all__ = ["Diagram", "Flow", "ZoomInto", "ZoomOut"]
 import math
 import weakref
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -163,7 +163,6 @@ class Diagram(VGroup):
             edge = _StraightConnector(a, b, tip=tip, color=color, **kwargs)
         self.add(edge)
         self.edges = (*self.edges, edge)
-        _MADE_BY[edge] = weakref.ref(self)
         if label is not None:
             text = Text(
                 label,
@@ -174,8 +173,39 @@ class Diagram(VGroup):
             path = ArcLength(edge.points)
             text.move_to(path.point(path.length / 2))
             edge.label = text
+            # The side of the line its label stands on beside a flow (1 for
+            # above, or right of an upright line; -1 for the other), and how
+            # far a flow's tokens reach from the line (0 without one).
+            held: Any = edge
+            held.label_side = 1
+            held.flow_reach = 0.0
             self.add(text)
+        self._side_labels()
         return edge
+
+    def _side_labels(self) -> None:
+        """Give each labelled connector the side of its line with more room
+        among the diagram's pieces and connectors as they are now, and put
+        the label of each that carries a flow there.
+        """
+        connectors = [e for e in self.edges if any(e is m for m in self.submobjects)]
+        labelled = [e for e in connectors if e.label is not None]
+        if not labelled:
+            return
+        labels = {id(e.label) for e in labelled}
+        segments = np.concatenate([_segments(e) for e in connectors])
+        boxes = [
+            (piece.get_critical_point(DL)[:2], piece.get_critical_point(UR)[:2])
+            for piece in self.submobjects
+            if not any(piece is e for e in connectors)
+            and id(piece) not in labels
+            and not isinstance(piece, Flow)
+            and any(len(m.points) for m in piece.get_family())
+        ]
+        for edge in labelled:
+            cast(Any, edge).label_side = _roomier_side(edge, segments, boxes)
+            if float(getattr(edge, "flow_reach", 0.0)) > 0:
+                _place_label(edge)
 
 
 class _StraightConnector(VMobject):
@@ -304,13 +334,16 @@ class Flow(VGroup):
     A connector's label (:meth:`Diagram.connect`) moves beside the line as
     the flow is made, so the tokens never pass under it: at the line's
     middle, along the line's normal there, by half the pill's extent along
-    that normal, half a token's and :data:`LABEL_GAP`, on the side with
-    more room (the larger clearance from the diagram's other pieces and
-    connectors, its own line included), above (or, beside an upright line,
-    right) when the two are level. Its place follows from the line and the
-    diagram as they are then, so a second flow leaves it where it is.
-    Make the flow before the diagram shows, or the label moves as it is
-    made. The label is also drawn above the tokens.
+    that normal, the tokens' reach and :data:`LABEL_GAP`. It stands on the
+    side the diagram gave it as it made each connector: the side with more
+    room (the larger clearance from the diagram's pieces and from every
+    connector's line, its own included, labels left out), above (or,
+    beside an upright line, right) when the two are level. Its place
+    follows from the line and that side, both kept with the connector's
+    content, so a copy, a second flow, or a flow made before the diagram's
+    last connector places it alike. Make the flow before the diagram
+    shows, or the label moves as it is made. The label is also drawn above
+    the tokens.
     """
 
     def __init__(
@@ -338,7 +371,7 @@ class Flow(VGroup):
         self.stopped = False
         self.add(*(Dot(radius=radius, color=color) for _ in range(tokens)))
         apply_style(self.submobjects, style)
-        _label_beside(edge, self.submobjects)
+        _carry_label(edge, self.submobjects)
         _lift_label(edge, self.submobjects)
         self.show_at(0.0)
         self.add_updater(_start_flow)
@@ -385,101 +418,165 @@ class Flow(VGroup):
 #: The clear space, in scene units, between a flow's tokens and the label
 #: of the connector they run along, set beside it.
 LABEL_GAP = 0.06
-#: Samples along each curve when a label's room is measured.
-_ROOM_SAMPLES = 9
-#: The diagram that made each connector, held beside both, weakly: a
-#: flow's label takes the side with more room among the diagram's pieces.
-_MADE_BY: weakref.WeakKeyDictionary[VMobject, weakref.ref[Diagram]] = (
-    weakref.WeakKeyDictionary()
-)
+#: The tokens' reach a label's side is chosen for, before any flow: a
+#: default token's radius, so the side does not hang on the flow.
+_SIDE_REACH = 0.07
+#: Chords a curved stretch of a connector is measured by.
+_CURVE_CHORDS = 16
 
 
-def _label_beside(edge: VMobject, tokens: Sequence[VMobject]) -> None:
-    """Move ``edge``'s label, if it has one, beside the line, clear of
-    ``tokens`` wherever they run on a straight stretch (:class:`Flow`).
+def _carry_label(edge: VMobject, tokens: Sequence[VMobject]) -> None:
+    """Have ``edge``'s label, if it has one, stand beside the line, clear of
+    ``tokens`` (:class:`Flow`).
     """
-    label = getattr(edge, "label", None)
-    if label is None:
+    if getattr(edge, "label", None) is None:
         return
+    reach = max(max(t.width, t.height) / 2 for t in tokens)
+    cast(Any, edge).flow_reach = max(float(getattr(edge, "flow_reach", 0.0)), reach)
+    _place_label(edge)
+
+
+def _line_frame(edge: VMobject) -> tuple[np.ndarray, np.ndarray]:
+    """The middle of ``edge``'s line and its normal there, pointing up (or
+    right, from an upright line).
+    """
     path = ArcLength(edge.points)
     middle = path.length / 2
-    at = path.point(middle)
     reach = min(middle, 1e-3)
     tangent = path.point(middle + reach) - path.point(middle - reach)
     normal = np.array([-tangent[1], tangent[0], 0.0]) / np.linalg.norm(tangent[:2])
+    if (round(normal[1], 9), normal[0]) < (0.0, 0.0):
+        normal = -normal
+    return path.point(middle), normal
 
-    def support(mob: Mobject) -> float:
-        return float(abs(normal[0]) * mob.width + abs(normal[1]) * mob.height) / 2
 
-    offset = support(label) + max(support(t) for t in tokens) + LABEL_GAP
-    # Above first, or right of an upright line.
-    first = normal if (round(normal[1], 9), normal[0]) > (0.0, 0.0) else -normal
-    lines, boxes = _obstacles(edge, label)
+def _beside(edge: VMobject, reach: float) -> tuple[np.ndarray, np.ndarray, float]:
+    """Where ``edge``'s label stands beside the line, for tokens reaching
+    ``reach`` from it: the line's middle, the normal there, and how far
+    along it.
+    """
+    at, normal = _line_frame(edge)
+    label: Mobject = cast(Any, edge).label
+    across = abs(normal[0]), abs(normal[1])
+    pill = (across[0] * label.width + across[1] * label.height) / 2
+    # A token's box reaches ``reach`` along each axis.
+    return at, normal, float(pill + reach * (across[0] + across[1]) + LABEL_GAP)
+
+
+def _place_label(edge: VMobject) -> None:
+    """Put ``edge``'s label beside its line on its side."""
+    at, normal, offset = _beside(edge, float(getattr(edge, "flow_reach", 0.0)))
+    side = int(getattr(edge, "label_side", 1))
+    label: Mobject = cast(Any, edge).label
+    label.move_to(at + side * normal * offset)
+
+
+def _roomier_side(
+    edge: VMobject,
+    segments: np.ndarray,
+    boxes: Sequence[tuple[np.ndarray, np.ndarray]],
+) -> int:
+    """1 for above (or right of an upright line), -1 for the other side,
+    whichever leaves ``edge``'s label more room from ``segments`` and
+    ``boxes``; 1 when they are level.
+    """
+    at, normal, offset = _beside(edge, _SIDE_REACH)
+    label: Mobject = cast(Any, edge).label
     half = np.array([label.width, label.height]) / 2
 
-    def room(side: np.ndarray) -> float:
-        centre = (at + side * offset)[:2]
-        return _clearance(centre - half, centre + half, lines, boxes)
+    def room(side: int) -> float:
+        centre = (at + side * normal * offset)[:2]
+        return _clearance(centre - half, centre + half, segments, boxes)
 
-    side = -first if room(-first) > room(first) + 1e-9 else first
-    label.move_to(at + side * offset)
+    return -1 if room(-1) > room(1) + 1e-9 else 1
 
 
-def _obstacles(
-    edge: VMobject, label: Mobject
-) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray]]]:
-    """What a label beside ``edge`` keeps clear of: points along every
-    connector of ``edge``'s diagram (or ``edge`` alone, outside one), and
-    the box of every other piece of it but ``label`` and flows.
+def _segments(mob: Mobject) -> np.ndarray:
+    """The straight stretches ``mob``'s family draws, in the plane: a
+    straight curve as one, a curved one as :data:`_CURVE_CHORDS` chords.
     """
-    held = _MADE_BY.get(edge)
-    diagram = held() if held is not None else None
-    if diagram is None:
-        return _drawn_points(edge), []
-    connectors = [e for e in diagram.edges if any(e is m for m in diagram.submobjects)]
-    if not any(e is edge for e in connectors):
-        connectors.append(edge)
-    lines = np.concatenate([_drawn_points(e) for e in connectors])
-    boxes = [
-        (piece.get_critical_point(DL)[:2], piece.get_critical_point(UR)[:2])
-        for piece in diagram.submobjects
-        if piece is not label
-        and not any(piece is e for e in connectors)
-        and not isinstance(piece, Flow)
-        and any(len(m.points) for m in piece.get_family())
-    ]
-    return lines, boxes
-
-
-def _drawn_points(mob: Mobject) -> np.ndarray:
-    """Points along every curve ``mob``'s family draws, in the plane."""
-    t = np.linspace(0.0, 1.0, _ROOM_SAMPLES)[:, None]
+    t = np.linspace(0.0, 1.0, _CURVE_CHORDS + 1)[:, None]
     basis = np.hstack([(1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t**2, t**3])
-    found = []
+    found: list[np.ndarray] = []
     for member in mob.family_members_with_points():
-        points = np.asarray(member.points)
-        curves = points[: len(points) // 4 * 4].reshape(-1, 4, 3)
-        found.append(np.einsum("tk,ckd->ctd", basis, curves).reshape(-1, 3)[:, :2])
-    return np.concatenate(found) if found else np.zeros((0, 2))
+        points = np.asarray(member.points)[:, :2]
+        for curve in points[: len(points) // 4 * 4].reshape(-1, 4, 2):
+            chord = curve[3] - curve[0]
+            span = float(np.linalg.norm(chord))
+            off = [
+                abs(
+                    chord[0] * (curve[k] - curve[0])[1]
+                    - chord[1] * (curve[k] - curve[0])[0]
+                )
+                for k in (1, 2)
+            ]
+            if span > 1e-9 and max(off) <= 1e-9 * span * span:
+                found.append(curve[[0, 3]][None])
+            else:
+                drawn = basis @ curve
+                found.append(np.stack([drawn[:-1], drawn[1:]], axis=1))
+    return np.concatenate(found) if found else np.zeros((0, 2, 2))
 
 
 def _clearance(
     low: np.ndarray,
     high: np.ndarray,
-    points: np.ndarray,
+    segments: np.ndarray,
     boxes: Sequence[tuple[np.ndarray, np.ndarray]],
 ) -> float:
     """How far the box ``low``-``high`` stands from the nearest of
-    ``points`` and ``boxes``, less than 0 by how deep it goes into one.
+    ``segments`` and ``boxes``, less than 0 by how deep it goes into one.
     """
-    lows = np.array([*points, *(b[0] for b in boxes)]).reshape(-1, 2)
-    highs = np.array([*points, *(b[1] for b in boxes)]).reshape(-1, 2)
-    if not len(lows):
-        return math.inf
-    gap = np.maximum(lows - high, low - highs)
-    inside = np.all(gap < 0, axis=1)
-    apart = np.linalg.norm(np.maximum(gap, 0.0), axis=1)
-    return float(np.min(np.where(inside, gap.max(axis=1), apart)))
+    nearest = math.inf
+    if len(segments):
+        nearest = min(nearest, float(np.min(_segment_clearance(low, high, segments))))
+    for b_low, b_high in boxes:
+        gap = np.maximum(b_low - high, low - b_high)
+        apart = float(np.linalg.norm(np.maximum(gap, 0.0)))
+        nearest = min(nearest, float(np.max(gap)) if np.all(gap < 0) else apart)
+    return nearest
+
+
+def _segment_clearance(
+    low: np.ndarray, high: np.ndarray, segments: np.ndarray
+) -> np.ndarray:
+    """Each segment's distance from the box ``low``-``high``, or, for one
+    that passes through it, less than 0 by how deep it goes.
+    """
+    start, step = segments[:, 0], segments[:, 1] - segments[:, 0]
+    enter, leave = np.zeros(len(segments)), np.ones(len(segments))
+    crosses = np.ones(len(segments), dtype=bool)
+    for axis in (0, 1):
+        along, at = step[:, axis], start[:, axis]
+        flat = np.abs(along) < 1e-15
+        crosses &= ~(flat & ((at < low[axis]) | (at > high[axis])))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            a, b = (low[axis] - at) / along, (high[axis] - at) / along
+        enter = np.maximum(enter, np.where(flat, -math.inf, np.minimum(a, b)))
+        leave = np.minimum(leave, np.where(flat, math.inf, np.maximum(a, b)))
+    crosses &= enter <= leave
+    # Outside: the nearest of the segment's ends to the box, and of the
+    # box's corners to the segment.
+    ends = [
+        np.linalg.norm(np.maximum(np.maximum(low - p, p - high), 0.0), axis=1)
+        for p in (segments[:, 0], segments[:, 1])
+    ]
+    length = np.einsum("ij,ij->i", step, step)
+    for corner in (low, high, np.array([low[0], high[1]]), np.array([high[0], low[1]])):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = np.where(
+                length > 0, np.einsum("ij,ij->i", corner - start, step) / length, 0.0
+            )
+        t = np.clip(t, 0.0, 1.0)
+        ends.append(np.linalg.norm(start + t[:, None] * step - corner, axis=1))
+    result = np.min(ends, axis=0)
+    # Inside: how deep the segment goes, read along its stretch in the box.
+    for index in np.flatnonzero(crosses):
+        shares = np.linspace(enter[index], leave[index], 17)[:, None]
+        inside = start[index] + shares * step[index]
+        depth = np.minimum(inside - low, high - inside).min(axis=1)
+        result[index] = -float(depth.max())
+    return result
 
 
 def _lift_label(edge: VMobject, tokens: Sequence[VMobject]) -> None:
