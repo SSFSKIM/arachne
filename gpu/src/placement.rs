@@ -56,28 +56,18 @@ pub(crate) fn place(corners: &[[f64; 2]; 4], width: u32, height: u32) -> Placeme
     }
 }
 
-/// The four lines of the outline at `corners` (CE's order), in pixels: top, bottom, left, right,
-/// each `[nx, ny, c, 0]` with `nx * x + ny * y + c` the signed distance in pixels from the line,
-/// positive on the outline's side. A bilinear window's coverage of a pixel is read from them.
-pub(crate) fn edges(corners: &[[f64; 2]; 4]) -> [[f32; 4]; 4] {
+/// The axis-aligned rectangle the outline at `corners` (CE's order) is, as `[x0, y0, x1, y1]`
+/// with `x0 <= x1` and `y0 <= y1`, or `None` when it is not one: each side is level or upright.
+pub(crate) fn rectangle(corners: &[[f64; 2]; 4]) -> Option<[f64; 4]> {
     let [ul, ur, ll, lr] = *corners;
-    let centre = [
-        (ul[0] + ur[0] + ll[0] + lr[0]) / 4.0,
-        (ul[1] + ur[1] + ll[1] + lr[1]) / 4.0,
-    ];
-    [(ul, ur), (lr, ll), (ll, ul), (ur, lr)].map(|(p, q)| {
-        let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
-        let length = dx.hypot(dy);
-        if length == 0.0 {
-            // A degenerate side of a placeable outline does not occur; cover nothing by it.
-            return [0.0, 0.0, -1.0, 0.0];
-        }
-        let (mut nx, mut ny) = (-dy / length, dx / length);
-        if nx * (centre[0] - p[0]) + ny * (centre[1] - p[1]) < 0.0 {
-            (nx, ny) = (-nx, -ny);
-        }
-        let c = -(nx * p[0] + ny * p[1]);
-        [nx as f32, ny as f32, c as f32, 0.0]
+    let level = ul[1] == ur[1] && ll[1] == lr[1] && ul[0] == ll[0] && ur[0] == lr[0];
+    let upright = ul[0] == ur[0] && ll[0] == lr[0] && ul[1] == ll[1] && ur[1] == lr[1];
+    (level || upright).then(|| {
+        let xs = [ul[0], ur[0], ll[0], lr[0]];
+        let ys = [ul[1], ur[1], ll[1], lr[1]];
+        let low = |v: [f64; 4]| v.into_iter().fold(f64::INFINITY, f64::min);
+        let high = |v: [f64; 4]| v.into_iter().fold(f64::NEG_INFINITY, f64::max);
+        [low(xs), low(ys), high(xs), high(ys)]
     })
 }
 
@@ -250,24 +240,18 @@ mod tests {
     }
 
     #[test]
-    fn a_rectangles_edges_are_its_sides_measured_inward() {
-        let lines = edges(&[[10.05, 20.0], [11.54, 20.0], [10.05, 21.0], [11.54, 21.0]]);
-        let distance = |line: [f32; 4], x: f32, y: f32| line[0] * x + line[1] * y + line[2];
-        // Top, bottom, left, right, from the point (10.5, 20.5).
-        let found = lines.map(|line| distance(line, 10.5, 20.5));
-        for (found, expected) in found.iter().zip([0.5, 0.5, 0.45, 1.04]) {
-            assert!((found - expected).abs() < 1e-5, "{found:?}");
+    fn only_an_outline_whose_sides_are_level_or_upright_is_a_rectangle() {
+        let level = [[10.25, 5.5], [18.75, 5.5], [10.25, 13.0], [18.75, 13.0]];
+        assert_eq!(rectangle(&level), Some([10.25, 5.5, 18.75, 13.0]));
+        let mirrored = [[18.0, 5.0], [10.0, 5.0], [18.0, 13.0], [10.0, 13.0]];
+        assert_eq!(rectangle(&mirrored), Some([10.0, 5.0, 18.0, 13.0]));
+        // Turned a quarter: upper left to upper right runs down.
+        let turned = [[10.0, 5.0], [10.0, 13.0], [2.0, 5.0], [2.0, 13.0]];
+        assert_eq!(rectangle(&turned), Some([2.0, 5.0, 10.0, 13.0]));
+        let diamond = [[15.01, 15.5], [20.01, 20.5], [10.01, 20.5], [15.01, 25.5]];
+        let sheared = [[10.0, 5.0], [18.0, 5.0], [11.0, 13.0], [19.0, 13.0]];
+        for corners in [diamond, sheared] {
+            assert_eq!(rectangle(&corners), None, "{corners:?}");
         }
-        // A whole-pixel rectangle's lines are exact.
-        let lines = edges(&[[3.0, 4.0], [9.0, 4.0], [3.0, 7.0], [9.0, 7.0]]);
-        assert_eq!(
-            lines,
-            [
-                [0.0, 1.0, -4.0, 0.0],
-                [0.0, -1.0, 7.0, 0.0],
-                [1.0, 0.0, -3.0, 0.0],
-                [-1.0, 0.0, 9.0, 0.0],
-            ]
-        );
     }
 }

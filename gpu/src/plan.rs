@@ -5,7 +5,7 @@ use crate::compositor::DrawError;
 use crate::effects::{blur_reach, feather_reach, kernel, resolved_sigma};
 use crate::frame::{BILINEAR, Focus, Frame, Layer, NEAREST, Source};
 use crate::keys::Key;
-use crate::placement::{Placement, edges, place};
+use crate::placement::{Placement, place, rectangle};
 
 /// How deep windows may nest: a frame holds windows, whose frames hold windows, to this depth.
 /// Each level holds working textures of its own on the device.
@@ -40,13 +40,14 @@ pub(crate) enum Placed {
         rows: [[f32; 4]; 3],
     },
     /// A stack composed as a frame of `size`, placed as a quad, resampled by PIL's `resampling`
-    /// value; `edges` are its outline's four lines, for a bilinear window's coverage.
+    /// value; `rect` is its outline, `[x0, y0, x1, y1]`, for a bilinear window's coverage (only an
+    /// axis-aligned rectangle is placed bilinear).
     Window {
         stack: Box<Stack>,
         rows: [[f32; 4]; 3],
         size: [u32; 2],
         resampling: u8,
-        edges: [[f32; 4]; 4],
+        rect: [f32; 4],
     },
 }
 
@@ -121,11 +122,11 @@ impl<'a> Canvas<'a> {
         sized: impl FnOnce(f64) -> String,
     ) -> Result<(), DrawError> {
         let side = self.longest_reach();
-        if reach <= side {
-            return Ok(());
+        if reach > side {
+            let what = if self.sized { sized(side) } else { legacy() };
+            return Err(DrawError::Unsupported(format!("layer {index}: {what}")));
         }
-        let what = if self.sized { sized(side) } else { legacy() };
-        Err(DrawError::Unsupported(format!("layer {index}: {what}")))
+        Ok(())
     }
 
     fn held(&self, key: &Key) -> Result<(u32, u32), DrawError> {
@@ -227,7 +228,7 @@ fn plan_layer(
                     rows,
                     size,
                     resampling: *resampling,
-                    edges: edges(corners),
+                    rect: rectangle(corners).unwrap_or_default().map(|v| v as f32),
                 },
                 None => Placed::Nothing,
             }
@@ -365,6 +366,12 @@ fn placement(
     }
     if corners.iter().flatten().any(|c| !c.is_finite()) {
         return Err(Unplaceable::Invalid("the corners are not finite".into()));
+    }
+    if resampling == BILINEAR && rectangle(corners).is_none() {
+        return Err(Unplaceable::Unsupported(format!(
+            "bilinear resampling ({BILINEAR}) places a sized window at an axis-aligned rectangle \
+             only; these corners are not one (place it by nearest ({NEAREST}))"
+        )));
     }
     match place(corners, width, height) {
         Placement::Mapped(rows) => Ok(Some(rows)),

@@ -5,11 +5,11 @@ use crate::keys::Key;
 /// PIL's value for nearest resampling: the one resampling of a quad and of a window of no stated
 /// size, and a sized window's at whole-pixel corners.
 pub const NEAREST: u8 = 0;
-/// PIL's value for bilinear resampling, which a sized window may be placed with: each pixel takes
-/// the four texels round its centre (the edge texel continued past the edge), weighted in fixed
-/// point, times the pixel's coverage of the window's true outline. So the edge is antialiased,
-/// nothing lands in a pixel the outline does not touch, and a window moved by a fraction of a
-/// pixel moves by that fraction.
+/// PIL's value for bilinear resampling, which a sized window may be placed with at an
+/// axis-aligned rectangle only (other corners are refused): each pixel takes the four texels round
+/// its centre (the edge texel continued past the edge), weighted in fixed point, times the area of
+/// its cell inside the rectangle. So the edge is antialiased, nothing lands in a pixel the
+/// rectangle does not touch, and a window moved by a fraction of a pixel moves by that fraction.
 pub const BILINEAR: u8 = 2;
 
 /// One frame: a background colour under every layer, then the layers, bottom first. `focus`, when

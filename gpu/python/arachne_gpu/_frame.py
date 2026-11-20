@@ -39,11 +39,12 @@ class Window:
     :class:`~arachne_gpu.SizeMismatch`; with no size, every refusal is the one it was before
     windows had sizes.
 
-    ``resampling`` is PIL's value: nearest (0) copies texels; a sized window may be placed by
-    bilinear (2), which weights the four texels round each pixel's centre in fixed point, times
-    the pixel's coverage of the true outline, so the edge is antialiased, nothing lands in a
-    pixel the outline does not touch, and a window moved by a fraction of a pixel moves by that
-    fraction. At whole-pixel corners spanning exactly ``size``, both copy the frame texel for
+    ``resampling`` is PIL's value: nearest (0) copies texels; a sized window at an axis-aligned
+    rectangle, and only there, may be placed by bilinear (2), which weights the four texels round
+    each pixel's centre in fixed point, times the area of the pixel's cell inside the rectangle,
+    so the edge is antialiased, nothing lands in a pixel the rectangle does not touch, and a
+    window moved by a fraction of a pixel moves by that fraction. Bilinear at other corners
+    raises :class:`~arachne_gpu.Unsupported`. At whole-pixel corners spanning exactly ``size``, both copy the frame texel for
     texel.
 
     Sizing a window shown at an axis-aligned rectangle is one rule: per axis, ``size`` is the

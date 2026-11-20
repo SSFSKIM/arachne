@@ -73,13 +73,14 @@ stacked as above.
   Everywhere else (the outermost frame, a window of no stated size outside any sized one) every
   refusal is the one it was before windows had sizes, in type and in text.
 
-  A window is resampled by nearest (PIL's 0), its texels copied. A sized window may instead be
-  resampled by bilinear (PIL's 2): each pixel takes the four texels round its centre (the edge
-  texel continued past the edge), weighted by its offset from them in 8 fractional bits a side,
-  times the pixel's coverage of the window's true outline in 8 fractional bits, rounded half up to
-  8 bits once. The coverage is measured in pixels, across the outline's opposite sides: for an
-  axis-aligned rectangle it is the pixel's area inside it, so nothing lands in a pixel the
-  rectangle does not touch, however wide its texels, and each edge pixel carries its coverage. A
+  A window is resampled by nearest (PIL's 0), its texels copied. A sized window placed at an
+  axis-aligned rectangle may instead be resampled by bilinear (PIL's 2), and only there: bilinear
+  at any other corners refuses the frame (`Unsupported`: `bilinear resampling (2) places a sized
+  window at an axis-aligned rectangle only; these corners are not one (place it by nearest (0))`).
+  Each pixel takes the four texels round its centre (the edge texel continued past the edge),
+  weighted by its offset from them in 8 fractional bits a side, times the area of its cell inside
+  the rectangle in 8 fractional bits, rounded half up to 8 bits once. So nothing lands in a pixel
+  the rectangle does not touch, however wide its texels, and each edge pixel carries its coverage. A
   window moved by a fraction of a pixel moves by that fraction rather than by whole pixels. At
   whole-pixel corners spanning exactly `size`, either resampling copies the window's frame texel
   for texel: it is that frame drawn alone at its size, byte for byte. A quad, and a window of no

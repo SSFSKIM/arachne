@@ -25,12 +25,11 @@ struct Layer {
     // alpha (32 bits a pixel, bit b in channel b / 8); 2: placed alone, over nothing.
     mode: u32,
     bit: u32,
-    // A quad's resampling: 0 nearest; 1 bilinear, in fixed point, scaled by the pixel's coverage
-    // of the outline.
+    // A quad's resampling: 0 nearest; 1 bilinear (a sized window at an axis-aligned rectangle),
+    // in fixed point, scaled by the pixel's coverage of the rectangle.
     resampling: u32,
-    // For bilinear: the outline's top, bottom, left and right lines, (nx, ny, c) with
-    // nx * x + ny * y + c the signed distance in pixels, positive inside.
-    edges: array<vec4<f32>, 4>,
+    // For bilinear: the outline, an axis-aligned rectangle (x0, y0, x1, y1) in pixels.
+    rect: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> layer: Layer;
@@ -49,20 +48,15 @@ fn texel_clamped(at: vec2<i32>) -> vec4<u32> {
     return textureLoad(source, clamp(at, vec2<i32>(0), vec2<i32>(layer.size) - vec2<i32>(1)), 0);
 }
 
-// How much of the pixel [-0.5, 0.5] about its centre lies between two opposite lines, from the
-// centre's signed distances to them: exact for parallel lines.
-fn between(a: f32, b: f32) -> f32 {
-    return clamp(min(a, 0.5) + min(b, 0.5), 0.0, 1.0);
-}
-
-// How much of the pixel centred at `p` the outline covers, in 8 fractional bits (0 to 256): the
-// product of its cover across the top and bottom lines and across the left and right ones. For an
-// axis-aligned rectangle this is the pixel's area inside it, exactly; a pixel whose cell does not
-// touch it gets 0, and a pixel wholly inside gets 256.
-fn coverage(p: vec3<f32>) -> u32 {
-    let across = between(dot(layer.edges[0].xyz, p), dot(layer.edges[1].xyz, p));
-    let along = between(dot(layer.edges[2].xyz, p), dot(layer.edges[3].xyz, p));
-    return u32(floor(across * along * 256.0 + 0.5));
+// How much of the pixel at `position` the outline covers, in 8 fractional bits (0 to 256): the
+// area of the pixel's cell inside the rectangle, exactly. A cell that does not touch it gets 0,
+// and a cell wholly inside gets 256.
+fn coverage(position: vec2<f32>) -> u32 {
+    let cell = floor(position);
+    let near = max(cell, layer.rect.xy);
+    let far = min(cell + vec2<f32>(1.0), layer.rect.zw);
+    let inside = max(far - near, vec2<f32>(0.0));
+    return u32(floor(inside.x * inside.y * 256.0 + 0.5));
 }
 
 // The source at texel coordinates `texel`, bilinear, scaled by `cover` (0 to 256): the four
@@ -113,9 +107,9 @@ fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                     s = textureLoad(source, vec2<i32>(at), 0);
                 }
             } else {
-                // Bounded by the pixel's own coverage of the outline, in pixels: nothing lands in
-                // a pixel the outline does not touch, whatever the texel's size.
-                let cover = coverage(p);
+                // Bounded by the pixel's own coverage of the rectangle, in pixels: nothing lands
+                // in a pixel the rectangle does not touch, whatever the texel's size.
+                let cover = coverage(position.xy);
                 if cover > 0u {
                     s = bilinear(texel, cover);
                 }
