@@ -200,6 +200,30 @@ class GroupBackAfterItsWorldUnmoved(GroupBackAfterItsWorld):
     moves = False
 
 
+class HeldThenBack(Scene):
+    """A falling point's world held by hand (its updating suspended) until it
+    is removed at 1/2 s, the point drawn as declared, then added back alone
+    over a wait a scene updater reading ``dt`` ticks.
+    """
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2, radius=0.15)
+        world.body(dot, shape=None, mass=1.0, velocity=RIGHT * 3)
+        self.add(world)
+        world.suspend_updating()
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
 class ShownAfterItsWorld(Scene):
     """A falling point's mobject shown on its own after its world left the
     scene, and moved there: no bake holds its quantities then.

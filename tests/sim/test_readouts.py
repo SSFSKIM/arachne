@@ -54,10 +54,11 @@ def opened():
     sessions: list[Session] = []
     admission.DEMOTED.clear()
 
-    def open_scene(name: str, fps: int = 15) -> Session:
+    def open_scene(name: str, fps: int = 15, grid="render") -> Session:
         session = Session.open(
             SCENES,
             name,
+            grid=grid,
             config={"pixel_width": 96, "pixel_height": 54, "frame_rate": fps},
         )
         sessions.append(session)
@@ -451,6 +452,18 @@ def test_a_readout_stale_at_its_world_s_last_row_is_reported(opened):
     (finding,) = [f for f in result.findings if f.code == "sim.readout_stale"]
     assert (finding.t_start, finding.t_end) == (asked, asked)
     assert (finding.detail["tick"], finding.detail["scene_tick"]) == (12, 41)
+
+
+def test_a_readout_faded_in_over_a_moving_body_is_stale_in_a_forward_lint(opened):
+    """A record kept on every instant is linted through a forward run, read
+    while the world's stay is still open: the readout's body is named all
+    the same.
+    """
+    session = opened("FadedInOverAFall", grid=None)
+    (ball,) = _bodies(session)
+    (finding,) = _stale(session)
+    assert finding.detail["body"] == ball
+    assert finding.detail["tick"] == 12
 
 
 def test_a_readout_added_over_a_moving_body_is_not_stale(opened):

@@ -239,6 +239,27 @@ def test_a_group_body_after_its_world_left_is_unreadable(opened, scene):
         assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
 
 
+def test_a_body_left_drawn_at_an_older_row_than_its_stay_s_last_is_unreadable(
+    opened,
+):
+    """Its world held until it left, the point is drawn as declared, not at
+    the stay's last row (30): past the stay, it reads nothing.
+    """
+    session = opened("HeldThenBack")
+    (body,) = _bodies(session)
+    (occurrence,) = session.record.bakes.occurrences
+    assert occurrence.last_tick == 30
+    state = session.state_at(Fraction(3, 4))
+    tick = math.floor(state.as_of * 60)
+    assert tick > 30
+    # Drawn where it was declared.
+    x0, y0, x1, y1 = state.node(body).scene_box
+    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((0.0, 2.0), abs=1e-9)
+    for quantity in state.quantities[body]:
+        assert quantity.value is None
+        assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
+
+
 def test_a_body_shown_after_its_world_left_is_unreadable(opened):
     session = opened("ShownAfterItsWorld")
     (body,) = _bodies(session)
