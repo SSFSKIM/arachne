@@ -653,4 +653,38 @@ mod tests {
         }
         assert_unsupported(one(Layer::quad(SMALL, corners, BILINEAR)));
     }
+
+    #[test]
+    fn a_sized_window_is_placed_bilinear_only_at_an_axis_aligned_rectangle() {
+        let small = || Frame::new([0; 4], vec![Layer::picture(SMALL)]);
+        // Upper left, upper right, lower left, lower right: a diamond, whose left vertex is
+        // within a pixel of a cell it never touches.
+        let diamond = [[15.01, 15.5], [20.01, 20.5], [10.01, 20.5], [15.01, 25.5]];
+        match one(Layer::sized_window(small(), diamond, BILINEAR, [8, 8])) {
+            Err(DrawError::Unsupported(what)) => assert_eq!(
+                what,
+                "layer 0: bilinear resampling (2) places a sized window at an axis-aligned \
+                 rectangle only; these corners are not one (place it by nearest (0))"
+            ),
+            other => panic!("{:?}", other.err()),
+        }
+        // By nearest it is placed as any quad is.
+        assert!(one(Layer::sized_window(small(), diamond, NEAREST, [8, 8])).is_ok());
+        // A rectangle off the pixel grid, or mirrored, is axis-aligned.
+        let off_grid = [[10.25, 5.5], [18.75, 5.5], [10.25, 13.0], [18.75, 13.0]];
+        let mirrored = [[18.0, 5.0], [10.0, 5.0], [18.0, 13.0], [10.0, 13.0]];
+        for corners in [off_grid, mirrored] {
+            assert!(one(Layer::sized_window(small(), corners, BILINEAR, [8, 8])).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_defocus_whose_sigma_is_not_a_number_plans_as_before_windows_had_sizes() {
+        // No aperture times an infinite distance: the resolved sigma, and so its reach, are not a
+        // number, which no reach bound refuses; the layer plans with no effect, as it always has.
+        let far = Frame::new([0; 4], vec![Layer::picture(PICTURE).with_depth(f64::MAX)])
+            .with_focus(-f64::MAX, 0.0);
+        let planned = planned(&far).unwrap();
+        assert!(planned.layers[0].effect.is_none());
+    }
 }
