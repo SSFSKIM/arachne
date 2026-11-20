@@ -26,6 +26,8 @@ import string
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 from arachne.animation.animation import Animation
 from arachne.mobject.text.text_mobject import Text
 from arachne.utils.color import WHITE, ParsableManimColor
@@ -148,6 +150,11 @@ class Readout(Annotation):
             made = self._label_class(said, font_size=label.font_size)
             made.move_to(label.get_center())
             _restyle(made, label)
+            # A play draws its moving mobjects as listed when it began (CE's
+            # moving list), so the glyphs replaced draw nothing from now on,
+            # as DecimalNumber.set_value leaves its own.
+            for replaced in label.get_family()[1:]:
+                replaced.points = np.zeros((0, 3))
             # The label keeps its identity and its own attributes, so the
             # record follows one text: only what the string makes is new.
             for key in _TEXT_DATA:

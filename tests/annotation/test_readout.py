@@ -11,7 +11,8 @@ about time, kept apart, at 15, 30 and 60 frames per second:
    after the count's end exists.
 
 Statements 2 and 3 are read off the frames a render writes (a PNG sequence),
-each matched against texts drawn here of every number the count shows. The
+each matched against texts drawn here of every number the count shows. An
+image sequence writes a held wait's picture once, where a video repeats it. The
 declared value at ``t`` is computed here, from the count's own terms:
 ``start + (to - start) * rate_func(t)`` during its one-second play, and the
 target once it is done.
@@ -19,7 +20,6 @@ target once it is done.
 
 from __future__ import annotations
 
-import math
 from fractions import Fraction
 from pathlib import Path
 
@@ -137,8 +137,9 @@ def _says(frame: np.ndarray, candidates: set[str], texts: _Texts) -> str:
     within :data:`SAME` of it.
     """
     distance = {said: float(np.abs(frame - texts(said)).mean()) for said in candidates}
-    said = min(distance, key=lambda c: distance[c])
-    assert distance[said] <= SAME, distance[said]
+    nearest = sorted(distance, key=lambda c: distance[c])
+    said = nearest[0]
+    assert distance[said] <= SAME, [(c, distance[c]) for c in nearest[:2]]
     return said
 
 
@@ -148,12 +149,13 @@ def test_every_delivered_frame_draws_the_declared_value_at_its_instant(
     tmp_path, key, waits
 ):
     name = f"Count{key}{'ThenWait' if waits else ''}"
-    duration = Fraction(3, 2) if waits else Fraction(1)
     texts = _Texts()
     drawn: dict[int, dict[Fraction, np.ndarray]] = {}
     for fps in RATES:
         frames = _rendered(name, fps, tmp_path / f"{fps}")
-        times = frames_in(Fraction(0), duration, Fraction(fps))
+        # The count's frames, then the wait's held picture, written once.
+        times = frames_in(Fraction(0), Fraction(1), Fraction(fps))
+        times += [Fraction(1)] if waits else []
         assert len(frames) == len(times), fps
         candidates = {_shown(key, Fraction(k, 60)) for k in range(91)}
         for t, frame in zip(times, frames, strict=True):
@@ -186,9 +188,10 @@ def test_the_target_is_delivered_only_when_a_frame_follows_the_count(
         assert said != fmt.format(to)
 
     waits = _rendered(f"Count{key}ThenWait", fps, tmp_path / "waits")
-    assert len(waits) == math.ceil(Fraction(3, 2) * fps)
-    for frame in waits[fps:]:
-        assert _says(frame, candidates, texts) == fmt.format(to)
+    # The count's frames, then the wait's held picture, which an image
+    # sequence writes once: it shows the target.
+    assert len(waits) == fps + 1
+    assert _says(waits[-1], candidates, texts) == fmt.format(to)
 
 
 def test_the_count_s_value_is_exact_once_it_ends(opened):
@@ -284,3 +287,33 @@ def test_a_readout_keeps_its_style_across_a_new_digit():
         assert glyph.get_stroke_color().to_hex() == "#00FF00"
         assert glyph.get_stroke_width() == pytest.approx(1.5)
         assert glyph.z_index == 3
+
+
+def _held(record, mob, capture) -> dict:
+    state = record.node_state(mob, capture)
+    return dict(zip(state.keys, state.values, strict=True))
+
+
+def test_a_play_draws_only_the_glyphs_the_readout_shows(opened):
+    # A play draws its moving mobjects as they were listed when it began
+    # (CE's moving list): the glyphs a new text replaced must draw nothing.
+    session = opened("CountRounded", 15)
+    record = session.record
+    play = record.plays[-1]
+    for t in frames_in(Fraction(0), Fraction(1), Fraction(15)):
+        capture = play.capture_at(t)
+        readout = capture.moving[0]
+        assert isinstance(readout, Readout)
+        label = record.node_state(readout, capture).submobjects[0]
+        shown: set[int] = set()
+        stack = [label]
+        while stack:
+            mob = stack.pop()
+            shown.add(id(mob))
+            stack.extend(record.node_state(mob, capture).submobjects)
+        drawn = [
+            mob
+            for mob in capture.moving
+            if id(mob) not in shown and len(_held(record, mob, capture)["_points"])
+        ]
+        assert drawn == [], t
