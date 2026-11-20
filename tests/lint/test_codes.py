@@ -26,6 +26,21 @@ PUBLISHED = [
     ("render.fallback", "warning", "RenderFallback"),
     ("text.small", "note", "TextSmall"),
     ("sim.quantity_unreadable", "error", "QuantityUnreadable"),
+    ("render.gpu_required", "error", "GpuRequired"),
+    ("render.gpu_live", "error", "GpuLive"),
+    ("asset.manifest_missing", "error", "AssetManifestMissing"),
+    ("asset.manifest_invalid", "error", "AssetManifestInvalid"),
+    ("asset.file_missing", "error", "AssetFileMissing"),
+    ("asset.unreadable", "error", "AssetUnreadable"),
+    ("asset.remote", "error", "AssetRemote"),
+    ("rig.name_unknown", "error", "RigNameUnknown"),
+    ("rig.range", "error", "RigRange"),
+    ("annotation.anchor_unknown", "error", "AnnotationAnchorUnknown"),
+    ("asset.unadmitted", "error", "AssetUnadmitted"),
+    ("annotation.detached", "error", "AnnotationDetached"),
+    ("media.inexact", "error", "MediaInexact"),
+    ("sim.force_input", "error", "ForceInput"),
+    ("sim.withheld", "error", "FeatureWithheld"),
 ]
 
 

@@ -408,6 +408,29 @@ _TABLE = (
         ' or run(then="hold").',
         ("asset", "object", "t", "media_time", "duration"),
     ),
+    Code(
+        "sim.force_input",
+        "error",
+        "ForceInput",
+        "a world's callback force can reach a mobject or the scene: between two"
+        " frames a displayed mobject holds the last frame's values, not the"
+        " tick's, so a force computed from one changes with the frame rate;"
+        " raised as the force is declared",
+        "Read each body from the world state the callback is handed, by its"
+        " handle, and another world through its at_tick; keep mobjects and the"
+        " scene out of the callback's closure, defaults and globals.",
+        ("force", "names"),
+    ),
+    Code(
+        "sim.withheld",
+        "error",
+        "FeatureWithheld",
+        "a scene declares a solver feature that is withheld, because its"
+        " arithmetic is not yet the same on every machine; raised as the feature"
+        " is declared",
+        "Build the motion without the feature the finding names.",
+        ("feature",),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.
