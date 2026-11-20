@@ -136,6 +136,83 @@ class MovedThenPosed(Scene):
         self.play(Pose(box, lid_open=OPEN, rate_func=linear), run_time=0.5)
 
 
+#: The figure's poses below: the drawings a second, when the play begins
+#: (between the boundaries 1/3 and 2/3), its length, and the values.
+FIGURE_RATE = 3
+FIGURE_START = 0.4
+FIGURE_RUN = 0.5
+REACH = 0.75
+HEAD = 12.5
+
+
+def _figure() -> Rig:
+    return Rig("fixture:figure", name="figure")
+
+
+class PosedBetweenDrawings(Scene):
+    """A declared figure's head turned by the scene's code between two
+    boundaries, then a pose of its reach alone: the turn is shown from the
+    next boundary, though the pose never moves it.
+    """
+
+    def construct(self) -> None:
+        figure = _figure()
+        self.add(figure)
+        set_timing(figure, FIGURE_RATE)
+        self.wait(FIGURE_START)
+        figure.pose(head_turn=HEAD)
+        self.play(Pose(figure, reach=REACH, rate_func=linear), run_time=FIGURE_RUN)
+        self.wait(0.5)
+
+
+#: How long the first of two poses in turn lasts: it ends between two
+#: boundaries, well before the next.
+REACHED = 0.1
+
+
+class PosesInTurn(Scene):
+    """Two poses of a declared figure in one play, one after the other:
+    the reach the first ends on stays while the second turns the head.
+    """
+
+    def construct(self) -> None:
+        figure = _figure()
+        self.add(figure)
+        set_timing(figure, FIGURE_RATE)
+        self.wait(FIGURE_START)
+        self.play(
+            AnimationGroup(
+                Pose(figure, reach=1, rate_func=linear, run_time=REACHED),
+                Pose(
+                    figure,
+                    head_turn=2 * HEAD,
+                    rate_func=linear,
+                    run_time=FIGURE_RUN - REACHED,
+                ),
+                lag_ratio=1,
+            )
+        )
+        self.wait(0.5)
+
+
+class PosesTogether(Scene):
+    """Two poses of a declared figure's two parameters in one play, at
+    once: each moves its own.
+    """
+
+    def construct(self) -> None:
+        figure = _figure()
+        self.add(figure)
+        set_timing(figure, FIGURE_RATE)
+        self.wait(FIGURE_START)
+        self.play(
+            Pose(figure, reach=1, rate_func=linear),
+            Pose(figure, head_turn=2 * HEAD, rate_func=linear),
+            run_time=FIGURE_RUN,
+        )
+        self.wait(0.5)
+
+
 class ShortWaitThenPose(Scene):
     """A pose that ends off the grid, a wait too short to reach the next
     boundary, then the scene's code reads the rig and poses it back.
