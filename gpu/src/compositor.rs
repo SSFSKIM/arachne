@@ -163,7 +163,9 @@ struct Scratch {
     wide: [Texture; 3],
 }
 
-/// A Vulkan device with no window, the textures it holds, and the frame size it draws.
+/// Frames of one size drawn on a Vulkan device with no window, and the textures it holds. Every
+/// compositor of one door in a process draws on that door's one device (`device.rs`); its
+/// textures, pipelines, working textures and read-back buffer are its own.
 pub struct Compositor {
     device: wgpu::Device,
     queue: wgpu::Queue,

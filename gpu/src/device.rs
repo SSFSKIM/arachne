@@ -1,6 +1,14 @@
 //! Finding and opening a device: Vulkan only, no window, no surface.
+//!
+//! A process has one Vulkan instance, and opens one device for each door, which every compositor
+//! opened through that door shares; a compositor holds its own textures, pipelines and read-back
+//! buffer on it. A Vulkan driver's cost per instance and per device is not ours to bound: on one
+//! card's driver, a process that made an instance and a device for each compositor saw the card
+//! no more after a few dozen, dropped or kept.
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// What an adapter reports about itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,38 +122,69 @@ impl Door {
     }
 }
 
-/// The Vulkan backend alone, with no display handle. Nothing in the environment chooses another
-/// backend or the fallback adapter.
-fn instance() -> wgpu::Instance {
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    descriptor.backends = wgpu::Backends::VULKAN;
-    wgpu::Instance::new(descriptor)
+/// The process's one instance: the Vulkan backend alone, with no display handle. Nothing in the
+/// environment chooses another backend or the fallback adapter.
+fn instance() -> &'static wgpu::Instance {
+    static INSTANCE: OnceLock<wgpu::Instance> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::VULKAN;
+        wgpu::Instance::new(descriptor)
+    })
 }
 
-fn enumerate(instance: &wgpu::Instance) -> Vec<wgpu::Adapter> {
-    pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN))
+fn enumerate() -> Vec<wgpu::Adapter> {
+    pollster::block_on(instance().enumerate_adapters(wgpu::Backends::VULKAN))
 }
 
 /// Every adapter this machine offers on Vulkan, of any device type.
 pub fn adapters() -> Vec<AdapterSummary> {
-    enumerate(&instance())
+    enumerate()
         .iter()
         .map(|adapter| AdapterSummary::of(&adapter.get_info()))
         .collect()
 }
 
-/// An opened device and the adapter it is on.
+/// An opened device and the adapter it is on, shared by every compositor of one door.
+#[derive(Clone)]
 pub(crate) struct Opened {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub info: wgpu::AdapterInfo,
     pub limits: wgpu::Limits,
+    /// Set when the device is lost: the next open opens another.
+    lost: Arc<AtomicBool>,
 }
 
-/// Opens the most preferred adapter the door accepts.
+impl Door {
+    /// The device this door has opened in this process, if any.
+    fn opened(self) -> &'static Mutex<Option<Opened>> {
+        static ORDINARY: Mutex<Option<Opened>> = Mutex::new(None);
+        static SOFTWARE: Mutex<Option<Opened>> = Mutex::new(None);
+        match self {
+            Door::Ordinary => &ORDINARY,
+            Door::Software => &SOFTWARE,
+        }
+    }
+}
+
+/// The device of the most preferred adapter the door accepts: the one this door opened earlier in
+/// the process, unless it was lost, and otherwise a new one, kept for the next open.
 pub(crate) fn open(door: Door) -> Result<Opened, NoGpu> {
-    let instance = instance();
-    let all = enumerate(&instance);
+    let mut slot = door.opened().lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(held) = slot.as_ref()
+        && !held.lost.load(Ordering::Acquire)
+    {
+        return Ok(held.clone());
+    }
+    let fresh = request(door)?;
+    *slot = Some(fresh.clone());
+    Ok(fresh)
+}
+
+/// Opens a new device on the most preferred adapter the door accepts.
+fn request(door: Door) -> Result<Opened, NoGpu> {
+    let all = enumerate();
     let seen: Vec<AdapterSummary> = all
         .iter()
         .map(|adapter| AdapterSummary::of(&adapter.get_info()))
@@ -174,12 +213,18 @@ pub(crate) fn open(door: Door) -> Result<Opened, NoGpu> {
         trace: wgpu::Trace::Off,
     }));
     match requested {
-        Ok((device, queue)) => Ok(Opened {
-            device,
-            queue,
-            info: adapter.get_info(),
-            limits,
-        }),
+        Ok((device, queue)) => {
+            let lost = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&lost);
+            device.set_device_lost_callback(move |_, _| flag.store(true, Ordering::Release));
+            Ok(Opened {
+                device,
+                queue,
+                info: adapter.get_info(),
+                limits,
+                lost,
+            })
+        }
         Err(err) => Err(NoGpu {
             wanted: door.wanted(),
             seen,
