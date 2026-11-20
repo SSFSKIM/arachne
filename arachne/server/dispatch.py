@@ -43,6 +43,7 @@ from ..errors import SceneError, explain, message_of
 from ..frame_ir.cairo_painter import Unsupported
 from ..lint.exempt import Exemptions
 from ..lint.instants import DEFAULT as LINT_AT
+from ..routing import GpuLive, GpuRequired
 from ..session import Session
 from ..timeline.execution import Incomparable
 from ..timeline.hooks import SceneHookRefused
@@ -640,14 +641,18 @@ def _changed(file: str, read: tuple[tuple[str, str], ...]) -> bool:
 #: a scene hook a play can't honour (``SceneHookRefused``), a record that
 #: answers no instant (``RecordRefused``), an instant it can't answer
 #: (``Unavailable``, ``Unrestorable`` among them), a frame the drawer does
-#: not draw (``Unsupported``, ``render.unsupported``) and two executions that
-#: can't be compared (``Incomparable``).
+#: not draw (``Unsupported``, ``render.unsupported``), two executions that
+#: can't be compared (``Incomparable``), and a scene holding a GPU-only
+#: capability on a host with no GPU (``GpuRequired``, ``render.gpu_required``)
+#: or drawn as it runs (``GpuLive``, ``render.gpu_live``).
 REFUSALS: tuple[type[Exception], ...] = (
     SceneHookRefused,
     RecordRefused,
     Unavailable,
     Unsupported,
     Incomparable,
+    GpuRequired,
+    GpuLive,
 )
 
 
