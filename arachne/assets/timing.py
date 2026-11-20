@@ -110,7 +110,7 @@ second, are a plain ``ValueError``.
   not a whole value of its own inputs: it now finds what is true, but no
   case under the hold proves it, so it stays refused; a ``Succession``'s
   part on a declared family that begins in the middle of a play after a
-  part that does not animate that family: such a part begins in the
+  part that does not restore that family: such a part begins in the
   composition events, after the clock has put back what is true, but only
   a part whose previous part's end restores what is true is proven under
   the hold, so the others stay refused; a member
@@ -1027,9 +1027,9 @@ def _check_parts(succession: Succession, declared: dict[int, Illustration]) -> N
                 f"the {kind}'s part {type(part).__name__} animates the family"
                 f" declared with stepped timing on a {type(touched.root).__name__}"
                 f" and begins in the middle of the play, after a"
-                f" {type(before).__name__} that does not animate that family: the"
+                f" {type(before).__name__} that does not restore that family: the"
                 " engine holds a part that begins in the middle of a play only"
-                " after a part of the same family",
+                " after a part whose end restores what is true",
                 kind="animation",
                 name=kind,
             )
@@ -1308,25 +1308,37 @@ def _shared(root: Mobject, other: Mobject) -> ValueError:
     )
 
 
-#: Each scene's clock, by the scene's id, both held weakly: the scene owns
+#: Each scene's clock, by the scene's id, with the scene and the execution
+#: it was made in (the scene's recorder), all held weakly: the scene owns
 #: its clock, through the scene updater it runs as. Kept by identity, so a
 #: scene's own hash or equality is never asked, and an entry answers only
-#: for its very scene; it goes with its scene.
-_CLOCKS: dict[int, tuple[weakref.ref[Scene], weakref.ref[TimingClock]]] = {}
+#: for its very scene in that execution: a scene executed again in place
+#: (made anew on the same object) has no clock until it declares again.
+#: An entry goes with its scene.
+_CLOCKS: dict[
+    int, tuple[weakref.ref[Scene], weakref.ref[Any], weakref.ref[TimingClock]]
+] = {}
 
 
 def clock_of(scene: Scene) -> TimingClock | None:
-    """``scene``'s clock, or ``None`` before its first declaration."""
+    """``scene``'s clock in its current execution, or ``None`` before its
+    first declaration there.
+    """
     held = _CLOCKS.get(id(scene))
     if held is None or held[0]() is not scene:
         return None
-    return held[1]()
+    if held[1]() is not scene.__dict__.get("_arachne_timeline"):
+        return None
+    return held[2]()
 
 
 def _keep_clock(scene: Scene, clock: TimingClock) -> None:
     key = id(scene)
-    weakref.finalize(scene, _forget_clock, key)
-    _CLOCKS[key] = (weakref.ref(scene), weakref.ref(clock))
+    held = _CLOCKS.get(key)
+    if held is None or held[0]() is not scene:
+        weakref.finalize(scene, _forget_clock, key)
+    execution = weakref.ref(scene._arachne_timeline)
+    _CLOCKS[key] = (weakref.ref(scene), execution, weakref.ref(clock))
 
 
 def _forget_clock(key: int) -> None:
