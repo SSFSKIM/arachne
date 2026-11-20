@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 from fractions import Fraction
 
+import numpy as np
 import pytest
 
 from arachne import Square
@@ -55,7 +56,7 @@ def _recorded(session) -> tuple[list[bytes], list[str]]:
 
 def test_a_scene_that_declares_nothing_records_as_without_the_hook(opened, monkeypatch):
     with_hook = opened("Undeclared", 30)
-    assert with_hook.scene not in hooks.BEFORE_ANIMATIONS
+    assert id(with_hook.scene) not in hooks.BEFORE_ANIMATIONS
     kept = _recorded(with_hook)
     # As before the hook existed: no call site does anything.
     monkeypatch.setattr(hooks, "before_animations", lambda scene: None)
@@ -95,7 +96,43 @@ def test_a_declaring_scene_ticks_every_play(opened, monkeypatch, scene):
 
     monkeypatch.setattr(routes, "_evaluator", refused)
     session = opened(scene, 30)
-    assert session.scene in hooks.BEFORE_ANIMATIONS
+    assert id(session.scene) in hooks.BEFORE_ANIMATIONS
     assert {play.route for play in session.record.plays} == {"ticked"}
     for k in range(0, 13):
         session.state_at(Fraction(k, 10) + Fraction(1, 70))
+
+
+def _centre_x(session, t: Fraction) -> float:
+    record = session.record
+    square = next(m for m in record.mobjects() if type(m) is Square)
+    _, capture = record.capture_at(t)
+    return float(
+        np.asarray(record.node_state(square, capture).get("_points"))[:, 0].mean()
+    )
+
+
+def test_a_scene_without_a_hash_that_declares_nothing_plays(opened):
+    # The hook looks a scene up by identity, never by its hash or equality.
+    session = opened("EqualScenes", 30)
+    assert type(session.scene).__hash__ is None
+    assert id(session.scene) not in hooks.BEFORE_ANIMATIONS
+    assert len(session.record.plays) == 1
+    assert _centre_x(session, session.record.duration) == pytest.approx(1)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=TypeError,
+    reason="pre-existing: the scene-keyed registries diagram.py:523 _DRIVERS,"
+    " media/clock.py:297 _DRIVERS and motion.py:109 _SETTLES hash the scene",
+)
+def test_a_scene_without_a_hash_declares_timing(opened):
+    session = opened("EqualScenesDeclared", 60)
+    assert type(session.scene).__hash__ is None
+    assert id(session.scene) in hooks.BEFORE_ANIMATIONS
+    # Held to 3 drawings a second: the move is shown at its last boundary.
+    for k in range(45):
+        t = Fraction(k, 60)
+        want = 2 * float(min(boundary(t, SLOW), Fraction(1, 2)))
+        assert _centre_x(session, t) == pytest.approx(want), t
+    assert _centre_x(session, session.record.duration) == pytest.approx(1)

@@ -738,6 +738,31 @@ class MovedThenStill(Scene):
         self.wait(1)
 
 
+class EqualScenes(Scene):
+    """A scene that declares nothing, equal to any scene of its class: it
+    defines ``__eq__`` alone, so it has no hash.
+    """
+
+    def __eq__(self, other: object) -> bool:
+        return type(other) is type(self)
+
+    def construct(self) -> None:
+        square = Square()
+        self.add(square)
+        self.play(square.animate.shift(RIGHT), run_time=0.5)
+
+
+class EqualScenesDeclared(EqualScenes):
+    """:class:`EqualScenes` with its square declared with stepped timing."""
+
+    def construct(self) -> None:
+        square = Square()
+        self.add(square)
+        set_timing(square, SLOW)
+        self.play(square.animate(rate_func=linear).shift(RIGHT), run_time=0.5)
+        self.wait(0.25)
+
+
 # Refused
 
 
