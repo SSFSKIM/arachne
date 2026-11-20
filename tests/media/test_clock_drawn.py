@@ -289,19 +289,60 @@ class Edited(Scene):
 """
 
 
-def test_a_frame_file_edited_on_disk_after_the_object_is_built_is_refused(
-    tmp_path, monkeypatch, door
-):
-    """Frame 5 draws; its file is then overwritten with other pixels in
-    the admitted form (frame 6's file) and let go by the cache: the next
-    request for it is refused with the line that made the clip, and draws
-    nothing.
+def _edited_scene(tmp_path) -> tuple[Path, Path]:
+    """A scene showing a copy of the test clip held on frame 5, and the
+    copy's directory.
     """
-    kept = FrameCache()
-    monkeypatch.setattr(frames, "cache", kept)
     asset = copied(tmp_path, "numbered-clip")
     scene = tmp_path / "edited.py"
     scene.write_text(EDITED.format(asset=str(asset)))
+    return scene, asset
+
+
+def _overwrite_frame_5(asset: Path) -> None:
+    """Frame 5's file, overwritten with other pixels in the admitted form:
+    frame 6's file.
+    """
+    frames_dir = asset / "frames"
+    (frames_dir / "0005.png").write_bytes((frames_dir / "0006.png").read_bytes())
+
+
+def test_a_frame_file_edited_on_disk_after_the_object_is_built_is_refused(
+    tmp_path, monkeypatch, session_of, door
+):
+    """Frame 5 draws; its file is then overwritten and let go by the cache:
+    the next request for it decodes the file again and is refused with the
+    line that made the clip, drawing nothing.
+    """
+    from arachne.lint.raised import RaisedFinding
+
+    kept = FrameCache()
+    monkeypatch.setattr(frames, "cache", kept)
+    scene, asset = _edited_scene(tmp_path)
+    session = session_of("Edited", scene, **EVERY_TICK)
+    picture = np.asarray(session.frame(Fraction(1, 4)))
+    assert stamp(picture, (0, 0, *CLIP_PIXELS)) == 5
+    before = door.draws
+    kept.clear()
+    _overwrite_frame_5(asset)
+    with pytest.raises(RaisedFinding) as refused:
+        session.frame(Fraction(2, 5))
+    assert refused.value.code == "media.inexact"
+    assert refused.value.detail["reason"] == "digest"
+    assert refused.value.detail["file"] == "frames/0005.png"
+    assert refused.value.line == line_of("edited", scene).line
+    assert door.draws == before
+
+
+def test_at_the_server_an_edited_frame_file_refuses_the_asset_on_reload(
+    tmp_path, monkeypatch, door
+):
+    """The server runs a scene again when a file it read has changed, and
+    the asset then fails its admission (``asset.unadmitted``) at the line
+    that made the clip, before any frame of it is decoded or drawn.
+    """
+    monkeypatch.setattr(frames, "cache", FrameCache())
+    scene, asset = _edited_scene(tmp_path)
     server = Dispatcher()
     drawn, refused_at = tmp_path / "drawn.png", tmp_path / "refused.png"
     try:
@@ -310,21 +351,15 @@ def test_a_frame_file_edited_on_disk_after_the_object_is_built_is_refused(
             {"file": str(scene), "scene": "Edited", "config": {**SMALL, **EVERY_TICK}},
         )
         server.handle("frame", {"t": 0.25, "path": str(drawn)})
-        with Image.open(drawn) as picture:
-            assert stamp(np.asarray(picture), (0, 0, *CLIP_PIXELS)) == 5
         before = door.draws
-        kept.clear()
-        frames_dir = asset / "frames"
-        (frames_dir / "0005.png").write_bytes((frames_dir / "0006.png").read_bytes())
+        _overwrite_frame_5(asset)
         with pytest.raises(RpcError) as refused:
             server.handle("frame", {"t": 0.4, "path": str(refused_at)})
     finally:
         server.handle("close", {})
     assert refused.value.code == REFUSED
     finding = refused.value.data["finding"]
-    assert finding["code"] == "media.inexact"
-    assert finding["detail"]["reason"] == "digest"
-    assert finding["detail"]["file"] == "frames/0005.png"
+    assert finding["code"] == "asset.unadmitted"
     assert finding["line"] == line_of("edited", scene).line
     assert door.draws == before
     assert not refused_at.exists()
