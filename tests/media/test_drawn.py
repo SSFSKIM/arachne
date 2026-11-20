@@ -143,7 +143,8 @@ def test_a_warm_clip_whose_frame_decodes_otherwise_once_evicted_draws_nothing(
 
 
 #: Opens each old scene, then a scene that drew clips on the launch mode's
-#: device, then each old scene again, in one fresh interpreter.
+#: device and one whose clip ran on its clock, then each old scene again, in
+#: one fresh interpreter.
 PROGRAM = """\
 import hashlib, json, sys
 
@@ -153,7 +154,7 @@ from tests.helpers.gpu_door import LaunchDoor
 
 door = device.door = LaunchDoor()
 
-directory, media, scenes = sys.argv[1:4]
+directory, media, scenes, clock_scenes = sys.argv[1:5]
 config = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4, "media_dir": media}
 
 
@@ -175,9 +176,14 @@ def opened(file, scene):
 old = f"{directory}/old.py"
 fresh = {scene: opened(old, scene) for scene in ("OldSvg", "OldImage")}
 clips = opened(scenes, "ClipMoved")
+clocked = opened(clock_scenes, "ClipRuns")
 drawn = door.draws
 after = {scene: opened(old, scene) for scene in ("OldSvg", "OldImage")}
-print(json.dumps({"fresh": fresh, "clips": clips, "drawn": drawn, "after": after}))
+print(
+    json.dumps(
+        {"fresh": fresh, "clips": clips, "clocked": clocked, "drawn": drawn, "after": after}
+    )
+)
 """
 
 
@@ -185,10 +191,17 @@ def test_old_scenes_draw_the_same_bytes_after_a_scene_drew_clips(tmp_path):
     from tests.assets.test_old_constructors import _scenes
 
     directory = _scenes(tmp_path / "scenes")
-    printed = run_child(PROGRAM, str(directory), str(tmp_path / "media"), str(SCENES))
+    clock_scenes = SCENES.parent / "clock_scenes.py"
+    printed = run_child(
+        PROGRAM, str(directory), str(tmp_path / "media"), str(SCENES), str(clock_scenes)
+    )
     found = json.loads(printed.strip().splitlines()[-1])
     assert found["clips"]["route"] == "gpu"
-    assert found["drawn"] == 4
+    assert found["clocked"]["route"] == "gpu"
+    # The running clip shows another frame at each of 0, 1/4 and 1/2 s (at 4
+    # frames a second, 0.7 s shows 1/2 s's).
+    assert len(set(found["clocked"]["frames"])) == 3
+    assert found["drawn"] == 8
     assert found["fresh"] == found["after"]
     assert all(scene["route"] == "cpu" for scene in found["fresh"].values())
 
