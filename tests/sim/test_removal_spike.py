@@ -36,8 +36,9 @@ def say(*parts: object) -> None:
     print(*parts, file=sys.stderr, flush=True)
 
 
-def _open(scene: str, **options) -> Session:
-    admission.DEMOTED.clear()
+def _open(scene: str, *, keep_demoted: bool = False, **options) -> Session:
+    if not keep_demoted:
+        admission.DEMOTED.clear()
     return Session.open(FILE, scene, config=CONFIG, **options)
 
 
@@ -256,3 +257,30 @@ def test_state_at_the_removal_instant(scene):
     assert len(set(as_of.values())) <= 1, as_of
     xs = list(drawn.values())
     assert all(math.dist(xs[0], v) < 0.02 for v in xs), drawn
+
+
+def test_demotions_carried_between_sessions():
+    """The same scene opened three times in one process, demotions kept:
+    plain, with a later instant asked of the recorder, plain again.
+    """
+    admission.DEMOTED.clear()
+    say("\n===== ReturnedThenCounted, demotions carried =====")
+    for label, extra in (
+        ("plain", ()),
+        ("instants=[3/4]", (LATER,)),
+        ("plain again", ()),
+    ):
+        session = _open("ReturnedThenCounted", keep_demoted=True, instants=extra)
+        try:
+            body = _body(session)
+            poses = _poses(session)
+            say(f"  {label}: probe={session.probe}")
+            say(f"  {label}: divergences={session.divergences}")
+            _describe_record(session)
+            state = session.state_at(HALF)
+            say(f"  {label} state_at(1/2): " + _summary(state, body))
+            drawn = _probe(session, session.frame(HALF))
+            say(f"  {label} frame(1/2): " + _nearest(drawn, poses))
+        finally:
+            session.close()
+    admission.DEMOTED.clear()

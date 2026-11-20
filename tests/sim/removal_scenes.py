@@ -4,7 +4,22 @@ at 1/2 s after a wait at 15 fps, with scene time after the removal.
 
 from __future__ import annotations
 
-from arachne import DOWN, RIGHT, UL, UP, Dot, Readout, Scene, Square, World
+from arachne import (
+    DOWN,
+    LEFT,
+    RIGHT,
+    UL,
+    UP,
+    UR,
+    DecimalNumber,
+    Dot,
+    Readout,
+    Scene,
+    Square,
+    ValueTracker,
+    World,
+    linear,
+)
 
 
 def _world():
@@ -111,6 +126,44 @@ class RemovedRead(Scene):
         self.wait(0.5)
 
 
+class ReturnedThenState(Scene):
+    """The body added back, then a state-function play: a marker kept by a
+    dt-free updater at a tracker's value.
+    """
+
+    def construct(self):
+        world, dot = _world()
+        tracker = ValueTracker(0)
+        marker = Dot(LEFT * 4).add_updater(lambda m: m.set_y(tracker.get_value()))
+        self.add(world, marker)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.play(tracker.animate.set_value(2), run_time=0.5, rate_func=linear)
+
+
+class ReturnedThenCounted(Scene):
+    """As :class:`ReturnedThenState`, with a frame hook counting frames into
+    a number: a play the probe may demote.
+    """
+
+    def construct(self):
+        world, dot = _world()
+        self.count = DecimalNumber(0, num_decimal_places=0).to_corner(UR)
+        tracker = ValueTracker(0)
+        marker = Dot(LEFT * 4).add_updater(lambda m: m.set_y(tracker.get_value()))
+        self.add(world, marker, self.count)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.play(tracker.animate.set_value(2), run_time=0.5, rate_func=linear)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if hasattr(self, "count"):
+            self.count.set_value(self.count.number + 1)
+
+
 SCENES = (
     "Removed",
     "RemovedTicked",
@@ -119,4 +172,6 @@ SCENES = (
     "RemovedThenPlayed",
     "ReturnedThenPlayed",
     "RemovedRead",
+    "ReturnedThenState",
+    "ReturnedThenCounted",
 )
