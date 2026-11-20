@@ -72,7 +72,8 @@ def test_a_scene_that_declares_nothing_is_the_same_fresh_and_after_a_declared_on
 
 #: Mobjects that outlive their scenes: a square, a group holding one, two
 #: copies (fresh squares until the declaring scene puts its copies here),
-#: and a pair a second declaring scene declares and leaves.
+#: a pair a second declaring scene declares and leaves, and a square a
+#: third fades out.
 KEPT = """\
 from arachne import Circle, Square, VGroup
 
@@ -80,12 +81,14 @@ square = Square()
 group = VGroup(Square(), Circle())
 copies = [Square(), Square()]
 pair = VGroup(Square(), Circle())
+faded = Square()
 """
 
 #: A scene for each kind of mobject kept, which declares nothing; the scene
 #: that declares the square and the group's square, copies the square in
 #: the middle of a play and between two, and keeps the copies; and the
-#: scene whose one play leaves the declared pair.
+#: scenes whose one play leaves the declared pair, or fades the declared
+#: square out without suspending it.
 REUSING = """\
 from arachne import LEFT, RIGHT, UP, Boil, FadeOut, Scene, set_timing
 
@@ -124,6 +127,11 @@ class PlainPair(_Plain):
         return [kept.pair]
 
 
+class PlainFaded(_Plain):
+    def things(self):
+        return [kept.faded]
+
+
 class Declaring(Scene):
     def construct(self):
         made = []
@@ -153,6 +161,16 @@ class DeclaringPair(Scene):
         self.add(kept.pair)
         set_timing(kept.pair, 12)
         self.play(FadeOut(kept.pair[0]), run_time=0.45)
+
+
+class DeclaringFaded(Scene):
+    def construct(self):
+        # Its one play fades the declared square out without suspending its
+        # updating: nothing would resume it as the play ends, and the scene
+        # takes it out before its updaters run there. It is refused.
+        self.add(kept.faded)
+        set_timing(kept.faded, 12)
+        self.play(FadeOut(kept.faded, suspend_mobject_updating=False), run_time=0.45)
 """
 
 #: Opens each plain scene, then the declaring scene, then each plain scene
@@ -165,7 +183,7 @@ from arachne.session import Session
 
 scenes, media = sys.argv[1], sys.argv[2]
 config = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15, "media_dir": media}
-PLAIN = ("PlainSquare", "PlainCopies", "PlainGroup", "PlainPair")
+PLAIN = ("PlainSquare", "PlainCopies", "PlainGroup", "PlainPair", "PlainFaded")
 
 
 def opened(scene):
@@ -188,8 +206,13 @@ def opened(scene):
 fresh = {s: opened(s) for s in PLAIN}
 opened("Declaring")
 opened("DeclaringPair")
+try:
+    opened("DeclaringFaded")
+    faded = None
+except Exception as refused:
+    faded = str(refused).split(":")[0]
 after = {s: opened(s) for s in PLAIN}
-print(json.dumps({"fresh": fresh, "after": after}))
+print(json.dumps({"fresh": fresh, "after": after, "faded": faded}))
 """
 
 
@@ -198,7 +221,8 @@ def test_a_declaration_ends_with_its_scene(tmp_path):
     # the middle of a play and one made between two; PlainGroup: a group
     # outliving the scene that holds a declared mobject; PlainPair: a
     # declared group the scene's last play left, when it faded one of its
-    # members out.
+    # members out; PlainFaded: a declared square whose scene was refused a
+    # fade-out that leaves its updating running.
     scenes, shared = tmp_path / "scenes", tmp_path / "shared"
     scenes.mkdir()
     shared.mkdir()
@@ -220,6 +244,9 @@ def test_a_declaration_ends_with_its_scene(tmp_path):
     )
     assert done.returncode == 0, done.stderr
     openings = json.loads(done.stdout.strip().splitlines()[-1])
+    # The fade-out that leaves the square's updating running is refused,
+    # and the refused scene leaves the square as it found it.
+    assert openings["faded"] == "timing.updater"
     for scene, fresh in openings["fresh"].items():
         assert openings["after"][scene] == fresh, scene
         # Nothing ticks a plain scene's waits: they hold.

@@ -73,6 +73,8 @@ def _refused(tmp_path, scene: str, code: str, fps: int) -> dict:
         ("SuccessionShowingAgain", "animation", "Succession"),
         ("SuccessionNestedPart", "animation", "Succession"),
         ("SuspendedByHand", "suspended updating", "Rig"),
+        ("FadedOutUnsuspended", "animation", "FadeOut"),
+        ("FadedOutInSuccession", "animation", "FadeOut"),
     ],
 )
 @pytest.mark.parametrize("fps", RATES)

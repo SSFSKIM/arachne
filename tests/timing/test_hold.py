@@ -18,7 +18,7 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from arachne import Boil, Rig, Text, Timing, timing_of
+from arachne import Rig, Text, Timing, timing_of
 
 from .reading import (
     RATES,
@@ -299,15 +299,47 @@ def test_the_record_holds_the_mark(opened, fps):
     box = box_of(session)
     capture = session.record.capture_at(Fraction(1))[1]
     state = session.record.node_state(box, capture)
-    # Plain numbers, which a content key reads.
-    assert state.get("_timing") == (RATE, 6, 2.0, 3)
-    assert Timing(RATE, Boil(rate=6, amplitude=2.0, seed=3)).mark == (RATE, 6, 2.0, 3)
-    assert Timing(RATE).mark == (RATE,)
     assert timing_of(box) == Timing(RATE, BOIL)
     assert timing_of(box.part("lid")) is None
     # On a capture installed, the mark is the one declared then.
     state.install(box)
     assert timing_of(box) == Timing(RATE, BOIL)
+
+
+def test_a_play_s_content_key_tells_declarations_apart(opened):
+    # The same rig and wait, declared at another rate or with another boil:
+    # the content key of the play's start state is another.
+    keys = {
+        name: opened(name, 15).record.plays[0].start_state.content_key()
+        for name in (
+            "KeyedAtRate",
+            "KeyedAtOtherRate",
+            "KeyedWithBoil",
+            "KeyedWithOtherBoil",
+        )
+    }
+    assert len(set(keys.values())) == len(keys), keys
+    # And the same declaration keys alike.
+    assert (
+        opened("KeyedAtRate", 30).record.plays[0].start_state.content_key()
+        == (keys["KeyedAtRate"])
+    )
+
+
+def test_a_morph_of_a_declared_rig_is_held(opened):
+    # MorphParts suspends the stand-in it puts in the rig's place: the
+    # engine's suspension, which is not refused.
+    session = opened("MorphedRig", 15)
+    assert [play.kind for play in session.record.plays] == ["play", "wait"]
+
+
+def test_an_engine_transform_growing_a_declared_family_is_held(opened):
+    # The second transform adds a shape to the group as it begins and
+    # suspends it: the engine's suspension, which is not refused.
+    session = opened("GrownByTransform", 15)
+    shapes = next(m for m in session.record.mobjects() if timing_of(m) is not None)
+    assert timing_of(shapes) == Timing(RATE)
+    assert len(shapes.submobjects) == 2
 
 
 @pytest.mark.parametrize("fps", RATES)

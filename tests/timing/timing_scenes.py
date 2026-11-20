@@ -20,13 +20,16 @@ from arachne import (
     Boil,
     Callout,
     Capsule,
+    Circle,
     DecimalNumber,
     Diagram,
     Dot,
     FadeIn,
+    FadeOut,
     Flow,
     Line,
     MaintainPositionRelativeTo,
+    MorphParts,
     MoveAlongPath,
     MovingCameraScene,
     PhaseFlow,
@@ -36,6 +39,7 @@ from arachne import (
     Square,
     Succession,
     Text,
+    Transform,
     UpdateFromFunc,
     VGroup,
     Write,
@@ -341,6 +345,65 @@ class MemberJoinsSecondFamily(Scene):
         self.wait(0.25)
 
 
+class GrownByTransform(Scene):
+    """A declared group moved by one Succession of transforms, the second
+    growing it from one shape to two as it begins: the engine suspends the
+    members it adds.
+    """
+
+    def construct(self) -> None:
+        shapes = VGroup(Square())
+        self.add(shapes)
+        set_timing(shapes, RATE)
+        self.play(
+            Succession(
+                Transform(shapes, VGroup(Square().shift(RIGHT)), run_time=0.45),
+                Transform(shapes, VGroup(Square(), Circle().shift(LEFT)), run_time=0.5),
+            )
+        )
+
+
+class MorphedRig(Scene):
+    """A declared rig morphed into another: the play stands a copy of it,
+    which it suspends, in its place.
+    """
+
+    def construct(self) -> None:
+        box = _box()
+        self.add(box)
+        set_timing(box, RATE)
+        self.play(MorphParts(box, _box().shift(RIGHT)), run_time=0.5)
+        self.wait(0.25)
+
+
+class _Keyed(Scene):
+    """A declared rig and one wait, at the timing :attr:`timing` gives."""
+
+    timing: tuple = (RATE, None)
+
+    def construct(self) -> None:
+        box = _box()
+        self.add(box)
+        set_timing(box, *self.timing)
+        self.wait(0.25)
+
+
+class KeyedAtRate(_Keyed):
+    pass
+
+
+class KeyedAtOtherRate(_Keyed):
+    timing = (6, None)
+
+
+class KeyedWithBoil(_Keyed):
+    timing = (RATE, BOIL)
+
+
+class KeyedWithOtherBoil(_Keyed):
+    timing = (RATE, Boil(rate=6, amplitude=2.0, seed=4))
+
+
 class Redeclared(Scene):
     """A declared rig given another rate between two plays."""
 
@@ -563,6 +626,24 @@ class SuccessionNestedPart(_Moved):
             FadeIn(Dot(2 * LEFT), run_time=0.45),
             AnimationGroup(FadeIn(box), FadeIn(Dot(2 * RIGHT)), run_time=0.5),
         )
+
+
+class FadedOutUnsuspended(_Moved):
+    """The rig faded out by an animation that leaves its updating running:
+    nothing resumes it as the play ends, and the scene takes it out.
+    """
+
+    def move(self, box: Rig) -> Animation:
+        return FadeOut(box, suspend_mobject_updating=False)
+
+
+class FadedOutInSuccession(_Moved):
+    """The rig posed, then faded out, by one Succession: the fade-out ends,
+    and resumes the rig, before the scene takes it out.
+    """
+
+    def move(self, box: Rig) -> Animation:
+        return Succession(Pose(box, lid_open=OPEN), FadeOut(box))
 
 
 class SuspendedByHand(Scene):

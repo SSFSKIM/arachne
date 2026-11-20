@@ -371,13 +371,15 @@ _TABLE = (
         " animation that moves it from where it stands (MoveAlongPath, PhaseFlow,"
         " MaintainPositionRelativeTo), a Succession's part that begins in the"
         " middle of a play after a part that does not animate it, its updating"
-        " suspended by the scene's code, or a scene updater registered after"
-        " the timing was declared",
+        " suspended by the scene's code, an animation that takes it out of the"
+        " scene without suspending its updating or as a Succession's part, or a"
+        " scene updater registered after the timing was declared",
         "Move the illustration with the engine's animations that write where it"
         " goes (Pose, .animate, Transform and the rest) or its rig's parameters;"
         " in a Succession, animate it in the part before one that moves it, or"
-        " play that part on its own; leave its updating to the engine; register"
-        " scene updaters before declaring timing.",
+        " play that part on its own; leave its updating to the engine, and take"
+        " it out of the scene with a play of its own; register scene updaters"
+        " before declaring timing.",
         ("kind", "name"),
     ),
     Code(

@@ -8,7 +8,7 @@ on screen stays smooth.
 optionally with **line boil** (:class:`Boil`): its outlines redrawn with a
 small wobble that changes on a grid of its own. The declaration is an
 immutable :class:`Timing` value; the declared mobject holds its
-:attr:`~Timing.mark`, a tuple of its numbers, so the record holds it and a
+:attr:`~Timing.mark`, a string of its numbers, so the record holds it and a
 content key reads it; :func:`timing_of` reads it back.
 
 How it holds
@@ -86,7 +86,11 @@ second, are a plain ``ValueError``.
   the middle of a play after a part that does not animate that family (only
   that part's end restores what is true before the next begins); a member
   whose updating the scene's code suspended, which keeps its restorer from
-  running; a scene updater registered after the clock, which must run last;
+  running; an animation that takes a declared family out of the scene as
+  the play ends without resuming its updating then (it does not suspend it,
+  or it is a Succession's part, which finishes earlier), which leaves no
+  member to run its restorer; a scene updater registered after the clock,
+  which must run last;
 - ``timing.exact_content``: text, a number, a coordinate system or a plot,
   an annotation, a schematic mark, a diagram, or the scene's camera's frame
   in a declared family, when it is declared and at each play's first
@@ -128,7 +132,7 @@ import functools
 import math
 import numbers
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Protocol
@@ -266,23 +270,28 @@ class Timing:
         return math.floor(t * self.drawings_per_second)
 
     @property
-    def mark(self) -> tuple[int | float, ...]:
-        """What a declared mobject holds of it, plain numbers:
-        ``(drawings_per_second,)``, or with boil ``(drawings_per_second,
-        rate, amplitude, seed)``.
+    def mark(self) -> str:
+        """What a declared mobject holds of it, one string a content key
+        reads: ``"drawings_per_second"``, or with boil
+        ``"drawings_per_second rate amplitude seed"``.
         """
         boil = self.boil
         if boil is None:
-            return (self.drawings_per_second,)
-        return (self.drawings_per_second, boil.rate, boil.amplitude, boil.seed)
+            return str(self.drawings_per_second)
+        return f"{self.drawings_per_second} {boil.rate} {boil.amplitude!r} {boil.seed}"
 
 
 def _timing(mark: Any) -> Timing | None:
     """The timing whose :attr:`~Timing.mark` ``mark`` is, or ``None``."""
-    if not isinstance(mark, tuple) or len(mark) not in (1, 4):
+    if not isinstance(mark, str):
         return None
-    drawings, *boil = mark
-    return Timing(drawings, Boil(*boil) if boil else None)
+    fields = mark.split()
+    if len(fields) == 1:
+        return Timing(int(fields[0]))
+    if len(fields) == 4:
+        drawings, rate, amplitude, seed = fields
+        return Timing(int(drawings), Boil(int(rate), float(amplitude), int(seed)))
+    return None
 
 
 def timing_of(mobject: Mobject) -> Timing | None:
@@ -767,13 +776,21 @@ def _restores(animation: Animation, root: Mobject) -> bool:
 
 
 def _suspending(animations: Any) -> frozenset[int]:
-    """The ids of every mobject the animations of a play may suspend."""
-    return frozenset(
-        id(member)
-        for node in _animation_nodes(animations)
-        if node.suspend_mobject_updating and getattr(node, "mobject", None) is not None
-        for member in node.mobject.get_family()
-    )
+    """The ids of every mobject the animations of a play may suspend: the
+    family of each one's mobject when it suspends its updating, and of every
+    other mobject it holds (a starting copy, a stand-in it suspends itself).
+    """
+    from ..mobject.mobject import Mobject
+
+    found: set[int] = set()
+    for node in _animation_nodes(animations):
+        for value in vars(node).values():
+            if not isinstance(value, Mobject):
+                continue
+            if value is node.mobject and not node.suspend_mobject_updating:
+                continue
+            found.update(id(member) for member in value.get_family())
+    return frozenset(found)
 
 
 def _check_running(
@@ -838,6 +855,75 @@ def _check_animations(animations: Any, declared: dict[int, Illustration]) -> Non
                 kind="animation",
                 name=kind,
             )
+    _check_removals(animations, declared)
+
+
+def _removals(
+    animations: Any, in_succession: bool = False, removing: bool = False
+) -> Iterator[tuple[Animation, bool, bool]]:
+    """Each animation of ``animations`` and each it holds, with whether it
+    is held by a Succession and whether a group holding it removes what it
+    animates (a removing group makes its animations removers).
+    """
+    from ..animation.animation import Animation
+    from ..animation.composition import AnimationGroup, Succession
+
+    for animation in animations:
+        if not isinstance(animation, Animation):
+            continue
+        yield animation, in_succession, removing
+        inner = in_succession or isinstance(animation, Succession)
+        parts = getattr(animation, "animations", None) or ()
+        group_removes = isinstance(animation, AnimationGroup) and (
+            removing or animation.is_remover()
+        )
+        yield from _removals(parts, inner, group_removes)
+        held = getattr(animation, "anim", None)
+        if isinstance(held, Animation):
+            yield from _removals((held,), inner, False)
+
+
+def _check_removals(animations: Any, declared: dict[int, Illustration]) -> None:
+    """Refuse an animation that takes a declared family out of the scene as
+    the play ends without its updating resumed then: it does not suspend
+    it, or it finishes earlier, as a Succession's part. Its members'
+    restorer would never run.
+    """
+    from ..animation.composition import AnimationGroup
+    from ..animation.speedmodifier import ChangeSpeed
+    from ..animation.transform import FadeTransform
+    from ..animation.transform_matching_parts import TransformMatchingAbstractBase
+
+    for animation, in_succession, removing in _removals(animations):
+        always = isinstance(animation, (FadeTransform, TransformMatchingAbstractBase))
+        if not always and isinstance(animation, (AnimationGroup, ChangeSpeed)):
+            # It hands its end to the animations it holds, read on their own.
+            continue
+        removes = (
+            always
+            or removing
+            or animation.is_remover()
+            or bool(getattr(animation, "replace_mobject_with_target_in_scene", False))
+        )
+        if not removes or (animation.suspend_mobject_updating and not in_succession):
+            continue
+        touched = _touched(animation, declared)
+        if touched is None:
+            continue
+        kind = type(animation).__name__
+        why = (
+            "finishes before the play ends, as a Succession's part"
+            if in_succession
+            else "does not suspend its updating"
+        )
+        _refuse(
+            "timing.updater",
+            f"the animation {kind} takes the family declared with stepped timing"
+            f" on a {type(touched.root).__name__} out of the scene as the play"
+            f" ends, and {why}: nothing would put back what is true there",
+            kind="animation",
+            name=kind,
+        )
 
 
 def _check_parts(succession: Succession, declared: dict[int, Illustration]) -> None:
@@ -880,14 +966,12 @@ class TimingClock:
         #: The scene drivers it runs, in the order the scene registered them.
         self.drivers: list[SceneDriver] = []
         self._animations: Any = None
-        #: Every mark declared here, by the tuple itself: a mobject carrying
+        #: Every mark declared here, by the string itself: a mobject carrying
         #: one of them is a copy of a mobject declared in this scene (a deep
-        #: copy of a tuple of numbers is the tuple).
-        self._marks: list[tuple[int | float, ...]] = []
+        #: copy of a string is the string).
+        self._marks: list[str] = []
         #: The members it gave the restorer at its last instant, by id.
         self._armed: dict[int, Mobject] = {}
-        #: The members the play's animations may suspend, by id.
-        self._suspending: frozenset[int] = frozenset()
 
         def hold_illustrations(dt: float) -> None:
             if dt >= 0:  # the read a stepping tick looks for; never a time
@@ -1033,13 +1117,15 @@ class TimingClock:
             for illustration in self.illustrations:
                 _check_content(scene, illustration.root, illustration.root.get_family())
             _check_animations(scene.animations or (), declared)
-            self._suspending = _suspending(scene.animations or ())
         present = {id(m) for m in family}
+        # Read at every instant: an animation begun since, or one that grew
+        # its mobject's family as it began, suspends what it holds now.
+        suspending = _suspending(scene.animations or ())
         for illustration in self.illustrations:
             members = illustration.root.get_family()
             _check_updaters(illustration.root, members)
             if id(illustration.root) in present:
-                _check_running(illustration.root, members, self._suspending)
+                _check_running(illustration.root, members, suspending)
         now = scene.time
         armed: dict[int, Mobject] = {}
         for illustration in self.illustrations:
