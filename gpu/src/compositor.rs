@@ -411,7 +411,7 @@ impl Compositor {
         let stack = plan(frame, &canvas, 0)?;
         let mut used = HashMap::new();
         uses(&stack, 0, [self.width, self.height], &mut used);
-        self.levels.retain(|at, level| match used.get(at).or(Some(&true)) {
+        self.levels.retain(|at, level| match used.get(at) {
             Some(&effects) => {
                 if !effects {
                     level.effects = None;

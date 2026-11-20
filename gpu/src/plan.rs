@@ -85,7 +85,7 @@ impl<'a> Canvas<'a> {
     fn check_size(&self, index: usize, what: &str, key: &Key) -> Result<(), DrawError> {
         let (width, height) = self.held(key)?;
         if (width, height) != (self.width, self.height) {
-            return Err(DrawError::Invalid(format!(
+            return Err(DrawError::SizeMismatch(format!(
                 "layer {index}: a {what} of {width} x {height} in a frame of {} x {}: a frame's \
                  pictures and masks are of its size, and a window's frame is of the window's size",
                 self.width, self.height
@@ -166,8 +166,7 @@ fn plan_layer(
                     "windows nested deeper than {MAX_NESTING}"
                 )));
             }
-            let _ = size;
-            let size = [canvas.width, canvas.height];
+            let size = size.unwrap_or([canvas.width, canvas.height]);
             let max = canvas.max_dimension;
             if !size.iter().all(|side| (1..=max).contains(side)) {
                 return Err(invalid(format!(
@@ -184,7 +183,7 @@ fn plan_layer(
                     }
                     other => other,
                 })?;
-            match placement(corners, *resampling, &[NEAREST], size[0], size[1])
+            match placement(corners, *resampling, &[NEAREST, BILINEAR], size[0], size[1])
                 .map_err(|e| e.labelled(index))?
             {
                 Some(rows) => Placed::Window {
