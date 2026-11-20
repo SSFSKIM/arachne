@@ -15,6 +15,10 @@ text ``state_at(t)`` answers is the format of the value at its ``as_of``
 draws the format of the declared value at its own instant; and the exact
 target is in a delivered frame only when a frame instant at or after the
 play's end exists, so a count followed by a wait shows it.
+
+A readout declares its value as ``annotation.count``
+(:mod:`arachne.quantities`), read from the value a capture holds: the
+number itself, not its text.
 """
 
 from __future__ import annotations
@@ -23,13 +27,15 @@ __all__ = ["CountUp", "Readout"]
 
 import math
 import string
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from arachne import quantities
 from arachne.animation.animation import Animation
 from arachne.mobject.text.text_mobject import Text
+from arachne.quantities import At, Quantity
 from arachne.utils.color import WHITE, ParsableManimColor
 
 from .attach import DEFAULT_OFFSET, Annotation
@@ -161,6 +167,11 @@ class Readout(Annotation):
                 if key in made.__dict__:
                     label.__dict__[key] = made.__dict__[key]
         return self
+
+
+@quantities.provider(Readout)
+def _declared(held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
+    return (Quantity("annotation.count", held["_value"], "1"),)
 
 
 #: What a text's string makes, which a readout's label takes from a text

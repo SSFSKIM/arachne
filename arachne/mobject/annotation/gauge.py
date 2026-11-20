@@ -9,7 +9,9 @@ Each holds its value as a plain number on its scale, ``value_range``,
 changed by :meth:`set_value` or counted by
 :class:`~.readout.CountUp`, and is drawn from its track as it stands:
 moved, scaled or turned, a gauge shows the same share. Each attaches to an
-anchor as every annotation does (:mod:`.attach`).
+anchor as every annotation does (:mod:`.attach`). Each declares its value
+as ``annotation.gauge`` (:mod:`arachne.quantities`), on its scale, read from
+the value a capture holds.
 """
 
 from __future__ import annotations
@@ -17,14 +19,17 @@ from __future__ import annotations
 __all__ = ["BarGauge", "ColumnGauge", "DialGauge"]
 
 import math
-from typing import TYPE_CHECKING
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from arachne import quantities
 from arachne.constants import DEGREES, ORIGIN
 from arachne.mobject.geometry.arc import Arc, Dot
 from arachne.mobject.geometry.polygram import Rectangle
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
+from arachne.quantities import At, Quantity
 from arachne.utils.color import BLUE_C, GREY_B, ParsableManimColor
 
 from .attach import DEFAULT_OFFSET, Annotation
@@ -99,6 +104,11 @@ class _Gauge(Annotation):
 
     def _draw(self) -> None:
         raise NotImplementedError
+
+
+@quantities.provider(_Gauge)
+def _declared(held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
+    return (Quantity("annotation.gauge", held["_value"], "1"),)
 
 
 class _TrackGauge(_Gauge):

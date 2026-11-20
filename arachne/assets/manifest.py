@@ -85,6 +85,8 @@ from fractions import Fraction
 from types import MappingProxyType
 from typing import Any, NoReturn
 
+from .. import quantities
+
 #: The file that makes a directory an asset.
 MANIFEST = "manifest.json"
 #: The major version of the manifest this reader reads.
@@ -109,6 +111,11 @@ FRAME_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 SPRITE_TICKS = 60
 
 Point = tuple[float, float]
+
+#: The prefix of a rig's declared quantities, ``rig.param.<parameter>`` and
+#: ``rig.slot.<slot>`` (:mod:`arachne.quantities`): names a manifest defines.
+QUANTITY_PREFIX = "rig."
+quantities.register(QUANTITY_PREFIX, owner="arachne.assets")
 
 
 def refuse(code: str, what: str, **detail: Any) -> NoReturn:
@@ -510,6 +517,22 @@ class _Reader:
             )
         return name
 
+    def carried(self, member: str, name: str, value: float | str, unit: str) -> None:
+        """Refuse at ``member`` what a declared quantity cannot carry:
+        ``value`` as the quantity ``name`` in ``unit``, by the declared
+        quantities' own check (:mod:`arachne.quantities`). A unit no loaded
+        asset has registered yet is checked as the plain unit ``1``: an
+        asset's units are registered when it loads, and, but for the unit
+        ``name`` (always registered), a number's rules do not depend on its
+        unit.
+        """
+        # The declared quantities' internals, until they offer a public validator.
+        known = unit in quantities._UNITS
+        probe = quantities.Quantity(name, value, unit if known else DEFAULT_UNIT)
+        why = quantities._check(probe).unreadable
+        if why is not None:
+            self.invalid(member, f"a declared quantity cannot carry it ({why})")
+
     # Values
 
     def object(self, value: Any, member: str) -> Mapping[str, Any]:
@@ -800,8 +823,13 @@ class _Reader:
         default = self.text(self.member(entry, "default", at), f"{at}.default")
         if default not in {d.name for d in drawings}:
             self.invalid(f"{at}.default", f"the slot has no drawing {default!r}")
+        name = self.name(self.member(entry, "name", at), f"{at}.name")
+        quantity = f"{QUANTITY_PREFIX}slot.{name}"
+        self.carried(f"{at}.name", quantity, 0.0, DEFAULT_UNIT)
+        for i, drawing in enumerate(drawings):
+            self.carried(f"{at}.drawings[{i}].name", quantity, drawing.name, "name")
         return SlotSpec(
-            name=self.name(self.member(entry, "name", at), f"{at}.name"),
+            name=name,
             parent=self.optional_text(self.member(entry, "parent", at), f"{at}.parent"),
             pivot=self.point(self.member(entry, "pivot", at), f"{at}.pivot"),
             order=self.integer(self.member(entry, "order", at), f"{at}.order"),
@@ -864,6 +892,8 @@ class _Reader:
     ) -> ParameterSpec:
         entry = self.object(value, at)
         name = self.name(self.member(entry, "name", at), f"{at}.name")
+        quantity = f"{QUANTITY_PREFIX}param.{name}"
+        self.carried(f"{at}.name", quantity, 0.0, DEFAULT_UNIT)
         unit = entry.get("unit", DEFAULT_UNIT)
         if not isinstance(unit, str) or UNIT.fullmatch(unit) is None:
             self.invalid(
@@ -872,6 +902,7 @@ class _Reader:
                 " white space",
                 name=name,
             )
+        self.carried(f"{at}.unit", quantity, 0.0, unit)
         low = self.number(self.member(entry, "min", at), f"{at}.min")
         high = self.number(self.member(entry, "max", at), f"{at}.max")
         if not low < high:

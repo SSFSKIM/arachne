@@ -11,6 +11,13 @@ joins, and a camera move into one piece.
   block's inside diagram fades in, once its labels are large enough to
   read, and what the frame's edge would cut fades out before it is cut.
 
+A flow declares its speed as ``diagram.flow_speed``, in scene units a
+second (:mod:`arachne.quantities`), read from what a capture holds: the
+declared advance of its tokens along the edge, by arc length, while it runs,
+and 0 once it is stopped. It is not each token's visible velocity, which
+also carries the edge's own motion when the edge moves or deforms. Its
+tolerance, 1 % of it, is a claim about that declared advance.
+
 A diagram's labels are measured against each other, against the frame's
 edge and for their height by the lint rule
 :data:`~arachne.lint.rules.diagram_clear`, which the sweep's pair rules,
@@ -23,12 +30,12 @@ __all__ = ["Diagram", "Flow", "ZoomInto"]
 
 import math
 import weakref
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from arachne import config
+from arachne import config, quantities
 from arachne.animation.animation import Animation
 from arachne.constants import DL, DOWN, LEFT, ORIGIN, RIGHT, UP, UR
 from arachne.mobject.geometry.arc import Dot
@@ -47,6 +54,7 @@ from arachne.mobject.marks.blocks import SIDES, Block
 from arachne.mobject.marks.ports import Ported
 from arachne.mobject.text.text_mobject import Text
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
+from arachne.quantities import At, Quantity
 from arachne.utils.color import WHITE, YELLOW, ParsableManimColor
 from arachne.utils.rate_functions import smooth
 
@@ -353,6 +361,26 @@ class Flow(VGroup):
         # the flow by then.
         _run_in_scene(self)
         return super().suspend_updating(recursive)
+
+
+quantities.register("diagram.", owner="arachne.mobject.diagram", units=("u/s",))
+
+#: The share of a flow's declared speed within which its tokens' advance
+#: along the edge, by arc length, holds.
+FLOW_TOLERANCE = 0.01
+
+
+@quantities.provider(Flow)
+def _declared(held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
+    """``diagram.flow_speed``: the tokens' declared advance along the edge,
+    in u/s, not their visible velocity on a moving edge.
+    """
+    speed = 0.0 if held["stopped"] else held["speed"]
+    return (
+        Quantity(
+            "diagram.flow_speed", speed, "u/s", tolerance=FLOW_TOLERANCE * abs(speed)
+        ),
+    )
 
 
 def _start_flow(flow: Mobject, dt: float) -> None:
