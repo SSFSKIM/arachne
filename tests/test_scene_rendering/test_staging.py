@@ -181,3 +181,74 @@ def test_a_render_executed_again_keeps_the_segments_its_first_execution_finished
     assert len(found) == 2
     assert all("/partial_movie_files/" in name for name in found)
     assert all(name.endswith(".mp4") for name in found)
+
+
+def _found_late(scene: Scene) -> None:
+    """What a rig records when a line names an anchor no rig has."""
+    from arachne.lint.raised import found
+
+    found("annotation.anchor_unknown", "an anchor no rig has")
+
+
+class FoundAfterAPlay(Scene):
+    """A play drawn and finished, then a finding that refuses drawing the
+    scene, then another play.
+    """
+
+    def construct(self):
+        self.play(Create(Square()))
+        _found_late(self)
+        self.play(FadeIn(Circle()))
+
+
+class RetriedThenFound(RetriedThenRaises):
+    """A play finished in the first execution; the scene executed again for
+    the next play, whose code records a finding that refuses drawing it.
+    """
+
+    def construct(self):
+        self.play(Create(Square()))
+        _found_late(self)
+        tracker = ValueTracker(0)
+        holder = VGroup()
+
+        def show(group):
+            if tracker.get_value() >= 0.5 and not group.submobjects:
+                group.add(_OwnFill(radius=0.3))
+
+        holder.add_updater(show)
+        self.add(holder)
+        self.play(tracker.animate.set_value(1), rate_func=linear)
+
+
+class LiveSequenceFoundLate(Scene):
+    """A scene drawn as it runs (its dot's fill is its own), written as a
+    numbered sequence, whose finding comes after its plays.
+    """
+
+    def construct(self):
+        self.add(_OwnFill(radius=0.3))
+        self.play(Create(Square()))
+        _found_late(self)
+
+
+@pytest.mark.parametrize("scene", [FoundAfterAPlay, RetriedThenFound])
+def test_a_render_refused_by_its_scene_s_finding_keeps_no_segment(tmp_path, scene):
+    """A segment drawn before the finding stands for a scene whose drawing
+    is refused: none is kept, however many executions the render took.
+    """
+    from arachne.lint.raised import RaisedFinding
+
+    media = tmp_path / "media"
+    with pytest.raises(RaisedFinding):
+        _render(scene, media)
+    assert _files(media) == []
+
+
+def test_a_sequence_drawn_as_it_runs_keeps_no_frame_before_a_late_finding(tmp_path):
+    from arachne.lint.raised import RaisedFinding
+
+    media = tmp_path / "media"
+    with pytest.raises(RaisedFinding):
+        _render(LiveSequenceFoundLate, media, format="png-sequence")
+    assert _files(media) == []

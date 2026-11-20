@@ -176,12 +176,15 @@ class Manager(Generic[SceneT]):
             self._render_staged()
         except BaseException as error:
             # A refused render leaves nothing: every file it wrote waits in
-            # staging, which goes with it. A render that raised otherwise
-            # keeps the plays it finished drawing in the cache, as a render
-            # always has, and publishes nothing else. Either way the error
-            # raised is the render's own.
+            # staging, which goes with it. So does a render of a scene whose
+            # code recorded a finding that refuses drawing it, whatever ended
+            # it: a segment drawn before the finding stands for that scene.
+            # A render that raised otherwise keeps the plays it finished
+            # drawing in the cache, as a render always has, and publishes
+            # nothing else. Either way the error raised is the render's own.
+            refused = isinstance(error, Refusal) or self._drawing_refused()
             try:
-                self.file_writer.discard(keep_segments=not isinstance(error, Refusal))
+                self.file_writer.discard(keep_segments=not refused)
             except Exception:
                 logger.exception("Cleaning up after %s failed", type(error).__name__)
             raise
@@ -193,6 +196,17 @@ class Manager(Generic[SceneT]):
                 preview=open_after_render,
                 show_in_file_browser=presentation.show_in_file_browser,
             )
+
+    def _drawing_refused(self) -> bool:
+        """Whether the scene's code recorded a finding that refuses drawing
+        it (:func:`~.lint.raised.found`), as far as it ran.
+        """
+        record = self.scene._arachne_timeline.record
+        if record is None or not record.bridge.calls:
+            return False
+        from .lint.raised import drawing_refusal
+
+        return drawing_refusal(record) is not None
 
     def _render_staged(self) -> None:
         """Execute the scene, again where a play must be drawn as it runs,
