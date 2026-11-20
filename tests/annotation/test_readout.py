@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from arachne import ORIGIN, Readout, Text, tempconfig
+from arachne import DOWN, LEFT, ORIGIN, RIGHT, UL, UP, UR, Readout, Text, tempconfig
 from arachne.camera.camera import Camera
 from arachne.session import Session
 from arachne.timeline import admission
@@ -330,3 +330,163 @@ def test_a_count_s_target_is_set_without_its_easing_s_last_value():
     count.interpolate(0.5)
     count.finish()
     assert gauge.value == 1.0
+
+
+#: A format with a leading word, as a sheet labels a number.
+WORDED = "swell {:.0f}%"
+
+
+def _drawn_alone(mobject) -> np.ndarray:
+    """``mobject`` drawn by the camera alone, on the scene's background:
+    what a frame shows of it.
+    """
+    with tempconfig(PICTURE):
+        camera = Camera()
+        camera.capture_mobjects([mobject])
+        return np.asarray(camera.pixel_array[..., :3], dtype=float)
+
+
+def _pixel(frame: np.ndarray, point: np.ndarray) -> np.ndarray:
+    """The colour ``frame`` draws at the scene point ``point``."""
+    from arachne import config
+
+    height, width = frame.shape[:2]
+    col = int((point[0] / config.frame_width + 0.5) * width)
+    row = int((0.5 - point[1] / config.frame_height) * height)
+    return frame[row, col]
+
+
+def _over_first_glyph(reading: Readout) -> np.ndarray:
+    """A point of the plate that no glyph covers: above the first glyph (a
+    lower-case letter), under the plate's top edge.
+    """
+    label = reading.label
+    plates = {id(m) for m in label.background_rectangle.get_family()}
+    first = next(m for m in label.family_members_with_points() if id(m) not in plates)
+    top = label.background_rectangle.get_top()[1]
+    return np.array([first.get_center()[0], (first.get_top()[1] + top) / 2, 0])
+
+
+def test_a_readout_s_plate_is_drawn_through_its_count():
+    from arachne import CountUp
+    from arachne.mobject.annotation.callout import PILL_COLOR
+    from arachne.utils.color import ManimColor
+
+    reading = Readout(0, format=WORDED, pill=True, font_size=COUNT_FONT_SIZE)
+    plate_rgb = np.array(ManimColor(PILL_COLOR).to_int_rgb(), dtype=float)
+    spot = _over_first_glyph(reading)
+    assert np.abs(_pixel(_drawn_alone(reading), spot) - plate_rgb).max() <= 1
+    count = CountUp(reading, 100, rate_func=lambda a: a)
+    count.begin()
+    for alpha in (0.05, 0.5, 1.0):
+        count.interpolate(alpha)
+        plate = reading.label.background_rectangle
+        assert plate in reading.label.family_members_with_points()
+        drawn = _pixel(_drawn_alone(reading), _over_first_glyph(reading))
+        assert np.abs(drawn - plate_rgb).max() <= 1, (alpha, drawn)
+
+
+def _prefix_xs(reading: Readout, glyphs: int) -> np.ndarray:
+    """The left edges of the label's first ``glyphs`` glyphs."""
+    label = reading.label
+    plate = getattr(label, "background_rectangle", None)
+    plates = set() if plate is None else {id(m) for m in plate.get_family()}
+    shown = [m for m in label.family_members_with_points() if id(m) not in plates]
+    return np.array([m.get_left()[0] for m in shown[:glyphs]])
+
+
+@pytest.mark.parametrize("pill", [False, True])
+def test_a_leading_word_stays_still_as_the_number_widens(pill):
+    from arachne import CountUp
+
+    reading = Readout(0, format=WORDED, pill=pill).shift(LEFT + UP)
+    before = _prefix_xs(reading, 5)
+    middle = reading.label.get_center()[1]
+    count = CountUp(reading, 100, rate_func=lambda a: a)
+    count.begin()
+    for alpha in (0.05, 0.5, 1.0):
+        count.interpolate(alpha)
+        assert np.abs(_prefix_xs(reading, 5) - before).max() < 1e-9, alpha
+        assert reading.label.get_center()[1] == pytest.approx(middle, abs=0.02)
+    assert reading.label.original_text == "swell 100%"
+
+
+def test_a_bare_number_stays_centred_where_it_was_put():
+    from arachne import CountUp
+
+    reading = Readout(0, format="{:.0f}").move_to(2 * RIGHT)
+    count = CountUp(reading, 1000, rate_func=lambda a: a)
+    count.begin()
+    count.interpolate(1.0)
+    assert reading.label.original_text == "1000"
+    assert reading.label.get_center()[0] == pytest.approx(2.0, abs=1e-9)
+
+
+def test_a_readout_held_by_its_right_edge_grows_leftward():
+    from arachne import CountUp
+
+    reading = Readout(0, format="{:.0f} km", hold=RIGHT)
+    right = reading.label.get_right()[0]
+    count = CountUp(reading, 1000, rate_func=lambda a: a)
+    count.begin()
+    count.interpolate(1.0)
+    assert reading.label.get_right()[0] == pytest.approx(right, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("offset", "edge"),
+    [
+        (UR, LEFT),
+        (RIGHT, LEFT),
+        (UL, RIGHT),
+        (LEFT, RIGHT),
+        (UP, ORIGIN),
+        (DOWN, ORIGIN),
+    ],
+)
+def test_an_attached_readout_grows_away_from_its_anchor(offset, edge):
+    from arachne import CountUp, Dot, anchor
+
+    dot = Dot(LEFT)
+    reading = Readout(0, format="{:.0f}", at=anchor(dot), offset=offset)
+    gap = reading.label.get_critical_point(edge)[0] - dot.get_center()[0]
+    count = CountUp(reading, 1000, rate_func=lambda a: a)
+    count.begin()
+    for alpha in (0.5, 1.0):
+        dot.shift(0.25 * RIGHT)
+        count.interpolate(alpha)
+        reading.attach()  # its updater, which a count keeps running
+        held = reading.label.get_critical_point(edge)[0] - dot.get_center()[0]
+        assert held == pytest.approx(gap, abs=1e-9), alpha
+    assert reading.label.original_text == "1000"
+
+
+def test_a_count_on_a_plate_draws_the_plate_in_every_frame(tmp_path):
+    from arachne.mobject.annotation.callout import PILL_COLOR
+    from arachne.utils.color import ManimColor
+
+    plate_rgb = np.array(ManimColor(PILL_COLOR).to_int_rgb(), dtype=float)
+    placed = Readout(0, format=WORDED, pill=True, font_size=COUNT_FONT_SIZE)
+    spot = _over_first_glyph(placed)
+    frames = _rendered("CountOnAPlate", 15, tmp_path)
+    assert len(frames) == 15
+    for index, frame in enumerate(frames):
+        assert np.abs(_pixel(frame, spot) - plate_rgb).max() <= 2, index
+
+
+def test_a_count_with_a_leading_word_draws_the_word_still(tmp_path):
+    frames = _rendered("CountAfterAWord", 15, tmp_path)
+    assert len(frames) == 15
+    placed = Readout(0, format=WORDED, font_size=COUNT_FONT_SIZE)
+    # The columns the word "swell" covers, and a margin left of it.
+    from arachne import config
+
+    width = frames[0].shape[1]
+    first = _prefix_xs(placed, 5)
+    word_end = placed.label.family_members_with_points()[4].get_right()[0]
+    left = int((first[0] / config.frame_width + 0.5) * width) - 2
+    right = int((word_end / config.frame_width + 0.5) * width) + 1
+    word = frames[0][:, max(left, 0) : right]
+    assert word.max() > 0  # the word is drawn there
+    for index, frame in enumerate(frames[1:], start=1):
+        assert np.abs(frame[:, max(left, 0) : right] - word).max() <= 1, index

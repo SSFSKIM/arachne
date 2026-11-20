@@ -211,6 +211,12 @@ class Annotation(VGroup):
     :class:`LeaderLine` drawn below it, attached to the anchor ``at``
     (``None``: placed by hand, and no leader) at ``offset``, following it
     unless ``follow`` is false.
+
+    ``hold`` is the point of the body's box that following keeps in place
+    (``ORIGIN``, its centre, by default; ``LEFT``, its left edge): the body
+    is first put with its centre at the anchor's point plus the offset, and
+    from then on that point of its box keeps where it stood relative to the
+    anchor, whatever the body's width does.
     """
 
     def __init__(
@@ -222,6 +228,7 @@ class Annotation(VGroup):
         follow: bool = True,
         leader: bool = False,
         leader_color: ParsableManimColor = WHITE,
+        hold: Sequence[float] | np.ndarray = ORIGIN,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -239,6 +246,10 @@ class Annotation(VGroup):
         if self.leader is not None:
             self.add(self.leader)
         self.add(body)
+        #: The point of the body's box that following keeps in place.
+        self.hold = _direction(hold)
+        #: Where that point stands from the anchor's point plus the offset.
+        self._held_from_place = np.zeros(3)
         #: How the annotation is attached, or ``None`` when it is not.
         self.attached: Attached | None = None
         if at is None:
@@ -257,13 +268,15 @@ class Annotation(VGroup):
             return
         # Placed at its anchor first, whether it follows or stays there.
         body.move_to(point + place)
+        self._held_from_place = body.get_critical_point(self.hold) - (point + place)
         if self.attached.follow or self.leader is not None:
             self.add_updater(keep_attached)
         self.attach()
 
     def attach(self) -> None:
         """Put the body at the anchor's point plus the offset, when it
-        follows, and the leader from the body's edge to the point.
+        follows (its :attr:`hold` point where it stood from there), and the
+        leader from the body's edge to the point.
         """
         attached = self.attached
         if attached is None:
@@ -272,9 +285,18 @@ class Annotation(VGroup):
         if point is None:
             return
         if attached.follow:
-            self.body.shift(point + np.array(attached.offset) - self.body.get_center())
+            place = point + np.array(attached.offset) + self._held_from_place
+            self.body.shift(place - self.body.get_critical_point(self.hold))
         if self.leader is not None:
             self.leader.put_between(_edge_toward(self.body, point), point)
+
+
+def _direction(given: Sequence[float] | np.ndarray) -> np.ndarray:
+    """``given`` as a direction of three coordinates."""
+    direction = np.zeros(3)
+    flat = np.asarray(given, dtype=float).ravel()
+    direction[: min(len(flat), 3)] = flat[:3]
+    return direction
 
 
 def _edge_toward(body: Mobject, point: np.ndarray) -> np.ndarray:

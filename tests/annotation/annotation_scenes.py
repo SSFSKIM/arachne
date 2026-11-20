@@ -461,3 +461,27 @@ class StillReadout(Scene):
     def construct(self) -> None:
         self.add(Readout(1.5, format="{:.2f}", name="readout").move_to(ORIGIN))
         self.wait(0.25)
+
+
+class CountOnAPlate(Scene):
+    """A readout on its plate, with a leading word, counted over one
+    second.
+    """
+
+    def construct(self) -> None:
+        reading = Readout(
+            0, format="swell {:.0f}%", pill=True, font_size=COUNT_FONT_SIZE
+        )
+        self.add(reading)
+        self.play(CountUp(reading, 100, rate_func=linear), run_time=1)
+
+
+class CountAfterAWord(Scene):
+    """A readout with a leading word counted over one second, its digits
+    widening after the word.
+    """
+
+    def construct(self) -> None:
+        reading = Readout(0, format="swell {:.0f}%", font_size=COUNT_FONT_SIZE)
+        self.add(reading)
+        self.play(CountUp(reading, 100, rate_func=linear), run_time=1)
