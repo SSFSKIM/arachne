@@ -467,7 +467,9 @@ def _landings(
     record: Record, chains: dict[int, tuple[Mobject, tuple[Mobject, ...]]]
 ) -> tuple[Landing, ...]:
     """The leaders the annotations among ``chains`` declare, each read off
-    the annotation and its anchor's object as the frame holds them.
+    the annotation and its anchor's object as the frame holds them: none
+    whose anchor's object the frame does not hold, whose members it cannot
+    give as they were.
     """
     annotation, attached, inside, box_point = _annotation_types()
     found: list[Landing] = []
@@ -476,6 +478,8 @@ def _landings(
             continue
         held = mob.attached
         if not isinstance(held, attached) or held.anchor.attachment is None:
+            continue
+        if id(held.anchor.mobject) not in chains:
             continue
         how = held.anchor.attachment
         within = isinstance(how, inside) or (

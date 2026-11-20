@@ -84,17 +84,29 @@ def test_a_leader_through_a_fill_its_path_leaves_open_still_touches_it(opened):
     assert "target" in {o.label_or_text for o in finding.objects}
 
 
+def _touching_other(session: Session) -> list:
+    return [
+        f
+        for f in _touching(session, "LeaderLine")
+        if "other" in {o.label_or_text for o in f.objects}
+    ]
+
+
 def test_a_landing_is_read_as_the_frame_holds_the_anchor_s_object(opened):
     # Before the obstacle joins the anchor's group, the leader ending in it
     # touches it; the later membership excuses no earlier frame.
-    found = [
-        f
-        for f in _touching(opened("ObstacleJoinsTheTarget"), "LeaderLine")
-        if "other" in {o.label_or_text for o in f.objects}
-    ]
+    found = _touching_other(opened("ObstacleJoinsTheTarget"))
     assert found
     assert all(f.t_start < Fraction(1, 4) for f in found)
     assert all(f.t_end is not None and f.t_end < Fraction(1, 4) for f in found)
+
+
+def test_an_anchor_object_the_frame_does_not_hold_declares_no_landing(opened):
+    # The anchor's group is never in the scene, so no frame holds its
+    # members as they were: no landing is declared, and the leader ending in
+    # the obstacle touches it before the obstacle joins the group too.
+    found = _touching_other(opened("ObstacleJoinsAnOffSceneGroup"))
+    assert any(f.t_start < Fraction(1, 4) for f in found)
 
 
 def _pairs_of(objects) -> frozenset[str]:

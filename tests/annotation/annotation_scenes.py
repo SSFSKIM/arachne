@@ -389,6 +389,23 @@ class ObstacleJoinsTheTarget(Scene):
         self.wait(0.25)
 
 
+class ObstacleJoinsAnOffSceneGroup(Scene):
+    """:class:`ObstacleJoinsTheTarget` with the anchor's group never added
+    to the scene: its target and the obstacle are drawn on their own.
+    """
+
+    def construct(self) -> None:
+        target = _target()
+        group = VGroup(target, name="group")
+        other = Square(0.6, fill_opacity=1, color=RED_E, name="other").move_to(
+            0.2 * LEFT
+        )
+        self.add(target, other, Callout("centre", at=anchor(group), offset=3 * LEFT))
+        self.wait(0.25)
+        group.add(other)
+        self.wait(0.25)
+
+
 class SweptLanding(Scene):
     """:class:`LeaderOverAnotherObject`, swept from the scene's code a
     quarter second in.
