@@ -23,8 +23,8 @@ against a stroke, or another marker; a stroke touching only at its own
 ends (unless the other is text or axis furniture); two strokes drawn along
 each other, or a stroke along a filled shape's own outline; and an
 annotation's leader landing on the object its declared anchor belongs to
-(:func:`declared_landings`), crossing that object's outline nowhere but at
-its landing.
+as the frame holds it (:attr:`~arachne.lint.parts.Parts.landings`),
+crossing that object's outline nowhere but at its landing.
 
 A contact that overlaps (a stroke whose centre line enters a glyph's ink,
 or anything else past touching) between a text and something drawn after
@@ -63,12 +63,8 @@ __all__ = ["pair_findings"]
 
 import itertools
 import math
-from collections.abc import Container, Iterable, Iterator, Mapping
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Container, Iterable
 from fractions import Fraction
-from types import MappingProxyType
-from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -84,13 +80,11 @@ from ._geometry import (
     outline_edges,
     signed_to_box,
     signed_to_outline,
+    stroke_samples,
     within,
 )
 from ._rule import Terms
 from ._units import Measured, measured_units
-
-if TYPE_CHECKING:
-    from arachne.timeline.record import Record
 
 #: A shortfall under this is noise: under a pixel at any size.
 NOISE = 0.005
@@ -160,7 +154,7 @@ def _pair(
     measured = _measure(a, b)
     if required - measured < NOISE:
         return None
-    if _lands(a, b, required) or _along(a, b, required) or _lands_declared(a, b):
+    if _lands(a, b, required) or _along(a, b, required) or _lands_declared(parts, a, b):
         return None
     stroke = _inked_stroke(a, b)
     if stroke is None:
@@ -314,95 +308,67 @@ def _lands(a: Measured, b: Measured, required: float) -> bool:
     return False
 
 
-#: For the length of a lint, each declared leader's stable id, with the ids
-#: of the object its anchor belongs to and whether the anchor is on that
-#: object's outline (:func:`declared_landings`); none outside a lint.
-_LANDINGS: ContextVar[Mapping[str, tuple[frozenset[str], bool]]] = ContextVar(
-    "landings", default=MappingProxyType({})
-)
-
-
-def landings(record: Record) -> Mapping[str, tuple[frozenset[str], bool]]:
-    """The leaders ``record``'s annotations declare, read from what the
-    record holds of each (its ``attached`` anchor and its ``leader``): each
-    leader's id, the ids of its anchor's object's family, and whether the
-    anchor is on that object's outline rather than inside it.
+def _lands_declared(parts: Parts, a: Measured, b: Measured) -> bool:
+    """One is a leader the frame declares and the other a piece of its
+    anchor's object, and the leader meets that piece only to land: on an
+    outline anchor it crosses the piece's outline only within
+    :data:`END_REACH` of its end; on an inside one it crosses it at most
+    once and ends inside its fill. A filled leaf's outline is closed and
+    its inside wound as Cairo fills it. A leader starting inside a fill
+    lands on nothing.
     """
-    from arachne.assets.anchor import Inside
-    from arachne.mobject.annotation.attach import Annotation, Attached, BoxPoint
-
-    found: dict[str, tuple[frozenset[str], bool]] = {}
-    for mob in record.mobjects():
-        if not isinstance(mob, Annotation) or mob.leader is None:
-            continue
-        attached = mob.attached
-        if not isinstance(attached, Attached) or attached.anchor.attachment is None:
-            continue
-        how = attached.anchor.attachment
-        inside = isinstance(how, Inside) or (
-            isinstance(how, BoxPoint) and not any(how.direction)
-        )
-        family = attached.anchor.mobject.get_family()
-        found[record.origin(mob.leader).id] = (
-            frozenset(record.origin(m).id for m in family),
-            not inside,
-        )
-    return MappingProxyType(found)
-
-
-@contextmanager
-def declared_landings(record: Record) -> Iterator[None]:
-    """Let the leaders ``record``'s annotations declare land on their
-    anchors' objects inside the block (:func:`_lands_declared`).
-    """
-    held = _LANDINGS.set(landings(record))
-    try:
-        yield
-    finally:
-        _LANDINGS.reset(held)
-
-
-def _lands_declared(a: Measured, b: Measured) -> bool:
-    """One is a declared leader and the other a piece of its anchor's
-    object, and the leader crosses that piece's outline only to land: on an
-    outline anchor, within :data:`END_REACH` of its end; on an inside one,
-    once. A leader starting inside a filled piece lands on nothing.
-    """
-    declared = _LANDINGS.get()
     for leader, target in ((a, b), (b, a)):
-        found = declared.get(leader.id)
-        if found is None or target.id not in found[0] or target.text:
+        landing = next((x for x in parts.landings if x.leader == leader.id), None)
+        if landing is None or target.id not in landing.target:
             continue
-        if target.furniture or not len(leader.points):
+        if target.text or target.furniture or not leader.leaves:
             continue
-        end, start = leader.leaves[-1].points[-1], leader.leaves[0].points[0]
-        edges = _edges(target)
-        crossed = _crossings(leader.points, edges)
-        if target.region and _inside(start, edges):
+        fills, strokes = _outlines(target)
+        start = leader.leaves[0].points[0]
+        end = leader.leaves[-1].points[-1]
+        if _in_fill(start, fills):
             return False
-        if found[1]:
+        crossed = [
+            place
+            for leaf in leader.leaves
+            for place in _crossings(stroke_samples(leaf), [*fills, *strokes])
+        ]
+        if landing.outline:
             return all(float(np.linalg.norm(p - end)) <= END_REACH for p in crossed)
-        return len(crossed) <= 1
+        return len(crossed) <= 1 and (not fills or _in_fill(end, fills))
     return False
 
 
-def _edges(unit: Measured) -> np.ndarray:
-    """The segments of a unit's drawn outlines, ``(n, 2, 2)``."""
-    found = [
-        np.stack([curve[:-1], curve[1:]], axis=1)
-        for leaf in unit.leaves
-        if (lines := leaf.outline()) is not None
-        for curve in lines
-    ]
-    return np.concatenate(found) if found else np.zeros((0, 2, 2))
+Edges = tuple[np.ndarray, np.ndarray]
 
 
-def _crossings(points: np.ndarray, edges: np.ndarray) -> list[np.ndarray]:
-    """Where the polyline ``points`` crosses ``edges``, each place once."""
+def _outlines(unit: Measured) -> tuple[list[Edges], list[Edges]]:
+    """A unit's outlines as edges ``(starts, ends)``: each filled leaf's
+    closed, as its fill is (:func:`~._geometry.outline_edges`), and each
+    other leaf's as its curves run.
+    """
+    fills: list[Edges] = []
+    strokes: list[Edges] = []
+    for leaf in unit.leaves:
+        if leaf.first_fill_opacity > 0 and (ring := outline_edges(leaf)) is not None:
+            fills.append(ring)
+        elif (lines := leaf.outline()) is not None:
+            strokes.append((lines[:, :-1].reshape(-1, 2), lines[:, 1:].reshape(-1, 2)))
+    return fills, strokes
+
+
+def _in_fill(point: np.ndarray, fills: list[Edges]) -> bool:
+    """Whether ``point`` lies inside a fill, by its nonzero winding."""
+    return any(float(signed_to_outline(point[None], ring)[0]) < 0 for ring in fills)
+
+
+def _crossings(points: np.ndarray, outlines: list[Edges]) -> list[np.ndarray]:
+    """Where the polyline ``points`` crosses ``outlines``, each place once."""
     found: list[np.ndarray] = []
-    if not len(edges):
+    if not outlines:
         return found
-    q, s = edges[:, 0], edges[:, 1] - edges[:, 0]
+    q = np.vstack([starts for starts, _ in outlines])
+    s = np.vstack([ends for _, ends in outlines]) - q
     for p0, p1 in zip(points[:-1], points[1:], strict=True):
         r = p1 - p0
         across = r[0] * s[:, 1] - r[1] * s[:, 0]
@@ -416,17 +382,6 @@ def _crossings(points: np.ndarray, edges: np.ndarray) -> list[np.ndarray]:
             if all(float(np.linalg.norm(place - seen)) > 1e-9 for seen in found):
                 found.append(place)
     return found
-
-
-def _inside(point: np.ndarray, edges: np.ndarray) -> bool:
-    """Whether ``point`` lies inside ``edges``, by the even-odd rule."""
-    if not len(edges):
-        return False
-    a, b = edges[:, 0], edges[:, 1]
-    straddles = (a[:, 1] > point[1]) != (b[:, 1] > point[1])
-    with np.errstate(divide="ignore", invalid="ignore"):
-        x = a[:, 0] + (point[1] - a[:, 1]) * (b[:, 0] - a[:, 0]) / (b[:, 1] - a[:, 1])
-    return bool(np.count_nonzero(straddles & (x > point[0])) % 2)
 
 
 def _along(a: Measured, b: Measured, required: float) -> bool:

@@ -10,6 +10,7 @@ runs on past an outline anchor into the object, still touches it.
 
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -74,3 +75,43 @@ def test_a_leader_deeper_than_its_landing_still_touches_its_target(opened, scene
 def test_a_leader_over_another_object_still_touches_it(opened):
     (finding,) = _touching(opened("LeaderOverAnotherObject"), "LeaderLine")
     assert "other" in {o.label_or_text for o in finding.objects}
+
+
+def test_a_leader_through_a_fill_its_path_leaves_open_still_touches_it(opened):
+    # The fill closes the side its path leaves open: the leader crosses it
+    # there and again at the top, and ends outside the fill.
+    (finding,) = _touching(opened("LeaderThroughOpenFill"), "LeaderLine")
+    assert "target" in {o.label_or_text for o in finding.objects}
+
+
+def test_a_landing_is_read_as_the_frame_holds_the_anchor_s_object(opened):
+    # Before the obstacle joins the anchor's group, the leader ending in it
+    # touches it; the later membership excuses no earlier frame.
+    found = [
+        f
+        for f in _touching(opened("ObstacleJoinsTheTarget"), "LeaderLine")
+        if "other" in {o.label_or_text for o in f.objects}
+    ]
+    assert found
+    assert all(f.t_start < Fraction(1, 4) for f in found)
+    assert all(f.t_end is not None and f.t_end < Fraction(1, 4) for f in found)
+
+
+def _pairs_of(objects) -> frozenset[str]:
+    return frozenset(o["id"] if isinstance(o, dict) else o.id for o in objects)
+
+
+def test_the_scene_s_sweep_lets_a_landing_pass_as_the_lint_does(opened):
+    session = opened("SweptLanding")
+    swept = {
+        _pairs_of(f["objects"])
+        for f in session.scene.found
+        if f["code"] == "contact.held"
+    }
+    linted = {
+        _pairs_of(f.objects)
+        for f in lint(session, rules=(sweep.where(at=[Fraction(1, 4)]),)).findings
+        if f.code == "contact.held"
+    }
+    assert len(swept) == 1
+    assert swept == linted

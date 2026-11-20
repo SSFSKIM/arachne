@@ -317,3 +317,16 @@ def test_a_play_draws_only_the_glyphs_the_readout_shows(opened):
             if id(mob) not in shown and len(_held(record, mob, capture)["_points"])
         ]
         assert drawn == [], t
+
+
+def test_a_count_s_target_is_set_without_its_easing_s_last_value():
+    from arachne import BarGauge, CountUp
+
+    # An easing that leaves the scale only at its last value: the count is
+    # done at its target, which the easing's last value never reaches.
+    gauge = BarGauge(0.2)
+    count = CountUp(gauge, 1.0, rate_func=lambda a: 1.5 if a >= 1 else a)
+    count.begin()
+    count.interpolate(0.5)
+    count.finish()
+    assert gauge.value == 1.0

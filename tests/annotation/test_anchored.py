@@ -203,3 +203,12 @@ def test_an_anchor_on_an_object_the_scene_does_not_hold_is_not_measured(opened):
     # was: the rule measures only anchors on what the scene holds.
     session = opened("CalloutOnOffSceneDot")
     assert lint(session, rules=(anchored,)).findings == ()
+
+
+def test_a_lint_s_instants_are_read_only_on_its_frames():
+    from arachne.lint.frames import Frames
+
+    frames = Frames(None, lint_instants=())  # type: ignore[arg-type]
+    assert frames.lint_instants == ()
+    with pytest.raises(AttributeError):
+        frames.lint_instants = ()  # type: ignore[misc]

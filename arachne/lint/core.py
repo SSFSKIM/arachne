@@ -44,7 +44,6 @@ from .frames import FrameReader, Frames
 from .instants import LintInstant, lint_instants
 from .parts import Parts, PartsCache, build_parts
 from .quantities import request_quantities, unreadable_findings
-from .rules._pairs import declared_landings
 
 if TYPE_CHECKING:
     from arachne.session import Session
@@ -182,10 +181,8 @@ def lint(
     frames.read()
     parts = tuple(frames.result(_PARTS))
     context = LintContext(session, record, exact(fps), instants, parts, frames)
-    # The leaders the scene's annotations declare land where they point.
-    with declared_landings(record):
-        found = [finding for rule in rules for finding in rule(context)]
-        found.extend(checks(context))
+    found = [finding for rule in rules for finding in rule(context)]
+    found.extend(checks(context))
     found.extend(unreadable_findings(frames, instants, parts))
     # After the parts: a forward run that read them may have found one.
     found.extend(_diverged(session))

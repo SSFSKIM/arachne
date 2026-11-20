@@ -81,9 +81,7 @@ class Frames:
         self, session: Session, *, lint_instants: tuple[LintInstant, ...] = ()
     ) -> None:
         self.session = session
-        #: The instants the lint reads (none outside a lint), for a reader
-        #: that opts to read at them too; no request reads them by itself.
-        self.lint_instants = tuple(lint_instants)
+        self._lint_instants = tuple(lint_instants)
         self._requests: dict[Hashable, _Request] = {}
         #: The owners that need a forward run, when one runs, to the end.
         self._complete: set[Hashable] = set()
@@ -95,6 +93,13 @@ class Frames:
         self.forward: Record | None = None
         #: The parts this lint's readers built, shared between them.
         self.parts = PartsCache()
+
+    @property
+    def lint_instants(self) -> tuple[LintInstant, ...]:
+        """The instants the lint reads (none outside a lint), for a reader
+        that opts to read at them too; no request reads them by itself.
+        """
+        return self._lint_instants
 
     def request(
         self,

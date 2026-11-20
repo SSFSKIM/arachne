@@ -251,7 +251,9 @@ class CountUp(Animation):
         self.counted.set_value(self.start + (self.to - self.start) * progress)
 
     def finish(self) -> None:
-        super().finish()
-        # Done, the count holds its target exactly, whatever its rate
-        # function's last value.
+        # Done, the count holds its target exactly: its rate function's last
+        # value is never evaluated, so an easing's last value off a gauge's
+        # scale is never drawn.
         self.counted.set_value(self.to)
+        if self.suspend_mobject_updating and self.mobject is not None:
+            self.mobject.resume_updating()

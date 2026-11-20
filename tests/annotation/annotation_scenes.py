@@ -30,8 +30,11 @@ from arachne import (
     Rig,
     Scene,
     Square,
+    VGroup,
+    VMobject,
     anchor,
 )
+from arachne.lint.bridge import sweep as sweep_now
 from arachne.utils.rate_functions import linear, smooth, there_and_back
 
 #: How the camera's frame moves while the annotated thing moves.
@@ -349,6 +352,56 @@ class LeaderOverAnotherObject(Scene):
             1.7 * LEFT
         )
         self.add(target, other, Callout("centre", at=anchor(target), offset=3 * LEFT))
+        self.wait(0.25)
+
+
+class LeaderThroughOpenFill(Scene):
+    """A filled shape drawn as an open path, its left, top and right sides
+    (its fill closes the bottom), and a leader declared at its centre but
+    planted from below the shape to above it: through it, not landing.
+    """
+
+    def construct(self) -> None:
+        target = VMobject(fill_opacity=1, color=BLUE_E, name="target")
+        target.set_points_as_corners([[-1, -1, 0], [-1, 1, 0], [1, 1, 0], [1, -1, 0]])
+        callout = Callout("centre", at=anchor(target), offset=3 * DOWN)
+        callout.clear_updaters()
+        callout.leader.put_between(callout.leader.points[0], 2 * UP)
+        self.add(target, callout)
+        self.wait(0.25)
+
+
+class ObstacleJoinsTheTarget(Scene):
+    """A leader declared at its target's centre ends inside a second shape
+    lying over that centre; a quarter second in, the second shape joins the
+    group the anchor belongs to.
+    """
+
+    def construct(self) -> None:
+        group = VGroup(_target(), name="group")
+        other = Square(0.6, fill_opacity=1, color=RED_E, name="other").move_to(
+            0.2 * LEFT
+        )
+        self.add(group, other, Callout("centre", at=anchor(group), offset=3 * LEFT))
+        self.wait(0.25)
+        self.remove(other)
+        group.add(other)
+        self.wait(0.25)
+
+
+class SweptLanding(Scene):
+    """:class:`LeaderOverAnotherObject`, swept from the scene's code a
+    quarter second in.
+    """
+
+    def construct(self) -> None:
+        target = _target()
+        other = Square(0.6, fill_opacity=1, color=RED_E, name="other").move_to(
+            1.7 * LEFT
+        )
+        self.add(target, other, Callout("centre", at=anchor(target), offset=3 * LEFT))
+        self.wait(0.25)
+        self.found = sweep_now()
         self.wait(0.25)
 
 
