@@ -531,7 +531,38 @@ def test_a_count_with_a_leading_word_draws_the_word_still(tmp_path):
         assert not len(moved), (
             index,
             (left, right),
-            _frame_size(),
             moved[:, 1].min() + left if len(moved) else None,
             moved[:, 1].max() + left if len(moved) else None,
+            _ink_runs(frames[0]),
+            _ink_runs(frame),
+            _recorded_glyphs("CountAfterAWord", index),
         )
+
+
+def _ink_runs(frame: np.ndarray) -> list[tuple[int, int]]:
+    """The runs of columns ``frame`` draws ink in: what a failure reports."""
+    inked = (frame.max(axis=2) > 64).any(axis=0)
+    runs, start = [], None
+    for col, on in enumerate([*inked, False]):
+        if on and start is None:
+            start = col
+        elif not on and start is not None:
+            runs.append((start, col - 1))
+            start = None
+    return runs
+
+
+def _recorded_glyphs(name: str, index: int) -> list[tuple[float, float]]:
+    """The x extents of the readout's glyphs the record holds at frame
+    ``index`` of a 15 fps render of ``name``: what a failure reports.
+    """
+    admission.DEMOTED.clear()
+    session = Session.open(SCENES, name, config={**PICTURE, "frame_rate": 15})
+    try:
+        state = session.state_at(Fraction(index, 15))
+        label = state.node(state.node(state.roots[0]).children[0])
+        boxes = [state.node(c).scene_box for c in label.children]
+        return [(round(b[0], 3), round(b[2], 3)) for b in boxes]
+    finally:
+        session.close()
+        admission.DEMOTED.clear()

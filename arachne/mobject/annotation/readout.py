@@ -141,7 +141,7 @@ def _glyphs(label: Text) -> list[Any]:
     return [m for m in label.family_members_with_points() if id(m) not in plates]
 
 
-def _held_point(
+def _hold_for(
     pattern: str,
     at: Anchor | None,
     offset: Sequence[float] | np.ndarray,
@@ -200,7 +200,7 @@ class Readout(Annotation):
             follow=follow,
             leader=leader,
             leader_color=color,
-            hold=_held_point(self.format, at, offset, hold),
+            hold=_hold_for(self.format, at, offset, hold),
             name=name,
         )
 
