@@ -24,6 +24,7 @@ from arachne.assets import Asset, Rig
 from arachne.assets.manifest import digest, thawed
 from arachne.assets.pose import CARRIER_WIDTH
 from arachne.assets.reader import FIXTURES, read_asset
+from arachne.assets.rig import unadmitted_rig
 from arachne.timeline.frozen import engine_class
 
 from . import draw_fixture_pack
@@ -336,7 +337,7 @@ def test_the_digest_of_a_fixed_asset_is_pinned(tmp_path):
 
 
 def test_an_asset_may_be_a_line_with_one_extent_zero(tmp_path):
-    rig = Rig(read_asset(_rod(tmp_path)))
+    rig = unadmitted_rig(read_asset(_rod(tmp_path)))
     assert rig.width == pytest.approx(1.0)
     # Its carrier, which says where it is placed, spans 10**-4 units.
     assert rig.height == pytest.approx(0, abs=CARRIER_WIDTH)
@@ -349,7 +350,7 @@ def test_a_parameter_with_no_unit_is_a_plain_number(tmp_path):
 
 
 def test_an_asset_shared_by_its_rigs_cannot_be_written(tmp_path):
-    rig = Rig(read_asset(_rod(tmp_path)))
+    rig = unadmitted_rig(read_asset(_rod(tmp_path)))
     asset = rig.copy().asset
     assert asset is rig.asset
     with pytest.raises(AttributeError):

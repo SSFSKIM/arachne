@@ -28,7 +28,7 @@ outline is a place along one contour.
 
 from __future__ import annotations
 
-__all__ = ["CHECKS", "FIXTURES", "TOOL", "Asset", "load_asset", "read_asset"]
+__all__ = ["CHECKS", "FIXTURES", "TOOL", "Asset", "load_asset"]
 
 import os
 import stat
@@ -143,9 +143,11 @@ class Asset:
 def load_asset(ref: str | os.PathLike[str] | Asset) -> Asset:
     """The asset ``ref`` names (see the module), checked and read whole, and
     admitted; raises the finding of the first thing that makes it unusable.
-    An :class:`Asset` is what loading gave, and is returned as it is.
+    An :class:`Asset` given is admitted as one read from a path is, and
+    returned as it is.
     """
     if isinstance(ref, Asset):
+        _admitted(ref, str(ref.directory))
         return ref
     asset = read_asset(ref)
     _admitted(asset, os.fspath(ref))
@@ -155,7 +157,8 @@ def load_asset(ref: str | os.PathLike[str] | Asset) -> Asset:
 def read_asset(ref: str | os.PathLike[str]) -> Asset:
     """The asset ``ref`` names, checked and read whole as :func:`load_asset`
     reads it, its admission left unasked: the admission tool's own entry
-    (:mod:`.admission`), which admits what it reads.
+    (:mod:`.admission`), which admits what it reads. An asset it gives loads,
+    and makes a rig, only once admitted.
     """
     label = os.fspath(ref)
     directory = _directory(label)

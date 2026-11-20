@@ -125,6 +125,34 @@ def test_a_planted_defect_is_refused_by_its_failing_check():
         assert found.detail["checks"] == [check]
 
 
+def test_an_unadmitted_asset_handed_over_whole_is_refused_by_both_public_apis(
+    tmp_path,
+):
+    # An asset read without its admission (the admission tool's own entry)
+    # is checked as one asked for by path is, by loading and by a rig.
+    unchecked = read_asset(edited(copied(tmp_path, "dial"), lambda d: d.pop("checks")))
+    failing = read_asset(DEFECTS / "stray-anchor")
+    for snapshot, reason in ((unchecked, "unchecked"), (failing, "failing")):
+        for public in (load_asset, Rig):
+            found = refused("asset.unadmitted", lambda p=public, a=snapshot: p(a))
+            assert found.detail["reason"] == reason
+            assert found.detail["asset"] == str(snapshot.directory)
+    admitted = load_asset("fixture:dial")
+    assert load_asset(admitted) is admitted
+    assert Rig(admitted).asset is admitted
+
+
+def test_the_unadmitted_entry_is_not_public():
+    import arachne
+    import arachne.assets
+    from arachne.assets import reader
+
+    assert "read_asset" not in reader.__all__
+    assert not hasattr(arachne.assets, "read_asset")
+    assert not hasattr(arachne, "read_asset")
+    assert not hasattr(arachne, "unadmitted_rig")
+
+
 def test_the_refusals_come_in_order_of_what_a_maker_must_mend_first(tmp_path):
     # A file missing is reported before the record that no longer attests.
     directory = edited(copied(tmp_path, "dial"), lambda d: d.pop("checks"))

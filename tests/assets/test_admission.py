@@ -18,7 +18,7 @@ import pytest
 from arachne import DL, UR
 from arachne.assets import Rig, admit, load_asset
 from arachne.assets.__main__ import main
-from arachne.assets.admission import HOLE_ALLOWANCE, REACH
+from arachne.assets.admission import HOLE_ALLOWANCE, REACH, write_checks
 from arachne.assets.reader import CHECKS, FIXTURES, TOOL, read_asset
 
 from . import draw_fixture_pack
@@ -65,6 +65,171 @@ def test_a_hole_the_figure_is_drawn_with_is_not_one_it_opens(tmp_path):
     )
     report = admit(directory)
     assert report.passed, report.lines()
+
+
+#: A window frame's four bars, on a canvas 300 units square.
+_BARS = [(50, 50, 200, 20), (50, 230, 200, 20), (50, 70, 20, 160), (230, 70, 20, 160)]
+
+
+def _windowed(root: Path, name: str, plate: list, shift: list) -> Path:
+    """A frame with a plate behind it that the parameter ``slide`` moves
+    by ``shift``; the plate is the rectangles ``plate``.
+    """
+    rect, Shape = draw_fixture_pack.rect, draw_fixture_pack.Shape
+    pack = draw_fixture_pack.Pack(root, name, (300, 300))
+    frame = pack.file("frame.svg", {None: [Shape(rect(*b), "#6d4c41") for b in _BARS]})
+    behind = pack.file("plate.svg", {None: [Shape(rect(*r), "#90a4ae") for r in plate]})
+    pack.manifest(
+        (150, 150),
+        parts=[
+            draw_fixture_pack.part("frame", frame, None, (150, 150), 1),
+            draw_fixture_pack.part("plate", behind, "frame", (150, 150), 0),
+        ],
+        slots=[],
+        parameters=[
+            draw_fixture_pack.one_parameter(
+                "slide", 0, 1, "plate", "translate", [[0, 0], shift]
+            )
+        ],
+        anchors=[],
+    )
+    return root / name
+
+
+#: A plate covering the window but for a square opening of its own, whose
+#: edges fall partway into pixels: moved, it can gain a row and a column.
+_HOLED_PLATE = [
+    (60, 60, 180, 60.274),
+    (60, 140.274, 180, 99.726),
+    (60, 120, 70.274, 20.274),
+    (150.274, 120, 89.726, 20.274),
+]
+
+
+@pytest.mark.parametrize(
+    "shift", [[-9, -3.7], [-3.1, 4.1], [3.3, 2.2], [6.1, -3.7], [9, 4.1]]
+)
+def test_an_opening_that_only_moves_is_no_hole(tmp_path, shift):
+    # Wherever its edges fall between pixels, a moved opening is no new one,
+    # though it may enclose a row and a column more clear pixels.
+    directory = _windowed(tmp_path, "moving", _HOLED_PLATE, shift)
+    hole = admit(directory).result("hole")
+    assert hole.passed, hole.failure
+    assert hole.worst > HOLE_ALLOWANCE
+
+
+def test_a_moved_opening_that_also_opens_a_seam_is_a_hole(tmp_path):
+    # Slid past the frame's edge, the plate opens a seam beside its own.
+    directory = _windowed(tmp_path, "slid", _HOLED_PLATE, [13.1, 0])
+    hole = admit(directory).result("hole")
+    assert not hole.passed
+    assert hole.pose == "slide=1"
+
+
+def test_a_seam_opening_while_another_opening_narrows_is_a_hole(tmp_path):
+    # Two windows: the left pane slides to narrow the left window's opening
+    # by more than the right pane's slide opens a seam in the right window.
+    rect, Shape = draw_fixture_pack.rect, draw_fixture_pack.Shape
+    pack = draw_fixture_pack.Pack(tmp_path, "two-windows", (300, 200))
+    bars = [(20, 20, 260, 20), (20, 160, 260, 20), (20, 40, 20, 120)]
+    bars += [(140, 40, 20, 120), (260, 40, 20, 120)]
+    frame = pack.file(
+        "frame.svg", {None: [Shape(rect(*b), "#6d4c41", "#3e2723") for b in bars]}
+    )
+    left = pack.file("left.svg", {None: [Shape(rect(70, 36, 89, 128), "#b3e5fc")]})
+    right = pack.file("right.svg", {None: [Shape(rect(156, 36, 108, 128), "#b3e5fc")]})
+    slide = draw_fixture_pack.one_parameter(
+        "shift", 0, 1, "left", "translate", [[0, 0], [-18, 0]]
+    )
+    slide["drives"].append(
+        {
+            "part": "right",
+            "kind": "translate",
+            "keys": draw_fixture_pack.keys((0, [0, 0]), (1, [8, 0])),
+        }
+    )
+    pack.manifest(
+        (150, 100),
+        parts=[
+            draw_fixture_pack.part("frame", frame, None, (150, 100), 2),
+            draw_fixture_pack.part("left", left, "frame", (150, 100), 0),
+            draw_fixture_pack.part("right", right, "frame", (150, 100), 1),
+        ],
+        slots=[],
+        parameters=[slide],
+        anchors=[],
+    )
+    hole = admit(tmp_path / "two-windows").result("hole")
+    # The enclosed area only shrinks, so the area alone admits it.
+    assert hole.worst == 0
+    assert not hole.passed
+    assert hole.pose == "shift=1"
+    assert hole.failure == (
+        f"2 openings of more than {HOLE_ALLOWANCE} px inside the figure at"
+        " shift=1, where the default pose has 1"
+    )
+
+
+#: A spike whose apex meets at 12 degrees, stroked 8 wide with miter joins:
+#: the miter reaches 1 / sin(6 degrees), about 9.6 half-widths, past it.
+_SPIKE = """\
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">
+  <polygon points="150,40 139.49,140 160.51,140" fill="#455a64" stroke="#263238"
+    stroke-width="8" stroke-linejoin="miter" stroke-miterlimit="10"/>
+</svg>
+"""
+
+
+def test_a_thick_acute_miter_at_the_drawings_edge_is_inside_every_mask(tmp_path):
+    from arachne.assets import admission
+    from arachne.assets.rig import unadmitted_rig
+
+    directory = tmp_path / "spike"
+    directory.mkdir()
+    (directory / "spike.svg").write_text(_SPIKE)
+    document = {
+        "manifest_version": "1.0",
+        "name": "spike",
+        "version": 1,
+        "kind": "parts",
+        "size": {
+            "scene_units_per_unit": 0.01,
+            "origin": [150, 90],
+            "width": 1,
+            "height": 1,
+        },
+        "parts": [
+            {
+                "name": "spike",
+                "file": "spike.svg",
+                "parent": None,
+                "pivot": [150, 140],
+                "order": 0,
+            }
+        ],
+        "parameters": [
+            draw_fixture_pack.one_parameter(
+                "tilt", 0, 90, "spike", "rotate", [0, 90], unit="deg"
+            )
+        ],
+        "provenance": draw_fixture_pack.PROVENANCE,
+    }
+    (directory / "manifest.json").write_text(json.dumps(document))
+    rig = unadmitted_rig(read_asset(directory))
+    poses = list(admission._poses(rig))
+    grid = admission._Grid(rig, poses)
+    margin = admission.MASK_MARGIN
+    for pose in poses:
+        figure = grid.masks(rig, pose).figure
+        assert figure.any()
+        for band in (
+            figure[:margin],
+            figure[-margin:],
+            figure[:, :margin],
+            figure[:, -margin:],
+        ):
+            assert not band.any(), pose.label
+    assert admit(directory).passed
 
 
 def test_a_part_pulled_clear_of_its_parent_is_detached_at_each_pose_past_reach():
@@ -248,6 +413,44 @@ def test_a_failing_asset_written_records_its_failure_and_does_not_load(
         "anchor_off_part": True,
     }
     assert read_asset(directory).digest == admit(directory).digest
+
+
+def test_a_written_manifest_replaces_the_old_only_once_written_whole(
+    tmp_path, monkeypatch
+):
+    from arachne.assets import admission
+
+    directory = edited(
+        copied(tmp_path, "dial"),
+        lambda d: d["provenance"].update(author="Zo\u00eb, \u753b\u5bb6"),
+    )
+    before = (directory / "manifest.json").read_bytes()
+    report = admit(directory)
+
+    def interrupted(source, target):
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(admission.os, "replace", interrupted)
+    with pytest.raises(OSError):
+        write_checks(directory, report)
+    assert (directory / "manifest.json").read_bytes() == before
+    assert sorted(p.name for p in directory.iterdir()) == [
+        "manifest.json",
+        "pieces",
+        "slots",
+    ]
+    monkeypatch.undo()
+    write_checks(directory, report)
+    assert sorted(p.name for p in directory.iterdir()) == [
+        "manifest.json",
+        "pieces",
+        "slots",
+    ]
+    written = (directory / "manifest.json").read_bytes().decode("utf-8")
+    assert "Zo\u00eb, \u753b\u5bb6" in written
+    assert (
+        load_asset(directory).manifest.provenance["author"] == "Zo\u00eb, \u753b\u5bb6"
+    )
 
 
 def _defect(tmp_path: Path, name: str) -> Path:

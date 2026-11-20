@@ -14,8 +14,13 @@ absence of paint, never its opacity. Three checks are run over them:
 
 - ``hole``: the figure's enclosed transparent pixels (those no path of
   transparent pixels joins to the mask's edge, stepping across sides) beyond
-  as many as the default pose encloses, more than :data:`HOLE_ALLOWANCE`. A
-  hole the asset is drawn with, such as a ring's, is not one it opens;
+  as many as the default pose encloses, more than :data:`HOLE_ALLOWANCE` and
+  the rim of the default pose's openings, which a moved opening can gain by
+  where its edges fall between pixels;
+  or more openings of more than :data:`HOLE_ALLOWANCE` pixels each than the
+  default pose has, whatever their area, so a seam that opens while another
+  opening narrows is found. A hole the asset is drawn with, such as a
+  ring's, is not one it opens, and an opening that only moves is none;
 - ``detached_part``: a part or slot whose mask, grown by :data:`REACH`
   pixels, no longer meets its parent's. A part drawn apart from its parent
   at the default pose (a label floating beside its body) meets nothing
@@ -61,9 +66,11 @@ __all__ = [
     "write_checks",
 ]
 
+import contextlib
 import json
 import math
 import os
+import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,12 +79,14 @@ from typing import Any
 import numpy as np
 
 from ..camera.camera import Camera
+from ..constants import LineJointType
 from ..mobject.types.vectorized_mobject import VMobject
 from ..utils.color import BLACK, WHITE
 from .anchor import attachments
+from .joins import ENGINE_LIMIT
 from .manifest import MANIFEST, PartSpec, read_json
 from .reader import CHECKS, TOOL, Asset, read_asset
-from .rig import Rig
+from .rig import Rig, unadmitted_rig
 
 #: The longer side of every mask, in pixels.
 MASK_SIZE = 512
@@ -185,20 +194,22 @@ def admit(asset: Asset | str | os.PathLike[str]) -> AdmissionReport:
     """Draw ``asset`` (an :class:`~.reader.Asset`, or a reference
     :func:`~.reader.load_asset` takes, read without asking for its
     admission) at every pose the module names, and run the three checks.
-    What makes the asset unreadable is raised as loading raises it.
+    What makes the asset unreadable is raised as loading raises it. The
+    poses are drawn one at a time: only the default pose's masks and the
+    current pose's are held.
     """
     if not isinstance(asset, Asset):
         asset = read_asset(asset)
-    rig = Rig(asset)
+    rig = unadmitted_rig(asset)
     poses = list(_poses(rig))
     grid = _Grid(rig, poses)
-    drawn = [(pose, grid.masks(rig, pose)) for pose in poses]
-    default = drawn[0][1]
-    results = (
-        _holes(drawn, default),
-        _detached(rig, drawn, default),
-        _anchors(rig, drawn, grid),
-    )
+    default = grid.masks(rig, poses[0])
+    checks = (_Holes(default), _Detached(rig, default), _Anchors(rig, grid))
+    for pose in poses:
+        masks = default if pose is poses[0] else grid.masks(rig, pose)
+        for check in checks:
+            check.see(pose, masks)
+    results = tuple(check.result() for check in checks)
     assert tuple(result.name for result in results) == CHECKS
     manifest = asset.manifest
     return AdmissionReport(
@@ -210,7 +221,9 @@ def write_checks(directory: str | os.PathLike[str], report: AdmissionReport) -> 
     """Write ``report``'s record as the ``checks`` of the manifest in
     ``directory``, its other members as they were, and give the manifest's
     path. The record attests the digest the report was made at, so an
-    asset changed since loads as unadmitted.
+    asset changed since loads as unadmitted. The manifest is written whole
+    beside the old one, in UTF-8, and replaces it only once written: a
+    write that fails leaves the old manifest as it was.
     """
     path = Path(directory) / MANIFEST
     document = read_json(path.read_bytes())
@@ -221,7 +234,20 @@ def write_checks(directory: str | os.PathLike[str], report: AdmissionReport) -> 
             ordered["checks"] = report.checks()
         ordered[key] = value
     ordered.setdefault("checks", report.checks())
-    path.write_text(json.dumps(ordered, indent=2, ensure_ascii=False) + "\n")
+    text = json.dumps(ordered, indent=2, ensure_ascii=False) + "\n"
+    handle, temporary = tempfile.mkstemp(
+        prefix=f".{MANIFEST}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as written:
+            written.write(text)
+            written.flush()
+            os.fsync(written.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+        raise
     return path
 
 
@@ -284,8 +310,9 @@ class _Masks:
 
 class _Grid:
     """The pixel grid every pose of one rig is drawn on: the box of the
-    art at all of ``poses``, its strokes included, fitted with a margin of
-    :data:`MASK_MARGIN` into :data:`MASK_SIZE` pixels on its longer side.
+    art at all of ``poses``, as far as its strokes can reach past its points
+    (:func:`_stroke_reach`), fitted with a margin of :data:`MASK_MARGIN`
+    into :data:`MASK_SIZE` pixels on its longer side.
     """
 
     def __init__(self, rig: Rig, poses: Sequence[_Pose]) -> None:
@@ -294,7 +321,7 @@ class _Grid:
             shapes = _drawn(_posed(rig, pose))
             for shape in shapes:
                 points = np.asarray(shape.points)[:, :2]
-                reach = _LINE * float(shape.get_stroke_width()) / 2
+                reach = _stroke_reach(shape)
                 low = np.minimum(low, points.min(axis=0) - reach)
                 high = np.maximum(high, points.max(axis=0) + reach)
         extent = np.maximum(high - low, 1e-9)
@@ -332,6 +359,19 @@ class _Grid:
         return math.floor(x), math.floor(y)
 
 
+def _stroke_reach(shape: VMobject) -> float:
+    """How far, in scene units, ``shape``'s stroke can reach past its
+    points, for every join and cap the asset reader admits: a miter join up
+    to the engine's miter limit, :data:`~.joins.ENGINE_LIMIT` half-widths,
+    past its corner; any other join, and a square cap at its corner, up to
+    the square root of 2 half-widths.
+    """
+    half = _LINE * float(shape.get_stroke_width()) / 2
+    if shape.joint_type in (LineJointType.ROUND, LineJointType.BEVEL):
+        return half * math.sqrt(2)
+    return half * max(ENGINE_LIMIT, math.sqrt(2))
+
+
 def _opaque(shape: VMobject) -> VMobject:
     """A copy of ``shape`` painted opaque wherever it is painted at all."""
     copy = shape.copy()
@@ -346,35 +386,78 @@ def _opaque(shape: VMobject) -> VMobject:
 # The checks
 
 
-def _enclosed(figure: np.ndarray) -> int:
-    """How many transparent pixels of ``figure`` no path of transparent
-    pixels, stepping across sides, joins to the mask's edge.
+@dataclass(frozen=True)
+class _Openings:
+    """The transparent pixels of a figure's mask that no path of
+    transparent pixels, stepping across sides, joins to the mask's edge:
+    how many there are (``area``), how many of them lie on an opening's rim,
+    next across a side to paint (``rim``), and how many openings of more
+    than :data:`HOLE_ALLOWANCE` pixels they make (``count``).
     """
+
+    area: int
+    rim: int
+    count: int
+
+
+def _openings(figure: np.ndarray) -> _Openings:
     from scipy import ndimage
 
     labels, _ = ndimage.label(~figure)
     edge = np.unique(
         np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
     )
-    return int(np.count_nonzero(~figure & ~np.isin(labels, edge)))
-
-
-def _holes(drawn: list[tuple[_Pose, _Masks]], default: _Masks) -> CheckResult:
-    base = _enclosed(default.figure)
-    worst, where = 0, None
-    for pose, masks in drawn:
-        beyond = _enclosed(masks.figure) - base
-        if beyond > worst:
-            worst, where = beyond, pose.label
-    if worst <= HOLE_ALLOWANCE:
-        return CheckResult("hole", True, worst, where)
-    return CheckResult(
-        "hole",
-        False,
-        worst,
-        where,
-        f"{worst} px open inside the figure at {where} (allowed {HOLE_ALLOWANCE})",
+    sizes = np.bincount(labels.ravel())
+    sizes[edge] = 0
+    sizes[0] = 0
+    enclosed = sizes[labels] > 0
+    inner = ndimage.binary_erosion(enclosed)
+    return _Openings(
+        int(sizes.sum()),
+        int(np.count_nonzero(enclosed & ~inner)),
+        int(np.count_nonzero(sizes > HOLE_ALLOWANCE)),
     )
+
+
+class _Holes:
+    """``hole``: more enclosed pixels than the default pose's, beyond
+    :data:`HOLE_ALLOWANCE` and the rim of the default pose's openings (an
+    opening drawn at another place on the grid gains or loses up to a pixel
+    all round, by where its edges fall between pixels); or more openings of
+    more than :data:`HOLE_ALLOWANCE` pixels than the default pose has,
+    whatever the area, so that a seam opening while another opening narrows
+    is still found. An opening that only moves passes.
+    """
+
+    def __init__(self, default: _Masks) -> None:
+        self.default = _openings(default.figure)
+        self.allowed = HOLE_ALLOWANCE + self.default.rim
+        self.worst = 0
+        self.where: str | None = None
+        self.failure: str | None = None
+
+    def see(self, pose: _Pose, masks: _Masks) -> None:
+        found = _openings(masks.figure)
+        beyond = found.area - self.default.area
+        if beyond > self.worst:
+            self.worst, self.where = beyond, pose.label
+            if beyond > self.allowed:
+                self.failure = (
+                    f"{beyond} px open inside the figure at {pose.label}"
+                    f" (allowed {self.allowed})"
+                )
+        if found.count > self.default.count and self.failure is None:
+            self.where = pose.label
+            self.failure = (
+                f"{found.count} openings of more than {HOLE_ALLOWANCE} px inside"
+                f" the figure at {pose.label}, where the default pose has"
+                f" {self.default.count}"
+            )
+
+    def result(self) -> CheckResult:
+        return CheckResult(
+            "hole", self.failure is None, self.worst, self.where, self.failure
+        )
 
 
 def _apart(mask: np.ndarray, other: np.ndarray) -> float:
@@ -400,62 +483,85 @@ def _parents(rig: Rig) -> list[tuple[str, str]]:
     ]
 
 
-def _detached(
-    rig: Rig, drawn: list[tuple[_Pose, _Masks]], default: _Masks
-) -> CheckResult:
-    joined = [
-        (name, parent)
-        for name, parent in _parents(rig)
-        if _apart(default.members[name], default.members[parent]) <= REACH
-    ]
-    worst: float = 0.0
-    where: str | None = None
-    failure = None
-    for pose, masks in drawn:
-        for name, parent in joined:
+class _Detached:
+    """``detached_part``: a part or slot that meets its parent at the
+    default pose, more than :data:`REACH` pixels from it at a pose.
+    """
+
+    def __init__(self, rig: Rig, default: _Masks) -> None:
+        self.joined = [
+            (name, parent)
+            for name, parent in _parents(rig)
+            if _apart(default.members[name], default.members[parent]) <= REACH
+        ]
+        self.worst: float = 0.0
+        self.where: str | None = None
+        self.failure: str | None = None
+
+    def see(self, pose: _Pose, masks: _Masks) -> None:
+        for name, parent in self.joined:
             gap = _apart(masks.members[name], masks.members[parent])
-            if gap > worst:
-                worst, where = gap, pose.label
+            if gap > self.worst:
+                self.worst, self.where = gap, pose.label
                 if gap > REACH:
                     apart = (
                         "one of them draws nothing"
                         if math.isinf(gap)
                         else f"{gap:g} px apart"
                     )
-                    failure = (
+                    self.failure = (
                         f"{name} no longer meets its parent {parent} at"
                         f" {pose.label}: {apart} (allowed {REACH})"
                     )
-    return CheckResult("detached_part", failure is None, worst, where, failure)
+
+    def result(self) -> CheckResult:
+        return CheckResult(
+            "detached_part", self.failure is None, self.worst, self.where, self.failure
+        )
 
 
-def _anchors(rig: Rig, drawn: list[tuple[_Pose, _Masks]], grid: _Grid) -> CheckResult:
-    anchors = attachments(rig.model)
-    worst: float = 0.0
-    where: str | None = None
-    failure = None
-    for pose, masks in drawn:
+class _Anchors:
+    """``anchor_off_part``: an anchor more than :data:`REACH` pixels from
+    its part's mask at a pose. It reads the rig as the pose's masks left it.
+    """
+
+    def __init__(self, rig: Rig, grid: _Grid) -> None:
+        self.rig, self.grid = rig, grid
+        self.anchors = attachments(rig.model)
+        self.worst: float = 0.0
+        self.where: str | None = None
+        self.failure: str | None = None
+
+    def see(self, pose: _Pose, masks: _Masks) -> None:
+        rig = self.rig
         _posed(rig, pose)
         for spec in rig.asset.manifest.anchors:
-            point = anchors[spec.name].point(rig)
+            point = self.anchors[spec.name].point(rig)
             assert point is not None
-            mask = masks.members[spec.part]
-            covered = np.argwhere(mask)
+            covered = np.argwhere(masks.members[spec.part])
             if not len(covered):
                 off = math.inf
             else:
-                column, row = grid.pixel(point)
+                column, row = self.grid.pixel(point)
                 off = float(np.abs(covered - np.array([row, column])).max(axis=1).min())
-            if off > worst:
-                worst, where = off, pose.label
+            if off > self.worst:
+                self.worst, self.where = off, pose.label
                 if off > REACH:
                     kind = (
                         "part"
                         if isinstance(rig.model.placed[spec.part], PartSpec)
                         else "slot"
                     )
-                    failure = (
+                    self.failure = (
                         f"{spec.name} lies {off:g} px off its {kind} {spec.part}"
                         f" at {pose.label} (allowed {REACH})"
                     )
-    return CheckResult("anchor_off_part", failure is None, worst, where, failure)
+
+    def result(self) -> CheckResult:
+        return CheckResult(
+            "anchor_off_part",
+            self.failure is None,
+            self.worst,
+            self.where,
+            self.failure,
+        )
