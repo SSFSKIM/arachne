@@ -298,10 +298,30 @@ _TABLE = (
         "error",
         "RigNameUnknown",
         "a rig is asked for a part, parameter, slot or drawing its manifest"
-        " does not have",
+        " does not have; the finding's kind says which",
         "Use one of the names the asset's manifest declares; the finding lists"
         " the nearest.",
         ("asset", "kind", "name", "nearest"),
+    ),
+    Code(
+        "rig.range",
+        "error",
+        "RigRange",
+        "a rig parameter is given a value outside the range its asset was tested"
+        " over, from its manifest's min to its max",
+        "Give the parameter a value from its min to its max; a pose outside them"
+        " was never checked to draw whole.",
+        ("asset", "parameter", "value", "min", "max"),
+    ),
+    Code(
+        "annotation.anchor_unknown",
+        "error",
+        "AnnotationAnchorUnknown",
+        "an anchor is asked of an asset whose manifest does not have it: the lint"
+        " reports it, and drawing refuses the scene",
+        "Use one of the anchors the asset's manifest declares; the finding lists"
+        " the nearest.",
+        ("asset", "name", "nearest"),
     ),
 )
 

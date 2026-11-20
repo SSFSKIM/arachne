@@ -451,11 +451,19 @@ class Session:
         froze at its first frame, whatever order frames are asked in
         (:mod:`.timeline.mapping`).
 
+        A finding the scene's code recorded for the lint that refuses
+        drawing (:func:`~.lint.raised.found`) is raised before anything is
+        drawn.
+
         Called inside an operation, so under the configuration the session
         was opened with (:func:`_under_its_settings`): what the camera reads
         while it draws (a point cloud's thickness reads the frame's pixel
         size), and what a restore's callbacks read, are the session's.
         """
+        if record.bridge.calls:
+            from .lint.raised import refuse_drawing
+
+            refuse_drawing(record)
         freeze_mapping_centre(record)
         with Drawing(record, draw_path=self.draw_path) as drawing:
             return [

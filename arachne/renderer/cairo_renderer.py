@@ -193,6 +193,10 @@ class CairoRenderer:
             draw = False
         live = None
         opened = False
+        if draw and timeline.ensure_record().bridge.calls:
+            from ..lint.raised import refuse_drawing
+
+            refuse_drawing(timeline.ensure_record())
         if draw:
             # The play's segment opens at its first frame: a stop condition
             # can end the play before the frame grid reaches it, and then it
@@ -244,6 +248,10 @@ class CairoRenderer:
         span, from its recorded samples, and return its static picture.
         """
         record = scene._arachne_timeline.ensure_record()
+        if record.bridge.calls:
+            from ..lint.raised import refuse_drawing
+
+            refuse_drawing(record)
         self.file_writer.begin_animation(True, animation_index=self.num_plays)
         with Drawing(record) as drawing:
             static = drawing.static(play)
@@ -408,6 +416,12 @@ class CairoRenderer:
 
     def scene_finished(self, scene: Scene) -> None:
         output = self.file_writer.output_spec
+        record = scene._arachne_timeline.record
+        if record is not None and record.bridge.calls and scene._arachne_timeline.draws:
+            # What the scene's code found after its last play drawn.
+            from ..lint.raised import refuse_drawing
+
+            refuse_drawing(record)
         if self.num_plays and (output.is_video or output.is_image_sequence):
             self.file_writer.finish()
         elif not self.num_plays:
