@@ -69,7 +69,7 @@ class MediaObject(AbstractImageMobject):
     """A media object: the frames of one media asset, standing on one."""
 
     #: The manifest kind this class shows.
-    kind: ClassVar[str]
+    asset_kind: ClassVar[str]
     #: The GPU-only capability its objects declare, if any.
     capability: ClassVar[str | None] = None
 
@@ -80,10 +80,10 @@ class MediaObject(AbstractImageMobject):
         **kwargs: Any,
     ) -> None:
         loaded = load_asset(asset)
-        if loaded.kind != self.kind:
+        if loaded.kind != self.asset_kind:
             shown_by = _CLASSES.get(loaded.kind, "Rig")
             raise ValueError(
-                f"the asset {loaded.name} is a {loaded.kind}, not a {self.kind}:"
+                f"the asset {loaded.name} is a {loaded.kind}, not a {self.asset_kind}:"
                 f" show it with {shown_by}"
             )
         origin = ORIGINS.get(self)
@@ -193,7 +193,7 @@ class Still(MediaObject):
     size its manifest declares. It declares no GPU-only capability.
     """
 
-    kind = "still"
+    asset_kind = "still"
 
 
 class _Clocked(MediaObject):
@@ -226,7 +226,7 @@ class VideoMobject(_Clocked):
     is drawn on the GPU (``media.video``).
     """
 
-    kind = "clip"
+    asset_kind = "clip"
     capability = "media.video"
 
 
@@ -236,7 +236,7 @@ class Sprite(_Clocked):
     is drawn on the GPU (``media.sprite``).
     """
 
-    kind = "sprite"
+    asset_kind = "sprite"
     capability = "media.sprite"
 
 
