@@ -141,12 +141,11 @@ class Rig(VGroup):
     def __init__(
         self, asset: Asset | str | os.PathLike[str], **vmobject_kwargs: Any
     ) -> None:
-        asset = load_asset(asset)
-        model = model_of(asset)
-        from .anchor import attachments
+        self._make(load_asset(asset), **vmobject_kwargs)
 
-        # An anchor the manifest places off its part refuses the rig whole.
-        attachments(model)
+    def _make(self, asset: Asset, **vmobject_kwargs: Any) -> None:
+        """Build the rig of ``asset``, read whole, whatever its admission."""
+        model = model_of(asset)
         super().__init__(**vmobject_kwargs)
         self.asset = asset
         self.model = model
@@ -509,6 +508,16 @@ class Rig(VGroup):
                 " can't be posed or settled. Transform a copy, or morph two rigs"
                 " part by part with MorphParts."
             )
+
+
+def unadmitted_rig(asset: Asset) -> Rig:
+    """A rig of ``asset`` that loading has not admitted: the admission tool's
+    own, which draws an asset to decide its admission. Nothing else makes
+    one, and nothing public reaches it.
+    """
+    rig = Rig.__new__(Rig)
+    rig._make(asset)
+    return rig
 
 
 def _values(values: np.ndarray) -> RigValues:

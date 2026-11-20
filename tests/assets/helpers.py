@@ -1,5 +1,6 @@
 """What the asset tests share: fixture assets copied into a test's own
-directory, to be broken there one way at a time.
+directory, to be broken there one way at a time, or changed and admitted
+again.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from arachne.assets.admission import admit, write_checks
 from arachne.assets.reader import FIXTURES
 from arachne.lint.raised import RaisedFinding
 
@@ -34,6 +36,14 @@ def edited(directory: Path, edit: Callable[[dict[str, Any]], object]) -> Path:
     document = json.loads(path.read_text())
     edit(document)
     path.write_text(json.dumps(document, indent=2) + "\n")
+    return directory
+
+
+def admitted(directory: Path) -> Path:
+    """``directory``'s asset admitted again, as its maker would after
+    changing it: its checks written at its digest as it is now.
+    """
+    write_checks(directory, admit(directory))
     return directory
 
 

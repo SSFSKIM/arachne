@@ -23,7 +23,7 @@ from arachne.timeline import admission
 from arachne.timeline.draw import Drawing
 
 from . import draw_fixture_pack, rig_scenes
-from .helpers import copied, edited, refused
+from .helpers import admitted, copied, edited, refused
 
 SCENES = Path(rig_scenes.__file__)
 
@@ -145,9 +145,11 @@ def test_an_outline_anchor_off_its_parts_outline_refuses_the_rig(tmp_path):
     found = refused("asset.manifest_invalid", lambda: Rig(directory))
     assert found.detail["member"] == "anchors[0].at"
     # Within half a canvas unit, it is on the outline.
-    near = edited(
-        copied(tmp_path, "lidded-box", "near"),
-        lambda d: d["anchors"][0].update(at=[200, 108.4]),
+    near = admitted(
+        edited(
+            copied(tmp_path, "lidded-box", "near"),
+            lambda d: d["anchors"][0].update(at=[200, 108.4]),
+        )
     )
     point = Rig(near).anchor("knob").point()
     np.testing.assert_allclose(

@@ -61,6 +61,15 @@
     {"name": "wheel", "part": "stem", "attach": "outline", "at": [236, 40]},
     {"name": "flow", "part": "body", "attach": "interior", "at": [80, 195]}
   ],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:656fa136a8172538508ab65c653bac5b5b5f9b3ca3879da13723a64711490721",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true}
+    ]
+  },
   "provenance": {
     "source_url": null,
     "author": "the engine's fixture generator",

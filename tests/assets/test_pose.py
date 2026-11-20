@@ -23,7 +23,7 @@ from arachne.timeline import admission
 from arachne.timeline.record import RegisteredState
 
 from . import rig_scenes
-from .helpers import copied, edited, refused
+from .helpers import admitted, copied, edited, refused
 
 SCENES = Path(rig_scenes.__file__)
 
@@ -123,7 +123,9 @@ def test_a_warp_moves_the_points_of_its_part_through_its_lattice(turn):
     figure = Rig("fixture:figure").pose(head_turn=turn)
     head = figure.asset.parts["head"]
     lattice = head.lattice
-    (driver,) = figure.asset.parameters["head_turn"].drives
+    (driver,) = [
+        d for d in figure.asset.parameters["head_turn"].drives if d.kind == "warp"
+    ]
     keys = {key.at: np.asarray(key.value, dtype=float) for key in driver.keys}
     offsets = keys[turn] if turn in keys else keys[0] + (keys[25] - keys[0]) * turn / 25
     expected = []
@@ -354,7 +356,7 @@ def test_a_parameter_or_slot_named_as_the_rig_or_self_is_posed_by_its_keyword(tm
         document["parameters"][0]["name"] = "self"
         document["slots"][0]["name"] = "rig"
 
-    dial = Rig(edited(copied(tmp_path, "dial"), named))
+    dial = Rig(admitted(edited(copied(tmp_path, "dial"), named)))
     dial.pose(self=20).show(rig="on")
     assert (dial.value("self"), dial.shown("rig")) == (20, "on")
     pose = Pose(dial, self=80, rig="off")

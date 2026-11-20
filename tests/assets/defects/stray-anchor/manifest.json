@@ -1,0 +1,66 @@
+{
+  "manifest_version": "1.0",
+  "name": "stray-anchor",
+  "version": 1,
+  "kind": "parts",
+  "requires": [],
+  "size": {
+    "scene_units_per_unit": 0.01,
+    "origin": [200, 184],
+    "width": 2.48,
+    "height": 1.52
+  },
+  "parts": [
+    {
+      "name": "body",
+      "file": "stray-anchor.svg",
+      "element": "body",
+      "parent": null,
+      "pivot": [200, 260],
+      "order": 0
+    },
+    {
+      "name": "lid",
+      "file": "stray-anchor.svg",
+      "element": "lid",
+      "parent": "body",
+      "pivot": [80, 140],
+      "order": 1
+    }
+  ],
+  "slots": [],
+  "parameters": [
+    {
+      "name": "lid_open",
+      "min": 0,
+      "max": 90,
+      "default": 0,
+      "unit": "1",
+      "drives": [
+        {
+          "part": "lid",
+          "kind": "rotate",
+          "unit": "deg",
+          "keys": [{"at": 0, "value": 0}, {"at": 90, "value": 90}]
+        }
+      ]
+    }
+  ],
+  "anchors": [{"name": "knob", "part": "body", "attach": "interior", "at": [200, 112]}],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:ba0c95fd8b392ad0403a0735cf7b732aaba935e6eb0b5bfd48dde309586c71a8",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": false}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

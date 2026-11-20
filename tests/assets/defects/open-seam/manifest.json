@@ -1,0 +1,60 @@
+{
+  "manifest_version": "1.0",
+  "name": "open-seam",
+  "version": 1,
+  "kind": "parts",
+  "requires": [],
+  "size": {"scene_units_per_unit": 0.01, "origin": [150, 150], "width": 2, "height": 2},
+  "parts": [
+    {
+      "name": "frame",
+      "file": "pieces/frame.svg",
+      "parent": null,
+      "pivot": [150, 150],
+      "order": 1
+    },
+    {
+      "name": "pane",
+      "file": "pieces/pane.svg",
+      "parent": "frame",
+      "pivot": [150, 150],
+      "order": 0
+    }
+  ],
+  "slots": [],
+  "parameters": [
+    {
+      "name": "slide",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": "1",
+      "drives": [
+        {
+          "part": "pane",
+          "kind": "translate",
+          "keys": [{"at": 0, "value": [0, 0]}, {"at": 1, "value": [10, 0]}]
+        }
+      ]
+    }
+  ],
+  "anchors": [
+    {"name": "latch", "part": "frame", "attach": "interior", "at": [240, 150]}
+  ],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:fc06b150a288817c0157cea6226064970f79d79f1903a10266c6da7c2a603711",
+    "results": [
+      {"name": "hole", "pass": false},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

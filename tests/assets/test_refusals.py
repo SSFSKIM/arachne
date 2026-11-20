@@ -14,6 +14,8 @@ import pytest
 
 from arachne import load_asset
 from arachne.assets import Rig
+from arachne.assets.reader import read_asset
+from arachne.assets.rig import unadmitted_rig
 from arachne.constants import LineJointType
 
 from .helpers import BROKEN, copied, edited, refused
@@ -286,7 +288,7 @@ def test_a_name_with_dashes_and_underscores_is_accepted(tmp_path):
         document["parameters"][0]["name"] = "lid-open_deg"
         document["anchors"][0]["name"] = "knob-1"
 
-    asset = load_asset(edited(copied(tmp_path, "lidded-box"), rename))
+    asset = read_asset(edited(copied(tmp_path, "lidded-box"), rename))
     assert asset.name == "Lidded-Box_2"
     assert list(asset.parameters) == ["lid-open_deg"]
     assert list(asset.anchors) == ["knob-1"]
@@ -312,7 +314,7 @@ ALLOWED = """\
 def test_what_the_reader_draws_exactly_is_accepted(tmp_path):
     directory = copied(tmp_path, "dial")
     (directory / "pieces" / "needle.svg").write_text(ALLOWED)
-    shapes = Rig(directory).part("needle").submobjects
+    shapes = unadmitted_rig(read_asset(directory)).part("needle").submobjects
     assert len(shapes) == 3
     assert shapes[1].get_stroke_width() == 2
 
@@ -511,7 +513,7 @@ def test_a_miter_join_drawn_alike_at_both_limits_is_accepted(
     directory = _any_needle(tmp_path)
     text = _stroked(d, *attributes, stroke=stroke, width=width)
     (directory / "pieces" / "needle.svg").write_text(text)
-    assert Rig(directory).part("needle").submobjects
+    assert unadmitted_rig(read_asset(directory)).part("needle").submobjects
 
 
 @pytest.mark.parametrize(
@@ -528,7 +530,7 @@ def test_a_round_or_bevel_join_is_drawn_as_the_file_says(tmp_path, join, drawn):
         ' stroke="#000" stroke-width="2"/></g>\n'
         "</svg>\n"
     )
-    (shape,) = Rig(directory).part("needle").submobjects
+    (shape,) = unadmitted_rig(read_asset(directory)).part("needle").submobjects
     assert shape.joint_type is drawn
 
 
@@ -572,7 +574,7 @@ def test_a_shape_under_what_draws_nothing_is_not_drawn(tmp_path, hidden):
     found = refused("asset.unreadable", lambda: Rig(directory))
     assert "draws nothing" in found.detail["reason"]
     needle.write_text(_needle(_FILLED + hidden))
-    assert len(Rig(directory).part("needle").submobjects) == 1
+    assert len(unadmitted_rig(read_asset(directory)).part("needle").submobjects) == 1
 
 
 _RIGHT_ANGLE = (
@@ -615,7 +617,7 @@ def test_a_stroke_under_an_uneven_transform_is_refused(tmp_path, transform, on):
 def test_a_transform_the_stroke_survives_is_accepted(tmp_path, shape):
     directory = _any_needle(tmp_path)
     (directory / "pieces" / "needle.svg").write_text(_needle(shape))
-    assert Rig(directory).part("needle").submobjects
+    assert unadmitted_rig(read_asset(directory)).part("needle").submobjects
 
 
 @pytest.mark.parametrize(
@@ -629,9 +631,9 @@ def test_a_transform_the_stroke_survives_is_accepted(tmp_path, shape):
     ids=["circle", "path"],
 )
 def test_a_stroke_under_a_scale_is_drawn_as_wide_as_the_file_means(tmp_path, shape):
-    directory = copied(tmp_path, "dial")
+    directory = _any_needle(tmp_path)
     (directory / "pieces" / "needle.svg").write_text(_needle(shape))
-    (drawn,) = load_asset(directory).rest("needle")
+    (drawn,) = read_asset(directory).rest("needle")
     assert drawn.get_stroke_width() == pytest.approx(6)
 
 
@@ -669,7 +671,7 @@ def test_an_open_stroke_ending_where_it_starts_is_refused(tmp_path, shape):
 def test_a_closed_or_unstroked_outline_meeting_itself_is_accepted(tmp_path, shape):
     directory = _any_needle(tmp_path)
     (directory / "pieces" / "needle.svg").write_text(_needle(shape))
-    assert Rig(directory).part("needle").submobjects
+    assert unadmitted_rig(read_asset(directory)).part("needle").submobjects
 
 
 @pytest.mark.parametrize("file", ["pieces\\needle.svg", "pieces/..\\pieces/needle.svg"])
@@ -730,4 +732,4 @@ def test_a_stroke_whose_next_subpath_starts_where_one_ends_is_refused(tmp_path, 
 def test_segments_sharing_an_end_as_one_path_or_two_are_accepted(tmp_path, body):
     directory = _any_needle(tmp_path)
     (directory / "pieces" / "needle.svg").write_text(_needle(body))
-    assert Rig(directory).part("needle").submobjects
+    assert unadmitted_rig(read_asset(directory)).part("needle").submobjects

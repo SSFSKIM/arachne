@@ -54,6 +54,15 @@
   "anchors": [
     {"name": "needle_tip", "part": "needle", "attach": "outline", "at": [150, 78]}
   ],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:f4b6ed5492f0e3ad0936b5fef098704ba943afbc5848b29e574af29e7bda7327",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true}
+    ]
+  },
   "provenance": {
     "source_url": null,
     "author": "the engine's fixture generator",

@@ -47,6 +47,15 @@
     }
   ],
   "anchors": [{"name": "knob", "part": "lid", "attach": "outline", "at": [200, 108]}],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:3c483b089b3d189474cba0afd85b7b47f065c30b1e737b9377f4192a521785c7",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true}
+    ]
+  },
   "provenance": {
     "source_url": null,
     "author": "the engine's fixture generator",
