@@ -33,8 +33,9 @@ class ChargedParticle(VGroup):
     membrane. ``charge`` is kept as a plain number (an integral input as an
     ``int``, any other as a ``float``), and the particle is drawn from what
     is kept: its sign picks the sign drawn and, unless ``color`` is given,
-    the colour. A charge that is not finite, or whose sign no ``float``
-    keeps (a nonzero fraction too small for one), is refused. Style
+    the colour. A charge that is not finite as a ``float`` (an integer too
+    large for one included), or whose sign no ``float`` keeps (a nonzero
+    fraction too small for one), is refused. Style
     keywords go to the disc; the sign keeps its own.
     """
 
@@ -75,10 +76,14 @@ class ChargedParticle(VGroup):
 
 
 def _kept_charge(charge: float) -> int | float:
-    """``charge`` as a plain ``int`` or ``float`` of the same sign."""
-    if isinstance(charge, numbers.Integral):
-        return int(charge)
-    kept = float(charge)
+    """``charge`` as a plain ``int`` (kept exact) or ``float``, of the same
+    sign and finite as a float, as a declared quantity reads it.
+    """
+    integral = isinstance(charge, numbers.Integral)
+    try:
+        kept = float(charge)
+    except OverflowError:
+        kept = math.inf
     if (
         not math.isfinite(kept)
         or (kept > 0) != (charge > 0)
@@ -88,7 +93,7 @@ def _kept_charge(charge: float) -> int | float:
             f"a particle's charge is a finite number a float holds with its sign,"
             f" not {charge!r}"
         )
-    return kept
+    return int(charge) if integral else kept
 
 
 class Particles(VGroup):

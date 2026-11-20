@@ -90,8 +90,14 @@ def test_a_mark_s_number_is_in_the_content_keys(made, attribute, changed):
 
 @pytest.mark.parametrize(
     ("given", "kept"),
-    [(np.int64(2), 2), (np.float32(0.5), 0.5), (Fraction(1, 2), 0.5), (-1, -1)],
-    ids=["numpy-int", "numpy-float", "fraction", "int"],
+    [
+        (np.int64(2), 2),
+        (np.float32(0.5), 0.5),
+        (Fraction(1, 2), 0.5),
+        (-1, -1),
+        (2**60 + 1, 2**60 + 1),
+    ],
+    ids=["numpy-int", "numpy-float", "fraction", "int", "large-int-exact"],
 )
 def test_a_charge_is_kept_as_a_plain_number(given, kept):
     ion = ChargedParticle(given)
@@ -102,8 +108,22 @@ def test_a_charge_is_kept_as_a_plain_number(given, kept):
 
 @pytest.mark.parametrize(
     "given",
-    [Fraction(1, 10**400), Fraction(-1, 10**400), float("nan"), float("inf")],
-    ids=["tiny-positive", "tiny-negative", "nan", "inf"],
+    [
+        Fraction(1, 10**400),
+        Fraction(-1, 10**400),
+        float("nan"),
+        float("inf"),
+        10**309,
+        -(10**309),
+    ],
+    ids=[
+        "tiny-positive",
+        "tiny-negative",
+        "nan",
+        "inf",
+        "huge-int",
+        "huge-negative-int",
+    ],
 )
 def test_a_charge_no_plain_number_holds_is_refused(given):
     # As a float the tiny fractions are 0: the sign drawn and the number
