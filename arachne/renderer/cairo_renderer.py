@@ -9,6 +9,7 @@ from arachne.utils.hashing import get_hash_from_play_call
 from .. import config, logger
 from .._config.video_encoder import video_encoder_fingerprint
 from ..camera.camera import Camera
+from ..compose.guard import check_render
 from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter
 from ..timeline.clock import TICK_RATE, exact, frames_in
@@ -63,6 +64,8 @@ class CairoRenderer:
         self.num_plays = 0
         self._clock = Fraction(0)
         self.static_image: PixelArray | None = None
+        #: Why a play of this execution was drawn as it ran, once one was.
+        self._live: str | None = None
 
     def renew(self) -> None:
         """Start afresh for another execution of the scene: a new camera of
@@ -140,12 +143,17 @@ class CairoRenderer:
 
         timeline = scene._arachne_timeline
         fps = exact(self.camera.frame_rate)
-        if timeline.refusal() is not None:
+        live = timeline.refusal()
+        if live is not None:
             # The record can't draw this camera's frames: draw them as the
             # play runs, as CE does.
+            self._live = self._live or live
             self._play_live(scene, skipped, cache_key, fps)
             return
         play = timeline.play(skipped=skipped, cache_key=cache_key)
+        if timeline.draws:
+            # Before anything of the play is looked up or drawn.
+            self._refuse(timeline.ensure_record())
 
         frames = frames_in(play.start, play.end, fps)
         if not frames:
@@ -215,8 +223,15 @@ class CairoRenderer:
                     )
                 self.file_writer.write_frame(pixels, repeat=repeat)
 
-            live = LiveFrames(scene, fps, write)
+            def check() -> None:
+                # Each capture of the play, before anything of it is painted:
+                # what the scene's code found first, as at every other point.
+                self._refuse(timeline.ensure_record())
+
+            live = LiveFrames(scene, fps, write, check=check)
         play = timeline.play(skipped=skipped, cache_key=cache_key, live=live)
+        if timeline.draws:
+            self._refuse(timeline.ensure_record())
         if opened:
             self.file_writer.end_animation(True)
         else:
@@ -410,12 +425,21 @@ class CairoRenderer:
             self.skip_animations = True
             raise EndSceneEarlyException()
 
+    def check_finished(self, scene: Scene) -> None:
+        """Refuse a render of its scene as its script ends, before anything
+        else of its end (:meth:`_refuse`): for what its code found, and for
+        a GPU-only capability in any capture, its final one included.
+        """
+        timeline = scene._arachne_timeline
+        if timeline.draws and timeline.record is not None:
+            # What the scene's code found, after its last play too.
+            self._refuse(timeline.record)
+
     def scene_finished(self, scene: Scene) -> None:
+        # The scene as its script left it, before its last frame is drawn
+        # and anything is assembled.
+        self.check_finished(scene)
         output = self.file_writer.output_spec
-        record = scene._arachne_timeline.record
-        if record is not None and scene._arachne_timeline.draws:
-            # What the scene's code found after its last play drawn.
-            self._refuse_found(record)
         if self.num_plays and (output.is_video or output.is_image_sequence):
             self.file_writer.finish()
         elif not self.num_plays:
@@ -427,6 +451,15 @@ class CairoRenderer:
             if self.num_plays:
                 self._draw_final(scene)
             self.file_writer.save_image(self.get_frame())
+
+    def _refuse(self, record: Any) -> None:
+        """Refuse a render as far as its scene has run: for what its code
+        found that refuses drawing it (:meth:`_refuse_found`), the scene's
+        own error on every host, first; then for a GPU-only capability
+        (:func:`.compose.guard.check_render`).
+        """
+        self._refuse_found(record)
+        check_render(record, self._live)
 
     @staticmethod
     def _refuse_found(record: Any) -> None:

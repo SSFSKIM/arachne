@@ -14,7 +14,15 @@ object, and a capability that comes and goes is seen where it was held.
 
 from __future__ import annotations
 
-__all__ = ["ATTRIBUTE", "Capability", "GPU_ONLY", "declare", "held", "withdraw"]
+__all__ = [
+    "ATTRIBUTE",
+    "Capability",
+    "GPU_ONLY",
+    "declare",
+    "ever_declared",
+    "held",
+    "withdraw",
+]
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -59,11 +67,25 @@ def held(mobject: Any) -> frozenset[str]:
     return found
 
 
+#: Whether any object of this process has ever been declared to hold a row.
+_declared = False
+
+
+def ever_declared() -> bool:
+    """Whether any object of this process has ever held a row: when not, no
+    record made in it holds one, and nothing need be read to know it.
+    """
+    return _declared
+
+
 def declare(mobject: Any, *ids: str) -> None:
     """Make ``mobject`` hold the rows ``ids`` as well as those it holds; a
     ``ValueError`` naming any id that is no row, and nothing declared.
     """
-    _hold(mobject, held(mobject) | _rows(ids))
+    global _declared
+    rows = _rows(ids)
+    _declared = _declared or bool(rows)
+    _hold(mobject, held(mobject) | rows)
 
 
 def withdraw(mobject: Any, *ids: str) -> None:

@@ -41,6 +41,7 @@ from ..utils.caching import prune_segment_cache
 from ..utils.file_ops import modify_atime
 from ..utils.sounds import get_full_sound_file_path
 from .section import DefaultSectionType, Section
+from .staging import InPlace, Staging
 from .video_segment_encoder import VideoSegmentEncoder
 
 if TYPE_CHECKING:
@@ -164,6 +165,11 @@ class _PartialMovieEncodeJob:
         self._abort_requested = True
         self.seal()
 
+    @property
+    def aborted(self) -> bool:
+        """Whether the segment was to be discarded."""
+        return self._abort_requested
+
     def join(self) -> None:
         """Wait for encoding to finish and propagate worker failures."""
         self.thread.join()
@@ -232,6 +238,12 @@ class SceneFileWriter:
     segments with optional audio, sections, and subcaptions. It also writes
     still images and PNG sequences described by the output plan.
 
+    In a render (:meth:`stage`), every file the writer writes waits in
+    :attr:`staging` until the render has ended unrefused (:meth:`publish`).
+    A render that ends otherwise leaves of what it wrote only the segments
+    it finished, or nothing at all when refused (:meth:`discard`). Paths the
+    writer holds and reports are the final ones.
+
     Parameters
     ----------
     settings
@@ -243,6 +255,10 @@ class SceneFileWriter:
         Ordered section metadata for the scene.
     partial_movie_files
         Segment paths in animation order, including ``None`` for skipped plays.
+    staging
+        Where the files written wait: :class:`~.staging.InPlace` (nowhere)
+        for a writer used on its own, a :class:`~.staging.Staging` in a
+        render.
     """
 
     def __init__(self, settings: _SceneFileWriterSettings) -> None:
@@ -253,11 +269,20 @@ class SceneFileWriter:
         self._inflight_encode_jobs: list[_PartialMovieEncodeJob] = []
         self._inflight_by_path: dict[str, _PartialMovieEncodeJob] = {}
         self._current_encode_job: _PartialMovieEncodeJob | None = None
+        #: Where each segment being encoded is meant to go, by the path it
+        #: is encoded to. A completed one is noted in the staging, which a
+        #: render keeps across its executions (:meth:`discard`).
+        self._segment_finals: dict[str, Path] = {}
         self.init_audio()
         self.frame_count = 0
         self.partial_movie_files: list[str | None] = []
         self.subcaptions: list[srt.Subtitle] = []
         self.sections: list[Section] = []
+        #: Where the files written wait: in place, until a render stages
+        #: them (:meth:`stage`).
+        self.staging: InPlace | Staging = InPlace()
+        # Whether the segment cache is pruned once the render is published.
+        self._prune = False
         # first section gets automatically created for convenience
         # if you need the first section to be skipped, add a first section by hand, it will replace this one
         self.next_section(
@@ -531,16 +556,14 @@ class SceneFileWriter:
 
     def output_image(self, image: Image.Image) -> None:
         file_path = self.output_plan.image_frame_path(self.frame_count)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        image.save(file_path)
+        image.save(self.staging.path(file_path))
         self.frame_count += 1
 
     def save_image(self, pixels: RGBAPixelArray) -> None:
         """Save one RGBA frame to the planned still-image path."""
         if not self.output_spec.enabled:
             return
-        self.image_file_path.parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(pixels).save(self.image_file_path)
+        Image.fromarray(pixels).save(self.staging.path(self.image_file_path))
         self.print_file_ready_message(self.image_file_path)
 
     def finish(self) -> None:
@@ -550,17 +573,60 @@ class SceneFileWriter:
             self.combine_to_movie()
             if self.output_spec.save_sections:
                 self.combine_to_section_videos()
-            # Cache cleanup runs after the in-flight encode jobs have been drained.
-            prune_segment_cache(
-                self.partial_movie_directory,
-                self.settings.max_files_cached,
-            )
+            if self.staging.waits:
+                # Pruned once the render's segments are in the cache.
+                self._prune = True
+            else:
+                self._prune_cache()
         elif self.output_spec.is_image_sequence:
             target_dir = self.image_sequence_directory
             self.final_file_path = target_dir
             logger.info("\n%i images ready at %s\n", self.frame_count, str(target_dir))
         if self.subcaptions:
             self.write_subcaption_file()
+
+    def stage(self) -> None:
+        """Hold every file written from now on in a staging directory of
+        this render's (:class:`~.staging.Staging`), until :meth:`publish` or
+        :meth:`discard`.
+        """
+        self.staging = Staging()
+
+    def publish(self) -> None:
+        """Move every file the render wrote into place: the render has
+        ended unrefused. Then the segment cache is pruned, with this
+        render's segments in it.
+        """
+        self.staging.publish()
+        if self._prune:
+            self._prune = False
+            self._prune_cache()
+
+    def _prune_cache(self) -> None:
+        # Cache cleanup runs after the in-flight encode jobs have been
+        # drained, and the render's segments are in the cache.
+        prune_segment_cache(
+            self.partial_movie_directory,
+            self.settings.max_files_cached,
+        )
+
+    def discard(self, *, keep_segments: bool = False) -> None:
+        """End a render that did not end: its encoders stopped and drained,
+        and every file it wrote removed, but with ``keep_segments`` the
+        segments it finished, which go into the cache as any render's do (a
+        scene that raised keeps the plays it drew for the next render).
+        Whatever existed before is untouched either way.
+        """
+        try:
+            self.abort_encode_jobs()
+        finally:
+            try:
+                if keep_segments and self.output_spec.is_video:
+                    # Only segments whose encodes completed: no concat
+                    # manifest, no movie, nothing half written.
+                    self.staging.publish(only=self.staging.completed)
+            finally:
+                self.staging.discard()
 
     def _create_segment_encoder(self, target: Path) -> VideoSegmentEncoder:
         encoder = self.video_encoder
@@ -586,9 +652,10 @@ class SceneFileWriter:
                     "open_partial_movie_stream() called for a play that has no "
                     "partial movie file path.",
                 )
-        file_path = Path(file_path)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        final = Path(file_path)
+        file_path = self.staging.path(final)
         path_key = str(file_path)
+        self._segment_finals[path_key] = final
         if path_key in self._inflight_by_path:
             self._join_job_and_drain_on_failure(self._inflight_by_path[path_key])
         segment_encoder = self._create_segment_encoder(file_path)
@@ -604,6 +671,10 @@ class SceneFileWriter:
             self._inflight_encode_jobs.remove(job)
         self._inflight_by_path.pop(str(job.path), None)
         job.join()
+        if not job.aborted:
+            final = self._segment_finals.get(str(job.path))
+            if final is not None:
+                self.staging.completed.append(final)
 
     def _join_job_and_drain_on_failure(
         self,
@@ -704,10 +775,11 @@ class SceneFileWriter:
         if not self.output_spec.is_video:
             return False
         path = self.output_plan.segment_path(hash_invocation)
-        path_key = str(path)
-        if path_key in self._inflight_by_path:
-            self._join_job_and_drain_on_failure(self._inflight_by_path[path_key])
-        return path.exists()
+        staged = self.staging.staged(path)
+        if staged is not None and str(staged) in self._inflight_by_path:
+            self._join_job_and_drain_on_failure(self._inflight_by_path[str(staged)])
+        # One this render wrote, else one the cache held before it.
+        return self.staging.find(path).exists()
 
     @staticmethod
     def _concat_manifest_bytes(input_files: list[str]) -> bytes:
@@ -725,7 +797,7 @@ class SceneFileWriter:
         """Atomically persist the complete scene segment order for diagnostics."""
         manifest_path = self.output_plan.concat_manifest
         assert manifest_path is not None
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path = self.staging.path(manifest_path)
         temporary_path: Path | None = None
         try:
             with NamedTemporaryFile(
@@ -751,12 +823,14 @@ class SceneFileWriter:
         create_gif: bool = False,
         includes_sound: bool = False,
     ) -> None:
-        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file = self.staging.path(output_file)
         logger.debug(
             f"Partial movie files to combine ({len(input_files)} files): %(p)s",
             {"p": input_files[:5]},
         )
-        manifest = BytesIO(self._concat_manifest_bytes(input_files))
+        # Each segment where it is now: staged when this render wrote it.
+        readable = [str(self.staging.find(Path(path))) for path in input_files]
+        manifest = BytesIO(self._concat_manifest_bytes(readable))
 
         av_options = {
             "safe": "0",  # needed to read files
@@ -883,7 +957,10 @@ class SceneFileWriter:
 
         # handle sound
         if self.includes_sound and not self.output_spec.is_gif:
-            sound_file_path = movie_file_path.with_suffix(".wav")
+            # The movie as it waits in staging; what is written beside it waits
+            # beside it.
+            staged_movie = self.staging.find(movie_file_path)
+            sound_file_path = staged_movie.with_suffix(".wav")
             # Makes sure sound file length will match video file
             self.add_audio_segment(AudioSegment.silent(0))
             self.audio_segment.export(
@@ -908,8 +985,8 @@ class SceneFileWriter:
                 convert_audio(sound_file_path, aac_sound_file_path, "aac")
                 sound_file_path = aac_sound_file_path
 
-            temp_file_path = movie_file_path.with_name(
-                f"{movie_file_path.stem}_temp{movie_file_path.suffix}"
+            temp_file_path = staged_movie.with_name(
+                f"{staged_movie.stem}_temp{staged_movie.suffix}"
             )
             av_options = {
                 "shortest": "1",
@@ -917,7 +994,7 @@ class SceneFileWriter:
             }
 
             with (
-                av.open(movie_file_path) as video_input,
+                av.open(staged_movie) as video_input,
                 av.open(sound_file_path) as audio_input,
             ):
                 video_stream = video_input.streams.video[0]
@@ -952,14 +1029,14 @@ class SceneFileWriter:
 
                 output_container.close()
 
-            shutil.move(str(temp_file_path), str(movie_file_path))
+            shutil.move(str(temp_file_path), str(staged_movie))
             sound_file_path.unlink()
 
         self.print_file_ready_message(str(movie_file_path))
         if self.output_spec.is_video:
             for file_path in partial_movie_files:
                 # We have to modify the accessed time so if we have to clean the cache we remove the one used the longest.
-                modify_atime(file_path)
+                modify_atime(str(self.staging.find(Path(file_path))))
 
     def combine_to_section_videos(self) -> None:
         """Concatenate partial movie files for each section."""
@@ -974,11 +1051,13 @@ class SceneFileWriter:
                     section.get_clean_partial_movie_files(),
                     section_path,
                 )
-                sections_index.append(section.get_dict(self.sections_output_dir))
+                # Read where it was written: staging, until the render ends.
+                found = self.staging.find(section_path)
+                written_in = found.parents[len(Path(section.video).parts) - 1]
+                sections_index.append(section.get_dict(written_in))
         section_index = self.output_plan.section_index
         assert section_index is not None
-        section_index.parent.mkdir(parents=True, exist_ok=True)
-        with section_index.open("w") as file:
+        with self.staging.path(section_index).open("w") as file:
             json.dump(sections_index, file, indent=4)
 
     def write_subcaption_file(self) -> None:
@@ -987,8 +1066,9 @@ class SceneFileWriter:
             return
         subcaption_file = self.output_plan.subcaption_file
         assert subcaption_file is not None
-        subcaption_file.parent.mkdir(parents=True, exist_ok=True)
-        subcaption_file.write_text(srt.compose(self.subcaptions), encoding="utf-8")
+        self.staging.path(subcaption_file).write_text(
+            srt.compose(self.subcaptions), encoding="utf-8"
+        )
         logger.info(f"Subcaption file has been written as {subcaption_file}")
 
     def print_file_ready_message(self, file_path: StrPath) -> None:

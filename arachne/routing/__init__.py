@@ -24,13 +24,15 @@ __all__ = [
     "cache_token",
     "capabilities",
     "declare",
+    "ever_declared",
     "gpu",
     "held",
+    "holds_any",
     "pin_for",
     "route",
     "withdraw",
 ]
 
 from .refusals import GpuLive, GpuRequired
-from .route import Where, cache_token, capabilities, gpu, pin_for, route
-from .table import GPU_ONLY, Capability, declare, held, withdraw
+from .route import Where, cache_token, capabilities, gpu, holds_any, pin_for, route
+from .table import GPU_ONLY, Capability, declare, ever_declared, held, withdraw
