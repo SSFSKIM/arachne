@@ -20,6 +20,13 @@ A rig's anchors are its manifest's, each on a named part:
   and ``F``; on a reshaped part, at its keyed positions, interpolated as the
   outline is.
 
+On a part or slot with a depth, in a rig viewed through a moving camera
+(:meth:`.Rig.view_through`), the anchor stands where its part slides to:
+its parallax is computed from the camera frame as it is when the point is
+asked for, never from what the rig's last settle used, so an anchor read
+before the settle of an instant (by a mobject's updater placing a label) is
+right for that instant.
+
 A slot's drawings each have an outline of their own, so in manifest 1.0 an
 anchor on a slot is ``interior``, carried through the slot's ``G`` and
 ``F``; an ``outline`` anchor on a slot is ``asset.manifest_invalid``.
@@ -95,12 +102,12 @@ def _transform(model: Model, name: str, values: np.ndarray) -> np.ndarray:
     return transforms(model, values)[name]
 
 
-def _scene(rig: Rig, canvas: np.ndarray) -> np.ndarray:
+def _scene(rig: Rig, canvas: np.ndarray, part: str) -> np.ndarray:
     placement = rig.placement()
     if placement is None:
         # A rig scaled to nothing stands at one point.
         return np.array(rig.carrier.submobjects[0].points[0], dtype=float)
-    return placement(canvas[None])[0]
+    return placement(canvas[None])[0] + rig._parallax(part)
 
 
 @dataclass(frozen=True)
@@ -130,7 +137,7 @@ class OnOutline:
         controls = warped(model, self.part, values, controls)
         affine = _transform(model, self.part, values)
         controls = controls @ affine[:, :2].T + affine[:, 2]
-        return _scene(rig, _bezier(controls, self.at))
+        return _scene(rig, _bezier(controls, self.at), self.part)
 
 
 @dataclass(frozen=True)
@@ -158,7 +165,7 @@ class Inside:
         if isinstance(model.placed[self.part], PartSpec):
             place = warped(model, self.part, values, place)
         affine = _transform(model, self.part, values)
-        return _scene(rig, place[0] @ affine[:, :2].T + affine[:, 2])
+        return _scene(rig, place[0] @ affine[:, :2].T + affine[:, 2], self.part)
 
 
 def _bezier(controls: np.ndarray, t: float) -> np.ndarray:

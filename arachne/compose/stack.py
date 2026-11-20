@@ -17,6 +17,11 @@ the stack draws the frame from them. The objects are cut into runs:
   backdrop; no run mixes two kinds. A layer whose family, or a mask, mixes
   kinds is stacked from its runs, never painted into one array.
 
+A raster member of a rig (:class:`~arachne.assets.raster.RasterPart`) is a
+vector quad in the rig's family that is painted as its picture: an image at
+the quad's four corners, as opaque as the quad's fill, in an image run, in
+the quad's place in the drawing order. Its paint is never drawn.
+
 The camera's background, straight as its colour or image is, is the bottom
 layer: an opaque uniform one is the frame's fill, any other an image.
 Painted "over" is associative, so a frame whose layers carry no effect
@@ -363,10 +368,14 @@ class Stack:
         painted values), ``"image"`` (blended, straight values) or
         ``"points"`` (written over, straight values); ``None`` not at all.
         """
+        from arachne.assets.raster import RasterPart
         from arachne.mobject.mobject import Mobject
         from arachne.mobject.types.image_mobject import AbstractImageMobject
         from arachne.mobject.types.vectorized_mobject import VMobject
 
+        if isinstance(leaf, RasterPart):
+            # Painted as its picture, an image.
+            return "image"
         kind = self.camera.type_or_raise(leaf)
         if kind is VMobject:
             return "vector"
@@ -383,9 +392,22 @@ class Stack:
         return self._upload(self._painted(run), vector, uploads)
 
     def _painted(self, run: Sequence[Mobject]) -> np.ndarray:
+        from arachne.assets.raster import RasterPart
+
         camera = self.camera
         camera.pixel_array[...] = 0
-        camera.capture_mobjects(list(run), include_submobjects=False)
+        if not any(isinstance(leaf, RasterPart) for leaf in run):
+            camera.capture_mobjects(list(run), include_submobjects=False)
+            return camera.pixel_array.copy()
+        # A run of images holding raster members: each painted in its turn,
+        # as the camera paints a run of images, a member as its picture.
+        for leaf in run:
+            if not isinstance(leaf, RasterPart):
+                camera.capture_mobjects([leaf], include_submobjects=False)
+                continue
+            picture = leaf.picture(self.record.origin(leaf).scene_line)
+            if picture is not None:
+                camera.display_image_mobject(picture, camera.pixel_array)  # type: ignore[arg-type]
         return camera.pixel_array.copy()
 
     def _upload(self, rgba: np.ndarray, painted: bool, uploads: dict) -> bytes:

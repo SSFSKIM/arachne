@@ -28,6 +28,15 @@ file in no admitted form is ``media.inexact`` (reason ``format``), before
 admission is asked. It decodes no frame: each frame is decoded, and checked
 against its digest, when it is first drawn (:mod:`arachne.mobject.media.frames`).
 
+An asset of the kind ``parts`` may hold raster members (its manifest
+requires ``raster``): a part or a slot's drawing that is one still, a PNG
+file in an admitted form, read as a media frame is. Loading checks each
+such file's form from its header and decodes none; the member stands in the
+rig as the quad of its ``box`` (:class:`~.raster.RasterPart`), whose
+picture is decoded, and checked against the member's digest, when it is
+first drawn. Such an asset holds the three checks of its kind and
+``frames_exact`` over its raster files (:data:`RASTER_CHECKS`).
+
 A ``shape`` driver's stored outlines are the rest outline moved: a supplier
 keeps, shape for shape, the contours in the same order, each with as many
 points, open or closed alike, and each point the same landmark of the
@@ -41,6 +50,7 @@ __all__ = [
     "CHECKS",
     "FIXTURES",
     "MEDIA_CHECKS",
+    "RASTER_CHECKS",
     "TOOL",
     "Asset",
     "checks_for",
@@ -85,6 +95,10 @@ CHECKS = ("hole", "detached_part", "anchor_off_part")
 #: The checks of :data:`TOOL` an asset of a media kind holds, in the order
 #: its record lists them.
 MEDIA_CHECKS = ("frames_exact", "frames_uniform")
+#: The checks of :data:`TOOL` an asset of the kind ``parts`` that requires
+#: ``raster`` holds: the three of its kind, measured as they are for one
+#: without raster members, and ``frames_exact`` over its raster files.
+RASTER_CHECKS = (*CHECKS, "frames_exact")
 #: The engine's own fixture assets, each a directory named as it is asked
 #: for: ``fixture:<name>``.
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -194,11 +208,13 @@ def _units_registered(asset: Asset) -> Asset:
 
 def checks_for(manifest: Manifest) -> tuple[str, ...]:
     """The checks of :data:`TOOL` an asset whose manifest is ``manifest``
-    must hold, by its kind (and, as it gains members that change what is
-    drawn, by its ``requires``): :data:`CHECKS` for the kind ``parts``,
+    must hold, by its kind and its ``requires``: :data:`CHECKS` for the
+    kind ``parts``, :data:`RASTER_CHECKS` for one that requires ``raster``,
     :data:`MEDIA_CHECKS` for a media kind.
     """
-    return MEDIA_CHECKS if manifest.kind in MEDIA_KINDS else CHECKS
+    if manifest.kind in MEDIA_KINDS:
+        return MEDIA_CHECKS
+    return RASTER_CHECKS if "raster" in manifest.requires else CHECKS
 
 
 def read_asset(ref: str | os.PathLike[str]) -> Asset:
@@ -237,16 +253,21 @@ def read_asset(ref: str | os.PathLike[str]) -> Asset:
             None,
             MappingProxyType({}),
         )
-    files = {file: _read(contents[file], file, label) for file in contents}
-    canvas = _canvas(files, label)
-    shapes = _shapes(manifest, files, label)
-    asset = Asset(
-        directory,
-        manifest,
-        digest(manifest.document, contents),
-        canvas,
-        MappingProxyType(shapes),
-    )
+    from ..mobject.media.frames import refuse_unadmitted_form
+
+    asset_digest = digest(manifest.document, contents)
+    raster = raster_files(manifest)
+    for file in raster:
+        refuse_unadmitted_form(contents[file], label, file)
+    files = {
+        file: _read(contents[file], file, label)
+        for file in contents
+        if file not in raster
+    }
+    canvas = _canvas(files, label) if files else None
+    quads = _Quads(directory, manifest.name, asset_digest)
+    shapes = _shapes(manifest, files, label, quads)
+    asset = Asset(directory, manifest, asset_digest, canvas, MappingProxyType(shapes))
     # What needs the asset's geometry: its names as a pose reads them, and
     # every anchor resolved on its part, so that an asset loaded is whole.
     from .anchor import attachments
@@ -254,6 +275,47 @@ def read_asset(ref: str | os.PathLike[str]) -> Asset:
 
     attachments(model_of(asset))
     return asset
+
+
+def raster_files(manifest: Manifest) -> tuple[str, ...]:
+    """The files of the raster members of ``manifest`` (an asset of the
+    kind ``parts``), each once, as :func:`~.manifest.normalised` gives them.
+    """
+    found = [normalised(part.file) for part in manifest.parts if part.raster]
+    found += [
+        normalised(drawing.file)
+        for slot in manifest.slots
+        for drawing in slot.drawings
+        if drawing.raster
+    ]
+    return tuple(dict.fromkeys(found))
+
+
+@dataclass(frozen=True)
+class _Quads:
+    """What makes a raster member's quad: the asset's ``directory``, its
+    ``name`` and its ``digest``.
+    """
+
+    directory: Path
+    name: str
+    digest: str
+
+    def quad(
+        self, file: str, box: tuple[float, float, float, float], frame: str
+    ) -> tuple[VMobject, ...]:
+        from .raster import RasterPart
+
+        return (
+            RasterPart(
+                box,
+                asset_digest=self.digest,
+                file=file,
+                digest=frame,
+                asset=self.name,
+                directory=self.directory,
+            ),
+        )
 
 
 def _admitted(asset: Asset, label: str) -> None:
@@ -511,11 +573,17 @@ def _canvas(files: Mapping[str, SvgFile], label: str) -> tuple[float, ...] | Non
 
 
 def _shapes(
-    manifest: Manifest, files: Mapping[str, SvgFile], label: str
+    manifest: Manifest, files: Mapping[str, SvgFile], label: str, quads: _Quads
 ) -> dict[tuple[str, ...], tuple[VMobject, ...]]:
-    """Every part's, drawing's and stored outline's shapes, by key."""
+    """Every part's, drawing's and stored outline's shapes, by key: a
+    raster member's, its quad (made by ``quads``).
+    """
     shapes: dict[tuple[str, ...], tuple[VMobject, ...]] = {}
     for i, part in enumerate(manifest.parts):
+        if part.box is not None:
+            assert part.digest is not None
+            shapes[("part", part.name)] = quads.quad(part.file, part.box, part.digest)
+            continue
         shapes[("part", part.name)] = _element(
             files,
             part.file,
@@ -526,6 +594,12 @@ def _shapes(
         )
     for i, slot in enumerate(manifest.slots):
         for j, drawing in enumerate(slot.drawings):
+            if drawing.box is not None:
+                assert drawing.digest is not None
+                shapes[("drawing", slot.name, drawing.name)] = quads.quad(
+                    drawing.file, drawing.box, drawing.digest
+                )
+                continue
             shapes[("drawing", slot.name, drawing.name)] = _element(
                 files,
                 drawing.file,
