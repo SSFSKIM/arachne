@@ -2,7 +2,8 @@
 opened by path draw exactly as before, whether or not a ``manifest.json``
 sits beside them, and whether or not a scene that used an asset ran before
 them in the same process; that scene poses its rig, alone and while it
-moves, with a callout on one of its anchors and a readout counting.
+moves, with a callout on one of its anchors and a readout counting, the rig
+drawn on twelve drawings a second with line boil.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ class WithAsset(Scene):
         knob = Callout("knob", at=box.anchor("knob"))
         reading = Readout(0, format="{:.0f} deg", at=anchor(box), offset=DOWN)
         self.add(box, knob, reading)
+        set_timing(box, 12, boil=Boil(rate=6))
         self.play(box.animate.shift(RIGHT), run_time=0.5)
         self.play(
             Pose(box, lid_open=80),

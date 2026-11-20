@@ -348,6 +348,32 @@ _TABLE = (
         " whatever moves that with an updater), so its updater runs after theirs.",
         ("distance", "allowed", "anchor"),
     ),
+    Code(
+        "timing.exact_content",
+        "error",
+        "TimingExactContent",
+        "stepped timing or line boil is declared on a family that holds exact"
+        " content: text, a number, a coordinate system or a plot, an annotation,"
+        " a schematic mark, a diagram, or the scene's camera's frame, whose"
+        " drawing must change at every frame",
+        "Declare the timing on the illustration alone, a group that holds"
+        " none of these; keep labels, plots, annotation and the camera beside it,"
+        " where they stay smooth.",
+        ("object", "camera"),
+    ),
+    Code(
+        "timing.updater",
+        "error",
+        "TimingUpdater",
+        "an object with declared timing is moved by something the engine cannot"
+        " hold to its timing: the scene's own updater on it, an animation of the"
+        " scene's own or UpdateFromFunc or UpdateFromAlphaFunc on it, or a scene"
+        " updater registered after the timing was declared",
+        "Move the illustration with the engine's animations (Pose, .animate,"
+        " Transform and the rest) or its rig's parameters; register scene updaters"
+        " before declaring timing.",
+        ("kind", "name"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

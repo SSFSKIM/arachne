@@ -117,11 +117,17 @@ def pose_settle(scene: Scene) -> PoseSettle | None:
 def hold_pose(scene: Scene, rig: Rig) -> None:
     """Have ``rig`` settled at every instant of ``scene`` from now until
     :func:`release_pose`: by the scene's pose settle, added to the scene's
-    updaters while it holds a rig.
+    updaters while it holds a rig, or run by the scene's timing clock when
+    it has one (:mod:`.timing`).
     """
     settle = _SETTLES.get(scene)
     if settle is None:
         settle = _SETTLES[scene] = PoseSettle(scene)
+        from .timing import clock_of
+
+        # A scene that declared stepped timing settles its posed rigs from
+        # its clock, which runs last.
+        settle.registers = clock_of(scene) is None
     if settle.registers and settle.updater not in scene.updaters:
         scene.add_updater(settle.updater)
     settle.hold(rig)
