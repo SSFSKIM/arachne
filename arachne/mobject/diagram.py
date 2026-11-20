@@ -88,6 +88,11 @@ class Diagram(VGroup):
         self.cell = (float(cell[0]), float(cell[1]))
         self.origin = tuple(float(c) for c in as_point(origin))
         self.edges: tuple[VMobject, ...] = ()
+        #: Every piece a connector of this diagram has joined, in the order
+        #: first joined: a piece's key here is its place in it, from 1. It
+        #: only grows, so no key is given twice, and it is this diagram's
+        #: alone: a piece joined in two diagrams has a key in each.
+        self.joined: tuple[Mobject, ...] = ()
 
     def grid_point(self, col: float, row: float) -> np.ndarray:
         """The centre of the grid cell at ``col``, ``row``."""
@@ -182,7 +187,7 @@ class Diagram(VGroup):
             edge = _StraightConnector(a, b, tip=tip, color=color, **kwargs)
         self.add(edge)
         self.edges = (*self.edges, edge)
-        # What it joins, by keys of this diagram's pieces, which copies keep.
+        # What it joins, by its pieces' keys in this diagram (``joined``).
         held: Any = edge
         held.start_key = self._key_of(_piece(start))
         held.end_key = self._key_of(_piece(end))
@@ -205,17 +210,23 @@ class Diagram(VGroup):
         return edge
 
     def _key_of(self, piece: Mobject) -> int:
-        """``piece``'s key in this diagram (its ``diagram_key``, an integer
-        no other piece of the diagram holds), given it if it has none.
+        """``piece``'s key in this diagram (:attr:`joined`), given it the
+        first time a connector joins it.
         """
-        taken = {
-            getattr(m, "diagram_key", None) for m in self.submobjects if m is not piece
-        }
-        key = getattr(piece, "diagram_key", None)
-        if not isinstance(key, int) or key in taken:
-            key = 1 + max((k for k in taken if isinstance(k, int)), default=0)
-            cast(Any, piece).diagram_key = key
-        return key
+        for place, held in enumerate(self.joined, start=1):
+            if held is piece:
+                return place
+        self.joined = (*self.joined, piece)
+        return len(self.joined)
+
+    def _joined_piece(self, key: Any) -> Mobject | None:
+        """The piece ``key`` names in this diagram (:attr:`joined`), if it is
+        one of its pieces still; else ``None``.
+        """
+        if not isinstance(key, int) or not 1 <= key <= len(self.joined):
+            return None
+        piece = self.joined[key - 1]
+        return piece if any(piece is m for m in self.submobjects) else None
 
 
 class _StraightConnector(VMobject):
@@ -1084,9 +1095,9 @@ def _pieces(
 
 def _joins(mobjects: Iterable[Mobject]) -> dict[int, tuple[Mobject, ...]]:
     """What each connector of a diagram among ``mobjects`` joins, by its
-    id: the pieces of the diagram it was made to join, found by their keys
-    (:meth:`Diagram.connect`); and for its label, the connector and those
-    pieces.
+    id: the pieces of the diagram it was made to join and still holds,
+    found by their keys there (:attr:`Diagram.joined`); and for its label,
+    the connector and those pieces.
     """
     found: dict[int, tuple[Mobject, ...]] = {}
     seen: set[int] = set()
@@ -1095,18 +1106,12 @@ def _joins(mobjects: Iterable[Mobject]) -> dict[int, tuple[Mobject, ...]]:
             if not isinstance(diagram, Diagram) or id(diagram) in seen:
                 continue
             seen.add(id(diagram))
-            by_key: dict[int, Mobject | None] = {}
-            for piece in diagram.submobjects:
-                key = getattr(piece, "diagram_key", None)
-                if isinstance(key, int):
-                    # A key two pieces hold names neither.
-                    by_key[key] = None if key in by_key else piece
             for edge in diagram.edges:
                 keys = (getattr(edge, name, None) for name in ("start_key", "end_key"))
                 ends = tuple(
                     end
                     for key in keys
-                    if isinstance(key, int) and (end := by_key.get(key)) is not None
+                    if (end := diagram._joined_piece(key)) is not None
                 )
                 found[id(edge)] = ends
                 label = getattr(edge, "label", None)

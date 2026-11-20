@@ -148,3 +148,46 @@ def test_a_connector_s_ends_are_the_pieces_it_was_made_to_join():
     copy = diagram.copy()
     joined = _joins([copy])
     assert joined[id(copy.edges[0])] == (copy[0], copy[1])
+
+
+def _block(name: str, x: float) -> Block:
+    return Block(name, width=1.2, height=0.8).move_to(RIGHT * x)
+
+
+def test_a_piece_joined_in_two_diagrams_keeps_its_place_in_each():
+    a, shared = _block("a", -4), _block("p", 0)
+    first = Diagram(a, shared)
+    there = first.connect(a, shared)
+    b, c = _block("b", 4), _block("c", 7)
+    second = Diagram(b, c)
+    second.connect(b, c)
+    second.add(shared)
+    second.connect(b, shared)
+    assert _joins([first])[id(there)] == (a, shared)
+
+
+def test_a_key_is_never_given_again_while_a_connector_holds_it():
+    a, gone = _block("a", -4), _block("p", 0)
+    diagram = Diagram(a, gone)
+    old = diagram.connect(a, gone)
+    diagram.remove(gone)
+    new = _block("q", 0)
+    diagram.add(new)
+    fresh = diagram.connect(a, new)
+    joined = _joins([diagram])
+    assert joined[id(fresh)] == (a, new)
+    # The old connector's far end has left; it names nothing in its place.
+    assert joined[id(old)] == (a,)
+
+
+def test_a_copy_of_a_piece_does_not_take_the_original_s_key():
+    a, piece = _block("a", -4), _block("p", 0)
+    diagram = Diagram(a, piece)
+    first = diagram.connect(a, piece)
+    double = piece.copy().shift(UP * 2)
+    diagram.add(double)
+    diagram.connect(a, piece)
+    second = diagram.connect(a, double)
+    joined = _joins([diagram])
+    assert joined[id(first)] == (a, piece)
+    assert joined[id(second)] == (a, double)
