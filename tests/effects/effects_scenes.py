@@ -13,6 +13,7 @@ from arachne import (
     ChangeBlur,
     Circle,
     Dot,
+    FadeIn,
     RackFocus,
     Rectangle,
     Scene,
@@ -20,6 +21,7 @@ from arachne import (
     VGroup,
     clear_effects,
     linear,
+    quantities,
     set_blur,
     set_depth,
     set_focus,
@@ -28,8 +30,10 @@ from arachne import (
 from arachne.compose.layer import LayerSpec, set_layer
 from arachne.quantities import Literal, attach
 
-# Registers the prefix "probe.", which a literal of another owner is named in.
-from arachne.utils.testing import declared_probe  # noqa: F401
+#: A prefix of these tests' own, for a quantity another owner than the
+#: effects attaches to an object that has effects.
+ELSEWHERE = "elsewhere."
+quantities.register(ELSEWHERE, owner="tests.effects")
 
 #: Where a mask's edge stands, in scene units right of the frame's centre.
 MASK_EDGE = 0.37
@@ -156,6 +160,28 @@ class RackingFocus(Scene):
         self.wait(0.25)
 
 
+class MixedDurations(Scene):
+    """One play of one second: over its first half, linearly, the upper
+    step's blur moves from 0.2 to 0.6 and the focus from 0 to the lower
+    step's depth, 4; a dot fades in over the whole of it. A quarter
+    second's wait after.
+    """
+
+    def construct(self):
+        near = step(height=10).shift(5 * UP)
+        far = step(height=10).shift(5 * DOWN)
+        set_blur(near, 0.2)
+        set_depth(far, 4)
+        set_focus(self, 0, 0.1)
+        self.add(near, far)
+        self.play(
+            ChangeBlur(near, 0.6, run_time=0.5, rate_func=linear),
+            RackFocus(self, 4, run_time=0.5, rate_func=linear),
+            FadeIn(Dot().shift(3 * RIGHT), run_time=1),
+        )
+        self.wait(0.25)
+
+
 class RackWithoutFocus(Scene):
     """A focus racked in a scene that has none."""
 
@@ -173,7 +199,7 @@ class NumbersOverTime(Scene):
 
     def construct(self):
         square = Square(fill_opacity=1)
-        attach(square, Literal("probe.size", 2.0, "1"))
+        attach(square, Literal(f"{ELSEWHERE}size", 2.0, "1"))
         set_blur(square, 0.1)
         set_blur(square, 0.3)
         set_mask(square, Circle(radius=0.8, fill_opacity=1), feather=0.2)

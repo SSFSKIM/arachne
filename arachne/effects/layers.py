@@ -78,8 +78,10 @@ def set_depth(mobject: Mobject, depth: float | None) -> None:
 
 def clear_effects(mobject: Mobject) -> None:
     """Remove every effect of ``mobject``: it is no longer a layer of its
-    own, and the GPU-only capabilities its effects declared are withdrawn
-    (one it declared on its own stays).
+    own, and the GPU-only capabilities its effects declared are withdrawn.
+    The object's rows are one set, owned by no one: a row of another id that
+    the object declared itself stays, but one of the same id as an effect's
+    is withdrawn with it.
     """
     seam.set_layer(mobject, None)
 

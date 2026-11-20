@@ -15,7 +15,6 @@ import numpy as np
 import pytest
 
 from arachne.compose.layer import LayerSpec, layer_of
-from arachne.compose.layer import pixels as scene_pixels
 from arachne.server.dispatch import Dispatcher
 from arachne.server.protocol import REFUSED, RpcError
 from tests.assets.test_old_constructors import OLD, RESOURCES, WITH_EFFECT
@@ -29,19 +28,35 @@ from .effects_scenes import MASK_EDGE
 STEP_WIDTH = 2.563
 
 
-def _px(session, length: float) -> float:
-    """``length`` scene units in the session's pixels, as the stack converts
-    a layer's numbers.
+#: The fixtures' frame height in scene units, CE's default; its width is
+#: that times the render's aspect.
+FRAME_HEIGHT = 8.0
+
+
+def _frame_width(session) -> float:
+    """The scene units across the session's frame, from the fixture's frame
+    height and the render's pixel size.
     """
-    return scene_pixels(session.scene.renderer.camera, length)
+    camera = session.scene.renderer.camera
+    assert camera.frame_height == FRAME_HEIGHT
+    return FRAME_HEIGHT * camera.pixel_width / camera.pixel_height
+
+
+def _px(session, length: float) -> float:
+    """``length`` scene units in the render's pixels, computed here and not
+    by the engine's conversion: the frame's pixel width over its width in
+    scene units.
+    """
+    pixel_width = session.scene.renderer.camera.pixel_width
+    return length * pixel_width / _frame_width(session)
 
 
 def _edge_x(session, x: float) -> float:
     """The pixel coordinate (a pixel's left edge at its index) of the scene's
     vertical line at ``x``.
     """
-    camera = session.scene.renderer.camera
-    return (x / camera.frame_width + 0.5) * camera.pixel_width
+    pixel_width = session.scene.renderer.camera.pixel_width
+    return (x / _frame_width(session) + 0.5) * pixel_width
 
 
 def _crossing(levels: np.ndarray, at: float, near: float, span: float) -> float:
@@ -105,6 +120,17 @@ MASKS = [
 ]
 
 
+#: The feather of each masked plane, in scene units.
+FEATHERS = {
+    "MaskedPlane": 0.0,
+    "MaskedPlaneInverted": 0.0,
+    "MaskedPlaneSoft": 0.25,
+    "MaskedPlaneSoftInverted": 0.25,
+    "MaskedPlaneSofter": 0.6,
+    "MaskedPlaneSofterInverted": 0.6,
+}
+
+
 @pytest.mark.parametrize(("scene", "inverted"), MASKS)
 def test_a_mask_s_half_way_line_lies_on_its_shape_s_edge(
     session_of, door, scene, inverted
@@ -114,6 +140,12 @@ def test_a_mask_s_half_way_line_lies_on_its_shape_s_edge(
     edge = _edge_x(session, MASK_EDGE)
     span = _span(_px(session, 0.6))
     assert _crossing(row, 0.5, edge, span) == pytest.approx(edge, abs=1)
+    feather = FEATHERS[scene]
+    if feather:
+        # A feather is a Gaussian of sigma feather / 3 across the edge (the
+        # GPU build's own test of it): its 10-90 % width is 2.563 sigma.
+        width = abs(_crossing(row, 0.1, edge, span) - _crossing(row, 0.9, edge, span))
+        assert width == pytest.approx(STEP_WIDTH * _px(session, feather) / 3, abs=1)
     # The kept side is the mask's, or with the mask inverted the other.
     left, right = row[int(edge - span)], row[int(edge + span)]
     assert (left, right) == ((0.0, 1.0) if inverted else (1.0, 0.0))
@@ -170,12 +202,11 @@ def test_removing_an_effect_changes_no_pixel_outside_its_reach(
     footprints = {each.object_id: each for each in door.maps[-1]}
     covered = _covered(footprints[subject], plain.shape[:2])
     assert covered.any()
-    camera = twin.scene.renderer.camera
     if effect == "blur":
-        support = _grown(covered, _reach(scene_pixels(camera, 0.2)))
+        support = _grown(covered, _reach(_px(twin, 0.2)))
     elif effect == "depth":
         # At depth 3 under a focus at 0 with aperture 0.1.
-        support = _grown(covered, _reach(scene_pixels(camera, 0.1) * 3))
+        support = _grown(covered, _reach(_px(twin, 0.1 * 3)))
     else:
         # A mask multiplies the layer and spreads nothing.
         support = covered
@@ -219,6 +250,18 @@ def test_a_racked_focus_gives_each_depth_its_width(session_of, door):
         sigma_px = _px(session, 0.05 * abs(depth - 4))
         found = _step_width(frame[row, :, 0], edge, _span(sigma_px))
         assert found == pytest.approx(STEP_WIDTH * sigma_px, abs=1), depth
+
+
+def test_a_short_change_beside_a_longer_animation_holds_its_target(session_of, door):
+    session = session_of("MixedDurations", pixel_width=192, pixel_height=108)
+    edge = _edge_x(session, 0)
+    # Past the changes' half second, before the play's end: the upper step
+    # at its blur's target, the lower one, at the focus, sharp.
+    frame = pixels(session, Fraction(3, 4))
+    for row, sigma in ((27, 0.6), (81, 0.0)):
+        sigma_px = _px(session, sigma)
+        found = _step_width(frame[row, :, 0], edge, _span(sigma_px))
+        assert found == pytest.approx(STEP_WIDTH * sigma_px, abs=1), sigma
 
 
 def test_the_server_refuses_a_blurred_layer_inside_a_blurred_group(tmp_path, door):

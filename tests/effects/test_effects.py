@@ -55,13 +55,20 @@ def test_two_effects_set_one_after_the_other_are_both_held():
     assert [type(each).__name__ for each in sources] == ["EffectNumbers"]
 
 
-def test_clearing_withdraws_what_the_effects_declared_and_keeps_the_object_s_own():
+def test_clearing_withdraws_the_effects_rows_and_keeps_a_row_of_another_id():
     square = Square()
     routing.declare(square, "effect.depth_of_field")
     set_blur(square, 0.2)
     set_mask(square, Circle())
     clear_effects(square)
     assert layer_of(square) is None
+    # A row of another id than the effects' that the object declared itself.
+    assert routing.held(square) == {"effect.depth_of_field"}
+    # The rows are one set: a row the object declared itself that has an
+    # effect's id goes with the effect.
+    routing.declare(square, "effect.blur")
+    set_blur(square, 0.2)
+    clear_effects(square)
     assert routing.held(square) == {"effect.depth_of_field"}
 
 
@@ -145,9 +152,9 @@ def test_state_at_answers_the_numbers_each_instant_s_effects_hold(server):
         "effect.blur": 0.3,
         "effect.depth": 1.5,
         "effect.mask_feather": 0.2,
-        "probe.size": 2.0,
+        "elsewhere.size": 2.0,
     }
-    assert opened.numbers(0.75, "square") == {"probe.size": 2.0}
+    assert opened.numbers(0.75, "square") == {"elsewhere.size": 2.0}
 
 
 def test_state_at_answers_a_changing_blur_at_each_instant(server):
@@ -161,6 +168,19 @@ def test_state_at_answers_a_changing_blur_at_each_instant(server):
     assert opened.numbers(1.0, "plane") == {"effect.blur": 0.6}
     # Brought to 0, the blur is gone from the spec and from the answer.
     assert opened.numbers(1.6, "plane") == {}
+
+
+def test_a_short_change_beside_a_longer_animation_holds_its_target(server):
+    opened = server("MixedDurations")
+    as_of, found = opened.numbers_as_of(0.25, "near")
+    assert 0 < as_of < Fraction(1, 2)
+    sigma = 0.2 * (1 - 2 * as_of) + 0.6 * (2 * as_of)
+    assert found == {"effect.blur": pytest.approx(float(sigma))}
+    # Its half second over, the play goes on and the blur stays at its target.
+    for t in (0.6, 0.75, 0.9, 1.1):
+        as_of, found = opened.numbers_as_of(t, "near")
+        assert as_of > Fraction(1, 2)
+        assert found == {"effect.blur": 0.6}, as_of
 
 
 def test_a_frame_of_a_scene_with_an_effect_is_refused_with_no_gpu(

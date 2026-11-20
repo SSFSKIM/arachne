@@ -42,9 +42,11 @@ _END = 1e-12
 
 def _progress(animation: Animation, alpha: float) -> float:
     """How far ``animation`` has come at ``alpha``, through its rate function,
-    each end snapped to.
+    each end snapped to. ``alpha`` is held to its run first: a play longer
+    than the animation hands it more than 1 after it ends, and it then holds
+    its target (a rate function may still overshoot within the run).
     """
-    progress = animation.get_sub_alpha(alpha, 0, 1)
+    progress = animation.get_sub_alpha(min(max(alpha, 0.0), 1.0), 0, 1)
     if abs(progress - 1) < _END:
         return 1.0
     if abs(progress) < _END:
