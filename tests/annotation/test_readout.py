@@ -346,14 +346,26 @@ def _drawn_alone(mobject) -> np.ndarray:
         return np.asarray(camera.pixel_array[..., :3], dtype=float)
 
 
-def _pixel(frame: np.ndarray, point: np.ndarray) -> np.ndarray:
-    """The colour ``frame`` draws at the scene point ``point``."""
+def _frame_size() -> tuple[float, float]:
+    """The scene's frame, in scene units, as a render of :data:`PICTURE`
+    frames it: read in the render's own configuration, not the session's,
+    which another test may have left changed.
+    """
     from arachne import config
 
-    height, width = frame.shape[:2]
-    col = int((point[0] / config.frame_width + 0.5) * width)
-    row = int((0.5 - point[1] / config.frame_height) * height)
-    return frame[row, col]
+    with tempconfig(PICTURE):
+        return float(config.frame_width), float(config.frame_height)
+
+
+def _column(frame: np.ndarray, x: float) -> int:
+    """The column of ``frame`` the scene's ``x`` falls in."""
+    return int((x / _frame_size()[0] + 0.5) * frame.shape[1])
+
+
+def _pixel(frame: np.ndarray, point: np.ndarray) -> np.ndarray:
+    """The colour ``frame`` draws at the scene point ``point``."""
+    row = int((0.5 - point[1] / _frame_size()[1]) * frame.shape[0])
+    return frame[row, _column(frame, point[0])]
 
 
 def _over_first_glyph(reading: Readout) -> np.ndarray:
@@ -507,14 +519,19 @@ def test_a_count_with_a_leading_word_draws_the_word_still(tmp_path):
     assert len(frames) == 15
     placed = Readout(0, format=WORDED, font_size=COUNT_FONT_SIZE)
     # The columns the word "swell" covers, and a margin left of it.
-    from arachne import config
-
-    width = frames[0].shape[1]
-    first = _prefix_xs(placed, 5)
-    word_end = placed.label.family_members_with_points()[4].get_right()[0]
-    left = int((first[0] / config.frame_width + 0.5) * width) - 2
-    right = int((word_end / config.frame_width + 0.5) * width) + 1
-    word = frames[0][:, max(left, 0) : right]
+    glyphs = placed.label.family_members_with_points()
+    word_start = min(m.get_left()[0] for m in glyphs[:5])
+    word_end = max(m.get_right()[0] for m in glyphs[:5])
+    left = max(_column(frames[0], word_start) - 2, 0)
+    right = _column(frames[0], word_end) + 1
+    word = frames[0][:, left:right]
     assert word.max() > 0  # the word is drawn there
     for index, frame in enumerate(frames[1:], start=1):
-        assert np.abs(frame[:, max(left, 0) : right] - word).max() <= 1, index
+        moved = np.argwhere(np.abs(frame[:, left:right] - word).max(axis=2) > 1)
+        assert not len(moved), (
+            index,
+            (left, right),
+            _frame_size(),
+            moved[:, 1].min() + left if len(moved) else None,
+            moved[:, 1].max() + left if len(moved) else None,
+        )
