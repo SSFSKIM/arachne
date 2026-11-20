@@ -12,17 +12,14 @@ from arachne import (
     DL,
     DOWN,
     LEFT,
-    ORIGIN,
     RIGHT,
     UP,
     UR,
     Block,
     Diagram,
     Flow,
-    Line,
     Node,
     Square,
-    Text,
 )
 from arachne.mobject.marks._paths import ArcLength
 
@@ -170,101 +167,80 @@ def test_the_label_s_place_is_the_same_whatever_came_first():
         assert np.allclose(a, b, atol=1e-12)
 
 
-def test_the_label_goes_to_the_side_with_more_room():
-    # Level ground: above.
-    diagram, edge = _level()
-    Flow(edge, speed=1.2, tokens=2)
-    line_y = edge.points[0][1]
-    assert edge.label.get_center()[1] > line_y
-    # A piece just above the line's middle: below.
-    _, edge = _obstructed()
-    Flow(edge, speed=1.2, tokens=2)
-    assert edge.label.get_center()[1] < edge.points[0][1]
-
-
-def _segments_meet(edge, low, high) -> bool:
-    """Whether any straight stretch of ``edge``'s drawing passes through
-    the box ``low``-``high``, sampled densely.
+def _joined(start, end, **kwargs):
+    """Two squares at ``start`` and ``end`` joined straight by a labelled
+    connector.
     """
-    points = _wire(edge)
-    dense = np.concatenate(
-        [np.linspace(a, b, 200) for a, b in zip(points[:-1], points[1:], strict=True)]
+    a, b = Square(0.4).move_to(start), Square(0.4).move_to(end)
+    diagram = Diagram(a, b)
+    return diagram, diagram.connect(
+        a, b, route="straight", tip=False, label="w", **kwargs
     )
-    return bool(np.all((dense >= low) & (dense <= high), axis=1).any())
 
 
-def _parallel(flow_first: bool = False):
-    """A short labelled join, a long straight wire close above it, and a
-    square close below it: below has less room than the join's own line
-    gives, above has none. With ``flow_first`` the flow is made before the
-    long wire.
-    """
-    a, b = Square(0.4).move_to(LEFT * 1.4), Square(0.4).move_to(RIGHT * 1.4)
-    c, d = (
-        Square(0.4).move_to(LEFT * 4.7 + UP * 0.32),
-        Square(0.4).move_to(RIGHT * 9.7 + UP * 0.32),
-    )
-    under = Square(0.4).move_to(DOWN * 0.75)
-    diagram = Diagram(a, b, c, d, under)
-    edge = diagram.connect(a, b, route="straight", tip=False, label="w")
-    if flow_first:
+@pytest.mark.parametrize(
+    ("start", "end", "side", "toward"),
+    [
+        (LEFT * 2, RIGHT * 2, "above", UP),
+        (LEFT * 2, RIGHT * 2, "below", DOWN),
+        (UP * 2, DOWN * 2, "left", LEFT),
+        (UP * 2, DOWN * 2, "right", RIGHT),
+        # Asked a side the line runs along: a quarter-turn clockwise.
+        (UP * 2, DOWN * 2, "above", RIGHT),
+        (UP * 2, DOWN * 2, "below", LEFT),
+        (LEFT * 2, RIGHT * 2, "right", DOWN),
+        (LEFT * 2, RIGHT * 2, "left", UP),
+        (LEFT * 2 + DOWN, RIGHT * 2 + UP, "below", RIGHT + DOWN),
+    ],
+)
+def test_the_label_stands_on_the_side_it_is_given_whichever_way_the_line_runs(
+    start, end, side, toward
+):
+    labels = []
+    for a, b in ((start, end), (end, start)):
+        _, edge = _joined(a, b, label_side=side)
         Flow(edge, speed=1.0, tokens=2)
-    wire = diagram.connect(c, d, route="straight", tip=False)
-    if not flow_first:
-        Flow(edge, speed=1.0, tokens=2)
-    return diagram, edge, wire
+        labels.append(edge.label.get_center())
+    # Where the line runs from does not move it.
+    assert np.allclose(labels[0], labels[1], atol=1e-9)
+    middle = (start + end) / 2
+    assert np.dot(labels[0] - middle, toward) > 0
 
 
-def test_a_long_parallel_wire_takes_the_room_on_its_side():
-    _, edge, wire = _parallel()
-    low, high = _box(edge.label)
-    assert not _segments_meet(wire, low, high)
-    assert edge.label.get_center()[1] < 0
-
-
-def _crossed(flow_first: bool = False):
-    """A labelled join and a short wire just above its middle, joined
-    after it; with ``flow_first`` the flow is made in between.
-    """
+def test_the_label_s_place_hangs_on_its_connector_and_flows_alone():
+    # A block close above the middle does not move it off its side.
+    plain, edge = _joined(LEFT * 1.5, RIGHT * 1.5)
+    Flow(edge, speed=1.0, tokens=2)
     a, b = Square(0.4).move_to(LEFT * 1.5), Square(0.4).move_to(RIGHT * 1.5)
-    c, d = (
-        Square(0.4).move_to(LEFT * 0.7 + UP * 0.3),
-        Square(0.4).move_to(RIGHT * 0.7 + UP * 0.3),
-    )
-    diagram = Diagram(a, b, c, d)
-    edge = diagram.connect(a, b, route="straight", tip=False, label="w")
-    if flow_first:
-        Flow(edge, speed=1.0, tokens=2)
-    wire = diagram.connect(c, d, route="straight", tip=False)
-    if not flow_first:
-        Flow(edge, speed=1.0, tokens=2)
-    return diagram, edge, wire
+    crowded = Diagram(a, b, Square(0.4).move_to(UP * 0.5))
+    edge = crowded.connect(a, b, route="straight", tip=False, label="w")
+    Flow(edge, speed=1.0, tokens=2)
+    assert np.array_equal(edge.label.get_center(), plain.edges[0].label.get_center())
+    assert edge.label.get_center()[1] > 0
 
 
-@pytest.mark.parametrize("layout", [_parallel, _crossed])
-def test_a_flow_made_before_the_rest_of_the_diagram_places_its_label_alike(layout):
-    later, edge, wire = layout()
-    first, _, _ = layout(flow_first=True)
-    assert edge.label.get_center()[1] < 0
-    assert not _segments_meet(wire, *_box(edge.label))
-    # The same geometry, to rounding: the label moved there by another way.
-    for a, b in zip(_points(first), _points(later), strict=True):
-        assert np.allclose(a, b, rtol=0, atol=1e-12)
-
-
-def _obstructed():
-    """A labelled join with a block close above its middle."""
-    a, b = Square(0.4).move_to(LEFT * 1.5), Square(0.4).move_to(RIGHT * 1.5)
-    over = Square(0.4).move_to(UP * 0.5)
-    diagram = Diagram(a, b, over)
-    return diagram, diagram.connect(a, b, route="straight", tip=False, label="w")
+def test_several_flows_hold_the_label_off_by_the_largest_reach_in_any_order():
+    places = []
+    for radii in ((0.2, 0.07), (0.07, 0.2)):
+        _, edge = _joined(LEFT * 2, RIGHT * 2)
+        for radius in radii:
+            Flow(edge, speed=1.0, tokens=2, radius=radius)
+        places.append(edge.label.get_center())
+        assert edge.flow_reach == pytest.approx(0.2)
+    assert np.array_equal(places[0], places[1])
+    # Clear of the larger tokens.
+    _, edge = _joined(LEFT * 2, RIGHT * 2)
+    big = Flow(edge, speed=1.0, tokens=2, radius=0.2)
+    Flow(edge, speed=1.0, tokens=2, radius=0.07)
+    for token in big.submobjects:
+        assert not _meet(_box(token), _box(edge.label))
 
 
 def test_a_copy_places_its_label_as_the_original_does():
-    flowed, edge = _obstructed()
+    flowed, edge = _joined(LEFT * 1.5, RIGHT * 1.5, label_side="below")
     Flow(edge, speed=1.0, tokens=2)
     flowed_then_copied = flowed.copy()
-    original, _ = _obstructed()
+    original, _ = _joined(LEFT * 1.5, RIGHT * 1.5, label_side="below")
     copied = original.copy()
     Flow(copied.edges[0], speed=1.0, tokens=2)
     assert copied.edges[0].label.get_center()[1] < 0
@@ -272,17 +248,7 @@ def test_a_copy_places_its_label_as_the_original_does():
         assert np.array_equal(a, b)
 
 
-class _ComparedLine(Line):
-    """A line that compares by value, and so has no hash."""
-
-    def __eq__(self, other):
-        return isinstance(other, Line) and np.array_equal(self.points, other.points)
-
-    __hash__ = None
-
-
-def test_a_flow_on_a_labelled_edge_of_any_kind_sets_its_label_beside():
-    edge = _ComparedLine(LEFT * 2, RIGHT * 2)
-    edge.label = Text("w", font_size=24).move_to(ORIGIN)
-    Flow(edge, speed=1.0, tokens=2)
-    assert edge.label.get_center()[1] > 0
+def test_a_connector_asks_a_side_it_knows():
+    a, b = Square(0.4).move_to(LEFT), Square(0.4).move_to(RIGHT)
+    with pytest.raises(ValueError, match="label_side"):
+        Diagram(a, b).connect(a, b, label="w", label_side="up")
