@@ -32,6 +32,7 @@ from __future__ import annotations
 __all__ = ["Sprite", "Still", "VideoMobject"]
 
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -176,16 +177,96 @@ class MediaObject(AbstractImageMobject):
         """
         if isinstance(other, MediaObject) and other._digest == self._digest:
             return other
-        what = (
-            f"a {type(other).__name__} of the asset {other.asset.name}"
-            if isinstance(other, MediaObject)
-            else f"a {type(other).__name__}"
-        )
-        raise ValueError(
-            f"a {type(self).__name__} of the asset {self._asset.name} cannot be"
-            f" transformed into {what}: stills, clips and sprites do not morph."
-            " Fade one out and the other in (FadeOut, FadeIn)."
-        )
+        raise _no_morph(self, other)
+
+
+def _named(mobject: Mobject | None) -> str:
+    if mobject is None:
+        return "a point that pads a group"
+    name = type(mobject).__name__
+    named = f"{'an' if name[0] in 'AEIOU' else 'a'} {name}"
+    if isinstance(mobject, MediaObject):
+        return f"{named} of the asset {mobject.asset.name}"
+    return named
+
+
+def _no_morph(start: Mobject | None, end: Mobject | None) -> ValueError:
+    return ValueError(
+        f"{_named(start)} cannot be transformed into {_named(end)}: stills,"
+        " clips and sprites do not morph. Fade one out and the other in"
+        " (FadeOut, FadeIn)."
+    )
+
+
+def refuse_morph(start: Mobject, end: Mobject) -> None:
+    """Refuse a transform of ``start`` into ``end`` that pairs a media
+    object with anything but a media object of its own asset, in either
+    direction, before anything is aligned or suspended. The pairs are the
+    ones :meth:`~.Mobject.align_data` would make. Families that hold no
+    media object are not walked, so other transforms are untouched.
+    """
+    if not any(
+        isinstance(member, MediaObject)
+        for root in (start, end)
+        for member in root.get_family()
+    ):
+        return
+    for a, b in _aligned_pairs(start, end):
+        if isinstance(a, MediaObject) and isinstance(b, MediaObject):
+            if a._digest != b._digest:
+                raise _no_morph(a, b)
+        elif isinstance(a, MediaObject) or isinstance(b, MediaObject):
+            raise _no_morph(a, b)
+
+
+_Member = tuple["Mobject | None", bool]
+
+
+def _aligned_pairs(
+    start: Mobject | None,
+    end: Mobject | None,
+    start_leaf: bool = False,
+    end_leaf: bool = False,
+) -> Iterator[tuple[Mobject | None, Mobject | None]]:
+    """The pairs of members :meth:`~.Mobject.align_data` aligns, ``start``
+    and ``end`` first, worked out without changing either. A member with no
+    points aligned to one with points takes that one's copy, with no
+    submobjects (a ``leaf``), as its last submobject (``null_point_align``);
+    the shorter list of submobjects is then padded by repeating its members,
+    or with points (``None``) when it has none (``align_submobjects``).
+    """
+    yield start, end
+    subs_a = _members(start, start_leaf)
+    subs_b = _members(end, end_leaf)
+    points_a = start is None or start.has_points()
+    points_b = end is None or end.has_points()
+    if not points_a and points_b:
+        subs_b.append((end, True))
+    elif points_a and not points_b:
+        subs_a.append((start, True))
+    length = max(len(subs_a), len(subs_b))
+    for (a, leaf_a), (b, leaf_b) in zip(
+        _padded(subs_a, length), _padded(subs_b, length), strict=True
+    ):
+        yield from _aligned_pairs(a, b, leaf_a, leaf_b)
+
+
+def _members(mobject: Mobject | None, leaf: bool) -> list[_Member]:
+    if mobject is None or leaf:
+        return []
+    return [(member, False) for member in mobject.submobjects]
+
+
+def _padded(members: list[_Member], length: int) -> list[_Member]:
+    """``members`` padded to ``length`` as ``add_n_more_submobjects`` pads
+    them.
+    """
+    count = len(members)
+    if count == length:
+        return members
+    if count == 0:
+        return [(None, True)] * length
+    return [members[index] for index in (np.arange(length) * count) // length]
 
 
 class Still(MediaObject):

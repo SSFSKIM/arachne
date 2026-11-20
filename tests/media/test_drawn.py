@@ -108,6 +108,47 @@ def test_a_clip_frame_that_decodes_otherwise_draws_nothing(
     assert not picture.exists()
 
 
+def test_a_warm_clip_whose_frame_decodes_otherwise_once_evicted_draws_nothing(
+    tmp_path, monkeypatch, gpu_door
+):
+    """A clip already drawn on the device, its frame then let go by the cache
+    and decoded again otherwise, is refused at the next frame with the line
+    that made it, and nothing more is drawn.
+    """
+    kept = FrameCache()
+    monkeypatch.setattr(frames, "cache", kept)
+    server = Dispatcher()
+    drawn, refused_at = tmp_path / "drawn.png", tmp_path / "refused.png"
+    try:
+        server.handle(
+            "open", {"file": str(SCENES), "scene": "FixtureClip", "config": SMALL}
+        )
+        server.handle("frame", {"t": 0.25, "path": str(drawn)})
+        assert drawn.exists()
+        assert gpu_door.draws == 1
+        assert len(kept) == 1
+        kept.clear()
+        decoded = frames.decode
+
+        def changed(data: bytes) -> np.ndarray:
+            pixels = decoded(data)
+            pixels[3, 3, 0] ^= 16
+            return pixels
+
+        monkeypatch.setattr(frames, "decode", changed)
+        with pytest.raises(RpcError) as refused:
+            server.handle("frame", {"t": 0.5, "path": str(refused_at)})
+    finally:
+        server.handle("close", {})
+    assert refused.value.code == REFUSED
+    finding = refused.value.data["finding"]
+    assert finding["code"] == "media.inexact"
+    assert finding["detail"]["reason"] == "digest"
+    assert finding["line"] == line_of("fixture-clip").line
+    assert gpu_door.draws == 1
+    assert not refused_at.exists()
+
+
 #: Opens each old scene, then a scene that drew clips on the launch mode's
 #: device, then each old scene again, in one fresh interpreter.
 PROGRAM = """\

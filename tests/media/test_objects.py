@@ -19,6 +19,7 @@ import arachne
 from arachne import (
     FadeIn,
     Group,
+    ImageMobject,
     Scene,
     Sprite,
     Square,
@@ -27,8 +28,10 @@ from arachne import (
     VideoMobject,
 )
 from arachne.routing import held
-from arachne.timeline.record import NodeState
+from arachne.timeline.execution import play_keys
+from arachne.timeline.record import NodeState, content_fields
 
+from .conftest import copied
 from .media_scenes import StillMoved
 
 ROOT = Path(arachne.__file__).resolve().parents[1]
@@ -115,6 +118,41 @@ def test_the_record_holds_no_pixels_and_every_version_shows_the_first_frame():
     assert {0.0, 0.5, 1.0} <= opacities
 
 
+CAPTURED = """\
+from arachne import *
+
+
+class Copied(Scene):
+    def construct(self):
+        clip = VideoMobject({asset!r})
+        self.play(FadeIn(clip))
+        self.play(clip.animate.shift(RIGHT).set_opacity(0.5))
+"""
+
+
+def test_one_asset_s_bytes_in_two_directories_key_one_capture(tmp_path, session_of):
+    """The capture key holds an asset's digest, not where it was read from:
+    the same bytes in two directories key every play's state alike, and an
+    object that holds another digest keys apart.
+    """
+    keys = []
+    for place in ("one", "two"):
+        directory = copied(tmp_path / place, "numbered-clip")
+        scene = tmp_path / f"{place}.py"
+        scene.write_text(CAPTURED.format(asset=str(directory)))
+        session = session_of("Copied", scene, media_dir=str(tmp_path / "media"))
+        keys.append(play_keys(session.record))
+    assert len(keys[0]) == 2
+    assert keys[0] == keys[1]
+    one = VideoMobject(copied(tmp_path / "three", "numbered-clip"))
+    other = VideoMobject(copied(tmp_path / "four", "numbered-clip"))
+    fields = [list(content_fields(NodeState.of(m))) for m in (one, other)]
+    assert one.asset.directory != other.asset.directory
+    assert fields[0] == fields[1]
+    other._digest = "sha256:" + "0" * 64
+    assert list(content_fields(NodeState.of(other))) != fields[0]
+
+
 def test_fade_in_a_shift_and_a_scale_move_the_object_and_keep_its_frame(session_of):
     session = session_of("ClipMoved")
     ids = [n.id for n in session.state_at(0).nodes if n.type == "VideoMobject"]
@@ -144,6 +182,28 @@ def test_two_assets_do_not_morph_and_the_error_names_the_fade():
     assert clip.opacity == pytest.approx(0.625)
     assert clip.frame == 0
     FadeIn(Group(clip.copy(), sprite.copy())).begin()
+
+
+def test_no_object_morphs_into_a_media_object_and_nothing_is_touched_first():
+    clip = VideoMobject("fixture:numbered-clip")
+    image = ImageMobject(np.array(clip.get_pixel_array()))
+    for start, end in (
+        (Square(), clip),
+        (image, clip),
+        (Group(Square()), Group(clip.copy())),
+        (clip.copy(), Sprite("fixture:stepper")),
+    ):
+        start.add_updater(lambda mobject, dt: None)
+        points = np.array(start.points)
+        family = start.get_family()
+        with pytest.raises(ValueError, match=r"do not morph.*FadeOut, FadeIn"):
+            Transform(start, end).begin()
+        # Refused before Animation.begin suspended its updaters, and before
+        # align_data changed either side.
+        assert not start.updating_suspended
+        assert np.array_equal(start.points, points)
+        assert start.get_family() == family
+        assert len(end.get_family()) == len(end.submobjects) + 1
 
 
 def test_importing_arachne_decodes_no_frame_and_opens_no_asset():

@@ -6,6 +6,9 @@ every host the tests run on; each decode checked; and the frame cache.
 from __future__ import annotations
 
 import io
+import os
+import shutil
+import struct
 
 import numpy as np
 import pytest
@@ -27,6 +30,8 @@ from arachne.mobject.media.frames import (
 from .conftest import copied, png
 
 FIXTURE_MEDIA = ("numbered-clip", "stepper", "swatch")
+#: An APNG's animation control chunk: one frame, played once.
+ANIMATED = (b"acTL", struct.pack(">II", 1, 0))
 
 
 @pytest.mark.parametrize("name", FIXTURE_MEDIA)
@@ -75,9 +80,17 @@ def test_the_admitted_forms_are_eight_bit_truecolour_with_or_without_alpha():
             png([bytes(6)] * 2, 2, 2, 8, 2, chunks=((b"tRNS", bytes(6)),)),
             "with a transparency chunk",
         ),
+        (png([bytes(8)] * 2, 2, 2, 8, 6, chunks=(ANIMATED,)), "animated (an APNG)"),
         (b"GIF89a" + bytes(40), "not a PNG file"),
     ],
-    ids=["sixteen-bit", "palette", "greyscale", "transparency-chunk", "not-png"],
+    ids=[
+        "sixteen-bit",
+        "palette",
+        "greyscale",
+        "transparency-chunk",
+        "animated",
+        "not-png",
+    ],
 )
 def test_a_file_in_no_admitted_form_is_named_for_what_it_is(data, found):
     named = form_of(data)
@@ -97,8 +110,9 @@ def _jpeg() -> bytes:
         png([bytes(64 * 8)] * 64, 64, 64, 16, 6),
         png([bytes(64)] * 64, 64, 64, 8, 3, chunks=((b"PLTE", bytes(3)),)),
         _jpeg(),
+        png([bytes(64 * 4)] * 64, 64, 64, 8, 6, chunks=(ANIMATED,)),
     ],
-    ids=["sixteen-bit", "palette", "jpeg"],
+    ids=["sixteen-bit", "palette", "jpeg", "animated"],
 )
 def test_loading_refuses_a_frame_file_in_no_admitted_form(tmp_path, data):
     directory = copied(tmp_path, "swatch")
@@ -157,12 +171,18 @@ def test_the_cache_keeps_frames_by_asset_and_file_and_lets_the_oldest_go(monkeyp
     assert one.get_pixel_array() is other.get_pixel_array() is first
     # Bounded: three frames' bytes, the least recently used leaving first.
     kept.bound = 3 * first.nbytes
-    for index in range(1, 6):
-        kept.frame(asset, index)
-        assert kept.nbytes <= kept.bound
+    second, third = kept.frame(asset, 1), kept.frame(asset, 2)
+    # Frame 0, the oldest kept, is used again: frame 1 is now the least
+    # recently used, and the one the next frame pushes out (first in, first
+    # out would push out frame 0).
+    assert kept.frame(asset, 0) is first
+    kept.frame(asset, 3)
     assert len(kept) == 3
-    assert kept.frame(asset, 5) is kept.frame(asset, 5)
-    assert all(kept.frame(asset, i).flags.writeable is False for i in range(3))
+    assert kept.nbytes <= kept.bound
+    assert kept.frame(asset, 0) is first
+    assert kept.frame(asset, 2) is third
+    assert kept.frame(asset, 1) is not second
+    assert all(kept.frame(asset, i).flags.writeable is False for i in range(4))
 
 
 def test_a_frame_larger_than_the_bound_is_decoded_and_not_kept():
@@ -192,3 +212,42 @@ def test_a_frame_decoded_again_after_the_cache_let_it_go_is_checked_again(
     with pytest.raises(RaisedFinding) as raised:
         still.get_pixel_array()
     assert (raised.value.code, raised.value.line) == ("media.inexact", 23)
+
+
+def test_a_frame_of_another_size_is_refused_at_every_decode(monkeypatch):
+    kept = FrameCache()
+    monkeypatch.setattr(frames, "cache", kept)
+    decoded = frames.decode
+    monkeypatch.setattr(frames, "decode", lambda data: decoded(data)[1:])
+    still = Still("fixture:swatch")
+    still._made = type(still._made)(31)
+    with pytest.raises(RaisedFinding) as raised:
+        still.get_pixel_array()
+    found = raised.value
+    assert (found.code, found.line) == ("media.inexact", 31)
+    assert found.detail["reason"] == "digest"
+    assert found.detail["expected"] == "64 x 64 pixels"
+    assert found.detail["found"] == "64 x 63 pixels"
+    assert len(kept) == 0
+
+
+@pytest.mark.parametrize("linked", ["frames/0000.png", "frames"])
+def test_a_frame_read_after_loading_through_a_link_is_refused(
+    tmp_path, monkeypatch, linked
+):
+    """A frame file, or the directory it is in, turned into a link after its
+    asset loaded is refused when the frame is next read, as loading refuses
+    it, with the line that made the object.
+    """
+    monkeypatch.setattr(frames, "cache", FrameCache())
+    directory = copied(tmp_path, "swatch")
+    still = Still(directory)
+    still._made = type(still._made)(41)
+    moved = tmp_path / "elsewhere"
+    shutil.move(directory / linked, moved)
+    os.symlink(moved, directory / linked)
+    with pytest.raises(RaisedFinding) as raised:
+        still.get_pixel_array()
+    found = raised.value
+    assert (found.code, found.line) == ("asset.remote", 41)
+    assert found.detail["file"] == "frames/0000.png"

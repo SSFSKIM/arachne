@@ -701,7 +701,7 @@ class _Reader:
         alpha = self.member(entry, "alpha", "media")
         if not isinstance(alpha, bool):
             self.invalid("media.alpha", "it must be true or false")
-        rate = self.rate(entry.get("rate"), kind)
+        rate = self.rate(entry, kind)
         listed = self.array(self.member(entry, "frames", "media"), "media.frames")
         if kind == "still" and len(listed) != 1:
             self.invalid(
@@ -721,17 +721,18 @@ class _Reader:
                 )
         return Media(pixels=(width, height), alpha=alpha, rate=rate, frames=frames)
 
-    def rate(self, value: Any, kind: str) -> Fraction | None:
+    def rate(self, entry: dict[str, Any], kind: str) -> Fraction | None:
         """A clip's or a sprite's frames a second, ``[numerator,
-        denominator]``; a still has none.
+        denominator]``, from the ``media`` member ``entry``; a still has
+        none, so it writes no ``rate`` at all (not even ``null``).
         """
         if kind == "still":
-            if value is not None:
+            if "rate" in entry:
                 self.invalid("media.rate", "a still has one frame and no rate")
             return None
-        if value is None:
+        if "rate" not in entry:
             self.invalid("media.rate", "it is required and missing")
-        found = self.array(value, "media.rate")
+        found = self.array(entry["rate"], "media.rate")
         if len(found) != 2:
             self.invalid(
                 "media.rate", "it must be two integers, numerator and denominator"

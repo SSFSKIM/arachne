@@ -314,8 +314,11 @@ def read_file(directory: Path, file: str, label: str) -> bytes:
     """The bytes of the file ``file`` (a path as :func:`~.manifest.normalised`
     gives it) of the asset in ``directory``, asked for as ``label``, read as
     loading reads them: ``asset.unreadable`` for one that cannot be read,
-    ``asset.file_missing`` for one that is gone.
+    ``asset.file_missing`` for one that is gone, and, as at loading,
+    ``asset.remote`` for one now reached through a link: the file read after
+    loading is the one loading read.
     """
+    _local(file, directory, label)
     if not (directory / file).exists():
         refuse(
             "asset.file_missing",

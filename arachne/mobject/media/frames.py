@@ -7,16 +7,17 @@ or the one picture of a still. It is stored as one file in an admitted form
 alpha. A PNG stores its samples without loss, so every conforming decoder
 gives the same pixels; Pillow decodes it, applying no gamma and no colour
 profile, with alpha 255 where the file has none. A file in any other form
-(another bit depth, a palette, greyscale, a transparency chunk, no PNG at
-all) is ``media.inexact`` with the reason ``format``, found from its header
+(another bit depth, a palette, greyscale, a transparency chunk, an
+animated PNG, no PNG at all) is ``media.inexact`` with the reason ``format``, found from its header
 when its asset loads (:func:`refuse_unadmitted_form`). A later form is one
 more row of :data:`ADMITTED`, with the header reading its container needs.
 
 A frame's digest (:func:`frame_digest`) is ``sha256:`` and the hex SHA-256
 of its width and its height, each as 4 bytes big-endian, then its RGBA
 bytes row by row from the top. A media asset's manifest lists the digest of
-every frame, and every time a process decodes a frame it checks the pixels
-against it before anything draws them (:func:`checked_frame`): a mismatch
+every frame, and every time a process decodes a frame it checks the pixels'
+size against the manifest's and then the pixels against the digest, before
+anything keeps or draws them (:func:`checked_frame`): a mismatch of either
 is ``media.inexact`` with the reason ``digest``, raised with the line of
 the scene that made the object, so a host that decodes otherwise draws
 nothing of that frame.
@@ -116,6 +117,10 @@ def form_of(data: bytes) -> Form | str:
         # A transparency chunk makes one colour transparent in a file that
         # holds no alpha: alpha the frame's samples do not carry.
         return f"{found}, with a transparency chunk"
+    if _chunk_before_data(data, b"acTL"):
+        # An animated PNG (APNG): its first frame is only one of the
+        # pictures the file holds, and decoders differ on which they show.
+        return f"{found}, animated (an APNG)"
     return form
 
 
@@ -183,10 +188,11 @@ def frame_digest(pixels: np.ndarray) -> str:
 
 def checked_frame(asset: Asset, index: int, line: int | None = None) -> FrozenPixels:
     """The frame ``index`` of the media asset ``asset``, read from its file
-    now, decoded, and checked against the frame digest its manifest lists,
-    read-only. Every refusal is raised with ``line``, the scene's line that
-    made the object being drawn: the file gone or unreadable, its form, and
-    its pixels (``media.inexact``).
+    now, decoded, and checked against the size and the frame digest its
+    manifest lists, read-only. Every refusal is raised with ``line``, the
+    scene's line that made the object being drawn: the file gone, unreadable
+    or now reached through a link, its form, its size and its pixels
+    (``media.inexact``).
     """
     from ...assets.reader import read_file
 
@@ -208,15 +214,27 @@ def checked_frame(asset: Asset, index: int, line: int | None = None) -> FrozenPi
         pixels = decode(data)
     except ValueError as error:
         _inexact(asset.name, spec.file, "format", EXPECTED_FORM, str(error), line)
+    height, width = pixels.shape[:2]
+    if (width, height) != media.pixels:
+        # Checked at every decode, before a digest is computed or the frame
+        # is kept: a frame of another size is drawn by no one.
+        size = f"{width} x {height} pixels"
+        declared = f"{media.pixels[0]} x {media.pixels[1]} pixels"
+        _inexact(
+            asset.name,
+            spec.file,
+            "digest",
+            declared,
+            size,
+            line,
+            what=(
+                f"the frame {spec.file} of the asset {asset.name} decodes here to"
+                f" {size}, not the {declared} its manifest declares; nothing of"
+                " it is drawn"
+            ),
+        )
     digest = frame_digest(pixels)
     if digest != spec.digest:
-        height, width = pixels.shape[:2]
-        size = (
-            ""
-            if (width, height) == media.pixels
-            else f" (it is {width} x {height} pixels, the manifest says"
-            f" {media.pixels[0]} x {media.pixels[1]})"
-        )
         _inexact(
             asset.name,
             spec.file,
@@ -227,7 +245,7 @@ def checked_frame(asset: Asset, index: int, line: int | None = None) -> FrozenPi
             what=(
                 f"the frame {spec.file} of the asset {asset.name} decodes here to"
                 f" pixels whose digest is {digest}, not the {spec.digest} its"
-                f" manifest lists{size}; nothing of it is drawn"
+                " manifest lists; nothing of it is drawn"
             ),
         )
     return adopt(pixels, FrozenPixels)

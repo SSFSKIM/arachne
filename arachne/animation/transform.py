@@ -200,6 +200,13 @@ class Transform(Animation):
         # preserved.
         self.target_mobject = self.create_target()
         self.target_copy = self.target_mobject.copy()
+        # Stills, clips and sprites do not morph: refused here, in either
+        # direction, before anything is aligned or any updater suspended.
+        # (Imported here: the media objects load assets, whose motions are
+        # animations.)
+        from ..mobject.media.objects import refuse_morph
+
+        refuse_morph(self.mobject, self.target_copy)
         # Note, this potentially changes the structure
         # of both mobject and target_mobject
         self.mobject.align_data(self.target_copy)

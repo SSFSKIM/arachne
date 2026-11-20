@@ -94,6 +94,8 @@ def test_a_canvas_on_a_media_asset_is_refused(tmp_path):
         ("numbered-clip", lambda d: d["media"].update(rate=[24, 0]), "media.rate"),
         ("numbered-clip", lambda d: d["media"].update(rate=[24]), "media.rate"),
         ("swatch", lambda d: d["media"].update(rate=[1, 1]), "media.rate"),
+        ("swatch", lambda d: d["media"].update(rate=None), "media.rate"),
+        ("numbered-clip", lambda d: d["media"].update(rate=None), "media.rate"),
         # A sprite's rate divides 60, so each drawing changes on a tick.
         ("stepper", lambda d: d["media"].update(rate=[24, 1]), "media.rate"),
         ("stepper", lambda d: d["media"].update(rate=[25, 2]), "media.rate"),
@@ -125,6 +127,8 @@ def test_a_canvas_on_a_media_asset_is_refused(tmp_path):
         "zero-denominator",
         "rate-one-number",
         "still-with-rate",
+        "still-with-null-rate",
+        "clip-with-null-rate",
         "sprite-rate-not-dividing-60",
         "sprite-rate-not-whole",
         "clip-without-frames",
