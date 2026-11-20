@@ -9,6 +9,7 @@ from arachne.utils.hashing import get_hash_from_play_call
 from .. import config, logger
 from .._config.video_encoder import video_encoder_fingerprint
 from ..camera.camera import Camera
+from ..compose.guard import check_render
 from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter
 from ..timeline.clock import TICK_RATE, exact, frames_in
@@ -63,6 +64,8 @@ class CairoRenderer:
         self.num_plays = 0
         self._clock = Fraction(0)
         self.static_image: PixelArray | None = None
+        #: Why a play of this execution was drawn as it ran, once one was.
+        self._live: str | None = None
 
     def renew(self) -> None:
         """Start afresh for another execution of the scene: a new camera of
@@ -140,12 +143,17 @@ class CairoRenderer:
 
         timeline = scene._arachne_timeline
         fps = exact(self.camera.frame_rate)
-        if timeline.refusal() is not None:
+        live = timeline.refusal()
+        if live is not None:
             # The record can't draw this camera's frames: draw them as the
             # play runs, as CE does.
+            self._live = self._live or live
             self._play_live(scene, skipped, cache_key, fps)
             return
         play = timeline.play(skipped=skipped, cache_key=cache_key)
+        if timeline.draws:
+            # Before anything of the play is looked up or drawn.
+            check_render(timeline.ensure_record(), self._live)
 
         frames = frames_in(play.start, play.end, fps)
         if not frames:
@@ -217,6 +225,8 @@ class CairoRenderer:
 
             live = LiveFrames(scene, fps, write)
         play = timeline.play(skipped=skipped, cache_key=cache_key, live=live)
+        if timeline.draws:
+            check_render(timeline.ensure_record(), self._live)
         if opened:
             self.file_writer.end_animation(True)
         else:
@@ -411,6 +421,11 @@ class CairoRenderer:
             raise EndSceneEarlyException()
 
     def scene_finished(self, scene: Scene) -> None:
+        timeline = scene._arachne_timeline
+        if timeline.draws and timeline.record is not None:
+            # The scene as its script left it, before its last frame is
+            # drawn and anything is assembled.
+            check_render(timeline.record, self._live)
         output = self.file_writer.output_spec
         record = scene._arachne_timeline.record
         if record is not None and scene._arachne_timeline.draws:

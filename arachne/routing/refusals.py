@@ -8,7 +8,7 @@ a scene holding a capability is never drawn without it.
 
 from __future__ import annotations
 
-__all__ = ["GpuLive", "GpuRequired"]
+__all__ = ["GpuLive", "GpuRequired", "Refusal"]
 
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -19,7 +19,11 @@ if TYPE_CHECKING:
     from .route import Where
 
 
-class _Refusal(Exception):
+class Refusal(Exception):
+    """A scene refused because it holds a GPU-only capability: nothing of
+    it is drawn or written.
+    """
+
     code: ClassVar[str]
     #: What the message says of the scene, after its capabilities.
     because: ClassVar[str]
@@ -55,7 +59,7 @@ class _Refusal(Exception):
         super().__init__(f"{self.code}: {message}. {self.finding.fix}")
 
 
-class GpuRequired(_Refusal):
+class GpuRequired(Refusal):
     """``render.gpu_required``: a scene holding a GPU-only capability asked to
     draw on a host with no GPU. Nothing is drawn or written.
     """
@@ -64,7 +68,7 @@ class GpuRequired(_Refusal):
     because = "and this host has no GPU; nothing was drawn or written"
 
 
-class GpuLive(_Refusal):
+class GpuLive(Refusal):
     """``render.gpu_live``: a scene holding a GPU-only capability whose frames
     are drawn before its record is complete, which only Cairo does. Nothing
     is written. ``cause`` is why it draws as it runs (``Record.refusal``).

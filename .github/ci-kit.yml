@@ -158,10 +158,28 @@ gates:
     run: bash gpu/ci/test.sh
     timeout: 30
   - name: gpu-binding
-    run: bash gpu/ci/binding.sh gpu/tests/python tests/routing
+    run: bash gpu/ci/binding.sh gpu/tests/python tests/routing tests/compose
     env: {UV_PYTHON: "3.12"}
     timeout: 30
   - name: cpu-bytes
     run: bash gpu/ci/cpu_bytes.sh
     env: {UV_PYTHON: "3.12"}
     timeout: 45
+  # A change to when or where old scenes are drawn and written is compared with the commit it
+  # merges into: the cpu-bytes scenes rendered at both, into an empty cache and into the one that
+  # run left, must give equal frames, keys, cache hits and published files. A pull request's run
+  # alone has that commit as its base.
+  - name: base-head
+    on: [pr]
+    paths:
+      - "arachne/compose/**"
+      - "arachne/manager.py"
+      - "arachne/renderer/**"
+      - "arachne/scene/**"
+      - "arachne/session.py"
+      - "arachne/timeline/draw.py"
+      - "arachne/timeline/record.py"
+      - "gpu/ci/base_head*"
+    run: bash gpu/ci/base_head.sh "$CI_KIT_BASE"
+    env: {UV_PYTHON: "3.12"}
+    timeout: 60

@@ -150,6 +150,15 @@ class Manager(Generic[SceneT]):
         down no run that raised: :meth:`tear_down` runs once, for the
         execution that completes.
 
+        Every file the render writes (segments, frames of a sequence, the
+        still, sections, the movie) waits in the file writer's staging and
+        is moved into place once the render has ended
+        (:meth:`.SceneFileWriter.publish`). A refused render
+        (``render.gpu_required``, ``render.gpu_live``) publishes nothing:
+        every file that existed before it is as it was, and nothing new is
+        beside them. A render that raises otherwise publishes only the
+        segments it finished, into the cache.
+
         Parameters
         ----------
         preview
@@ -160,6 +169,34 @@ class Manager(Generic[SceneT]):
         if open_after_render and not self.output_spec.enabled:
             raise ValueError("Previewing after render requires a media artifact.")
 
+        from .routing.refusals import Refusal
+
+        self.file_writer.stage()
+        try:
+            self._render_staged()
+        except Refusal:
+            # A refused render leaves nothing: every file it wrote waits in
+            # staging, which goes with it.
+            self.file_writer.discard()
+            raise
+        except BaseException:
+            # A render that raised keeps the plays it drew in the cache, as
+            # a render always has, and publishes nothing else.
+            self.file_writer.discard(keep_segments=True)
+            raise
+        self.file_writer.publish()
+
+        if open_after_render or presentation.show_in_file_browser:
+            open_media_file(
+                self.file_writer,
+                preview=open_after_render,
+                show_in_file_browser=presentation.show_in_file_browser,
+            )
+
+    def _render_staged(self) -> None:
+        """Execute the scene, again where a play must be drawn as it runs,
+        and finish its output, every file written into the writer's staging.
+        """
         known: dict[int, str] = {}
         earlier: list[tuple[int, tuple[bytes, ...]]] = []
         # The construction caches as a scene rendered earlier in this process
@@ -193,16 +230,13 @@ class Manager(Generic[SceneT]):
                     },
                 )
                 restore_construction_caches(caches)
+                # One render, one staging: what the interrupted execution
+                # wrote (its segments) waits for the execution that ends.
+                staging = self.file_writer.staging
                 self._renew_scene()
+                self.file_writer.staging = staging
                 self.scene._arachne_timeline.reexecuting(known, earlier)
         self.post_construct()
-
-        if open_after_render or presentation.show_in_file_browser:
-            open_media_file(
-                self.file_writer,
-                preview=open_after_render,
-                show_in_file_browser=presentation.show_in_file_browser,
-            )
 
     def _execute(self) -> None:
         """Execute the scene's script once, recording it."""
