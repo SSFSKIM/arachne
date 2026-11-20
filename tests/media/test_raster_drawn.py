@@ -152,7 +152,10 @@ def test_two_stills_of_one_size_show_their_own_pixels_in_either_load_order(
     rigs, images = session_of("Two", file), session_of("TwoAsImages", file)
     for t in (Fraction(1, 4), Fraction(3, 4)):
         drawn, expected = _pixels(rigs, t), _pixels(images, t)
-        assert _close(drawn, expected), (t, _where(drawn, expected))
+        # Within 2: a picture's corners reached by a rig's moves and those
+        # written out here differ in their last bits, which moves a
+        # resampled edge pixel of the small badge by 2 at most.
+        assert _close(drawn, expected, within=2), (t, _where(drawn, expected))
 
 
 def _where(drawn: np.ndarray, expected: np.ndarray) -> dict:
