@@ -13,6 +13,7 @@ from arachne import (
     UR,
     Circle,
     Dot,
+    FadeIn,
     Readout,
     Rectangle,
     Scene,
@@ -28,6 +29,8 @@ FALLING = {
     "{:.0f} cm/s": ("sim.velocity", "norm", 100.0),
     "{:.6f}": ("sim.position", "y", 1.0),
 }
+#: What a scene found as it ran, by name.
+FOUND: dict[str, object] = {}
 #: Where the floor's top is, and the radius of the ball dropped on it.
 FLOOR_TOP = -1.0
 RADIUS = 0.2
@@ -82,7 +85,8 @@ class ReadWithoutItsWorld(Scene):
 
 class ReadAfterItsWorldLeft(Scene):
     """A readout of a falling point left on screen after its world left the
-    scene at 1/2 s (tick 30), and moved there.
+    scene at 1/2 s (tick 30), over a wait; the scene's code then tries to set
+    it by hand.
     """
 
     def construct(self):
@@ -92,7 +96,38 @@ class ReadAfterItsWorldLeft(Scene):
         self.add(world, reading)
         self.wait(0.5)
         self.remove(world)
-        self.play(reading.animate.shift(RIGHT), run_time=0.5)
+        try:
+            reading.set_value(100)
+        except TypeError as refused:
+            FOUND["set by hand"] = str(refused)
+        self.wait(0.5)
+
+
+class FadedInOverAFall(Scene):
+    """A readout of a falling point brought in with FadeIn while the point
+    falls: the animation holds its updater.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.2)
+        reading = world.readout(ball, "velocity", part="y")
+        self.play(FadeIn(reading), run_time=0.5)
+        self.wait(0.2)
+
+
+class AddedOverAFall(Scene):
+    """The twin of :class:`FadedInOverAFall`: the readout added."""
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.2)
+        self.add(world.readout(ball, "velocity", part="y"))
+        self.wait(0.7)
 
 
 class PushedRead(Scene):

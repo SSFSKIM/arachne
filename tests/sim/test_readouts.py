@@ -23,7 +23,7 @@ import pytest
 
 pytest.importorskip("arachne_sim")
 
-from arachne import BodyReadout, Dot, Readout, World  # noqa: E402
+from arachne import BodyReadout, CountUp, Dot, Readout, World  # noqa: E402
 from arachne import quantities as quantities_module  # noqa: E402
 from arachne.lint import lint  # noqa: E402
 from arachne.lint.rules import anchored  # noqa: E402
@@ -230,20 +230,22 @@ def test_a_readout_of_a_world_never_in_the_scene_declares_its_link_unreadable(
     }
 
 
-def test_a_readout_after_its_world_left_holds_a_tick_of_its_stay(opened):
-    """Once its world has left, it holds the last value it showed, and
-    declares the tick that value is of: a tick of the stay, at or before its
-    last (30), whose row the value is.
+def test_a_readout_after_its_world_left_holds_a_row_of_its_stay(opened):
+    """Once its world has left, it holds the last value its updater set, and
+    keeps declaring the row that value is: the body and a tick of the stay,
+    at or before its last (30). Set by hand there, it refuses, and its link
+    stays true.
     """
     session = opened("ReadAfterItsWorldLeft")
     (occurrence,) = session.record.bakes.occurrences
     assert occurrence.last_tick == 30
+    assert "not set by hand" in session.module.FOUND["set by hand"]
     # While the world is in the scene, each capture's own tick.
     early = session.state_at(Fraction(2, 5))
     (readout,) = [n.id for n in early.nodes if n.type == "BodyReadout"]
     assert _read(early, readout)["sim.reads_tick"].value == 24
     held = set()
-    for t in (Fraction(1, 2), Fraction(3, 5), Fraction(14, 15)):
+    for t in (Fraction(1, 2), Fraction(3, 5), Fraction(4, 5), Fraction(14, 15)):
         state = session.state_at(t)
         read = _read(state, readout)
         assert all(q.unreadable is None for q in read.values())
@@ -252,12 +254,10 @@ def test_a_readout_after_its_world_left_holds_a_tick_of_its_stay(opened):
         count = read["annotation.count"].value
         assert count == _row(session, 0, "velocity", tick)[0, 1]
         assert _text(state, readout) == f"{count:.3f}"
-        if t > Fraction(1, 2):
-            held.add((tick, count))
-    # Through the play that moves it, it holds one value.
+        assert _linked(session, read) == _bodies(session)[0]
+        held.add((tick, count, read["sim.reads_body"].value))
+    # Through the wait after the world left, one value, one row.
     assert len(held) == 1
-    # Moved, the readout is captured at its own instants, past its tick.
-    assert session.state_at(Fraction(14, 15)).as_of == Fraction(14, 15)
 
 
 def test_an_open_world_s_readout_shows_the_tick_the_world_has_stepped_to(opened):
@@ -400,3 +400,45 @@ def test_a_body_readout_reads_a_body_of_its_world():
         world.readout(ball, "velocity")
     with pytest.raises(TypeError, match="reads a body"):
         BodyReadout(Dot(), "velocity")
+
+
+def test_a_body_readout_is_not_set_by_hand_nor_counted():
+    reading = _readout()
+    with pytest.raises(TypeError, match="not set by hand"):
+        reading.set_value(100)
+    count = CountUp(reading, 5)
+    with pytest.raises(TypeError, match="CountUp"):
+        count.begin()
+    assert reading.value == 0.0
+
+
+# A readout held behind its body
+
+
+def _stale(session: Session) -> list:
+    result = lint(session, rules=())
+    return [f for f in result.findings if f.code == "sim.readout_stale"]
+
+
+def test_a_readout_faded_in_over_a_moving_body_is_stale(opened):
+    session = opened("FadedInOverAFall")
+    (ball,) = _bodies(session)
+    (finding,) = _stale(session)
+    assert finding.severity == "error"
+    (thing,) = finding.objects
+    assert thing.kind == "BodyReadout"
+    # Made at 1/5 s, tick 12, and held there through the fade.
+    assert finding.detail["body"] == ball
+    assert finding.detail["tick"] == 12
+    assert finding.detail["scene_tick"] - 12 > 1
+    assert Fraction(1, 5) < finding.t_start <= finding.t_end < Fraction(7, 10)
+    assert "shows tick 12 while the scene is at tick" in finding.message
+    assert "self.add" in finding.fix
+
+
+def test_a_readout_added_over_a_moving_body_is_not_stale(opened):
+    assert _stale(opened("AddedOverAFall")) == []
+
+
+def test_an_open_world_s_readout_a_tick_behind_is_not_stale(opened):
+    assert _stale(opened("PushedRead")) == []

@@ -465,6 +465,20 @@ _TABLE = (
         " continuous_collision on, which stops a fast body at a fixed one.",
         ("tick", "evidence"),
     ),
+    Code(
+        "sim.readout_stale",
+        "error",
+        "ReadoutStale",
+        "a readout of a simulated body's quantity is shown, while the body's"
+        " world is in the scene, with the value of a tick more than one tick"
+        " behind the scene's: something held its updater (an animation of the"
+        " readout itself, such as FadeIn) while the body moved, so the number on"
+        " screen is not the body's; one tick behind is the lag of a readout"
+        " added before an open world, and is not reported",
+        "Add the readout with self.add(...), or bring it in before the world"
+        " starts, so it updates while the body moves.",
+        ("body", "tick", "scene_tick"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

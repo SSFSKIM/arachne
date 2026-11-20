@@ -46,6 +46,7 @@ PUBLISHED = [
     ("sim.withheld", "error", "FeatureWithheld"),
     ("sim.unstable", "error", "SimulationUnstable"),
     ("sim.tunnelled", "error", "SimulationTunnelled"),
+    ("sim.readout_stale", "error", "ReadoutStale"),
 ]
 
 

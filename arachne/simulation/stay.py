@@ -48,7 +48,15 @@ a sealed occurrence's are (:meth:`Stay.row`).
 
 from __future__ import annotations
 
-__all__ = ["Stay", "closed_world", "live_stay", "membership", "open_world"]
+__all__ = [
+    "ClockRow",
+    "Stay",
+    "clock_row",
+    "closed_world",
+    "live_stay",
+    "membership",
+    "open_world",
+]
 
 import dataclasses
 import hashlib
@@ -56,7 +64,7 @@ import inspect
 import math
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 
@@ -203,20 +211,46 @@ def crate_of(world: World) -> Any | None:
     return None if run is None else run.crate
 
 
+class ClockRow(NamedTuple):
+    """A world's live stay and the tick of the row it shows at the scene
+    clock's tick (:func:`clock_row`).
+    """
+
+    stay: Stay
+    tick: int
+
+
+def clock_row(world: World, *, stepping: bool) -> ClockRow | None:
+    """The row ``world`` shows at the scene clock's tick, while it is in the
+    scene (``None`` outside a stay): its rows computed through the clock's
+    tick (a closed world's always, an open world's only when ``stepping``),
+    then the latest tick computed no later than the clock's.
+
+    The one place the world's own updater (which places its bodies there)
+    and a body readout's (:func:`.readout.show_quantity`, which shows a
+    body's quantity there) get that row. A play that draws a closed world
+    from its sealed bake instead of ticking it answers this function from
+    the bake's rows, for both; it admits a readout's updater only for a
+    closed world, and hands it the bake's row here.
+    """
+    stay = live_stay(world)
+    if stay is None:
+        return None
+    tick = stay.now_tick()
+    if stepping or not stay.crate.open:
+        stay.compute_through(tick)
+    return ClockRow(stay, min(tick, stay.computed_tick))
+
+
 def reach(world: World, *, stepping: bool, placing: bool) -> None:
     """Bring ``world``, while it is in the scene, to the scene clock's tick:
     its rows computed through the tick (an open world's only when
     ``stepping``), its bodies placed at the last row computed (when
-    ``placing``).
+    ``placing``), the row :func:`clock_row` answers.
     """
-    stay = live_stay(world)
-    if stay is None:
-        return
-    tick = stay.now_tick()
-    if stepping or not stay.crate.open:
-        stay.compute_through(tick)
-    if placing:
-        stay.place(min(tick, stay.computed_tick))
+    found = clock_row(world, stepping=stepping)
+    if found is not None and placing:
+        found.stay.place(found.tick)
 
 
 def membership(world: World, scene: Scene, present: bool, at: Fraction | None) -> None:

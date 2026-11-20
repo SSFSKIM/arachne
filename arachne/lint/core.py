@@ -22,6 +22,9 @@ when its tick is in the time range. When ``at`` names the instants, its
 bodies' boxes are read only at a frame no later than the latest instant
 read (none when it names none), so nothing past them is replayed; a finding
 beyond is reported with its boxes null.
+
+A body readout shown more than a tick behind the scene while its body's
+world is in the scene is a ``sim.readout_stale`` finding (:mod:`.readouts`).
 """
 
 from __future__ import annotations
@@ -52,6 +55,7 @@ from .frames import FrameReader, Frames
 from .instants import LintInstant, lint_instants
 from .parts import Parts, PartsCache, build_parts
 from .quantities import request_quantities, unreadable_findings
+from .readouts import readout_findings, request_readouts
 
 if TYPE_CHECKING:
     from arachne.session import Session
@@ -180,6 +184,7 @@ def lint(
     frames = Frames(session, lint_instants=instants)
     _request_parts(frames, instants)
     request_quantities(frames, instants)
+    request_readouts(frames, instants)
     named = None if at is None or isinstance(at, str) else [i.t for i in instants]
     baked = request_bake_frames(frames, record, t_range, named)
     # The scene's own checks (:mod:`.bridge`), whatever the rules.
@@ -195,6 +200,7 @@ def lint(
     found = [finding for rule in rules for finding in rule(context)]
     found.extend(checks(context))
     found.extend(unreadable_findings(frames, instants, parts))
+    found.extend(readout_findings(frames, instants, parts))
     found.extend(bake_findings(frames, record, baked))
     # After the parts: a forward run that read them may have found one.
     found.extend(_diverged(session))

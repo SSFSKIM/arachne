@@ -32,7 +32,7 @@ from __future__ import annotations
 
 __all__ = ["SimBody", "bind", "body_quantities"]
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -86,43 +86,62 @@ def _sim_body(found: SimBody, held: Mapping[str, Any], at: At) -> Iterable[Quant
 
 
 def body_quantities(
-    bakes: Bakes | None, ordinal: int, body: int, tick: int
+    bakes: Bakes | None,
+    ordinal: int,
+    body: int,
+    tick: int,
+    names: Collection[str] | None = None,
 ) -> tuple[Quantity, ...]:
     """The quantities of the body ``body`` of the stay ``ordinal`` at
     ``tick``, read from ``bakes``: what the body's source answers, and what a
-    readout of it shows (:mod:`.readout`).
+    readout of it shows (:mod:`.readout`). With ``names``, only those, in
+    the source's order: the contact events are read only for a contact's
+    quantity.
     """
+    wanted = tuple(name for name in UNITS if names is None or name in names)
     row = None if bakes is None else bakes.row(ordinal, tick)
     if row is None:
         why = f"no bake holds tick {tick} of this body's stay"
         return tuple(
-            Quantity(name, None, unit, unreadable=why) for name, unit in UNITS.items()
+            Quantity(name, None, UNITS[name], unreadable=why) for name in wanted
         )
     assert bakes is not None
+    found: dict[str, Quantity] = {}
     pose, velocity = row["pose"][body], row["velocity"][body]
     planar = len(pose) == 3
-    position = (*pose[:2], 0.0) if planar else tuple(pose[:3])
-    linear = (*velocity[:2], 0.0) if planar else tuple(velocity[:3])
-    angular: float | tuple[float, ...] = (
-        float(velocity[2]) if planar else _floats(velocity[3:6])
-    )
-    first_tick = row.tick - row.index
-    began = _began(bakes, ordinal, body, row.index)
-    times = tuple(
-        float(Fraction(first_tick + int(index), TICK_RATE)) for index in began
-    )
-    return (
-        Quantity("sim.position", _floats(position), UNITS["sim.position"]),
-        Quantity("sim.velocity", _floats(linear), UNITS["sim.velocity"]),
-        Quantity("sim.angular_velocity", angular, UNITS["sim.angular_velocity"]),
-        Quantity(
+    if "sim.position" in wanted:
+        position = (*pose[:2], 0.0) if planar else tuple(pose[:3])
+        found["sim.position"] = Quantity(
+            "sim.position", _floats(position), UNITS["sim.position"]
+        )
+    if "sim.velocity" in wanted:
+        linear = (*velocity[:2], 0.0) if planar else tuple(velocity[:3])
+        found["sim.velocity"] = Quantity(
+            "sim.velocity", _floats(linear), UNITS["sim.velocity"]
+        )
+    if "sim.angular_velocity" in wanted:
+        angular: float | tuple[float, ...] = (
+            float(velocity[2]) if planar else _floats(velocity[3:6])
+        )
+        found["sim.angular_velocity"] = Quantity(
+            "sim.angular_velocity", angular, UNITS["sim.angular_velocity"]
+        )
+    if "sim.contact_times" in wanted or "sim.contact_count" in wanted:
+        first_tick = row.tick - row.index
+        began = _began(bakes, ordinal, body, row.index)
+        times = tuple(
+            float(Fraction(first_tick + int(index), TICK_RATE)) for index in began
+        )
+        found["sim.contact_times"] = Quantity(
             "sim.contact_times",
             times[-MAX_VECTOR:],
             UNITS["sim.contact_times"],
             tolerance=CONTACT_TOLERANCE,
-        ),
-        Quantity("sim.contact_count", len(times), UNITS["sim.contact_count"]),
-    )
+        )
+        found["sim.contact_count"] = Quantity(
+            "sim.contact_count", len(times), UNITS["sim.contact_count"]
+        )
+    return tuple(found[name] for name in wanted)
 
 
 def _began(bakes: Bakes, ordinal: int, body: int, index: int) -> np.ndarray:

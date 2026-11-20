@@ -28,18 +28,32 @@ Each is exact. ``annotation.count`` is the part of the body's quantity at
 from the baked numbers; the text shown is that value in the readout's
 format, so it lies within half a unit of the format's last digit of it.
 
-**The tick it shows.** A closed world is computed to the scene clock's tick
-by the readout's own updater, so its readout shows that tick wherever it
-stands among the scene's mobjects. An open world steps in its own updater:
-its readout shows the tick the world has stepped to, the scene's tick when
-the readout comes after the world in the scene's update order (added after
-it), the tick before when it comes before. Outside its world's stays (its
-world removed from the scene, or an animation of the readout holding its
-updating) it holds the last value it showed, and ``sim.reads_tick`` the
-tick that value is of: the last tick a frame read, which can be before the
-stay's last tick, where no frame read; before it has read any stay, ``sim.reads_body`` and
+**The tick it shows.** At each evaluation its updater shows the latest
+tick its world has computed no later than the scene clock's
+(:func:`.stay.clock_row`, the row the world places its bodies at). A
+closed world is computed to the clock's tick there, so its readout shows
+that tick wherever it stands among the scene's mobjects; at the instant
+the world enters, or at the evaluation that ends a play, that row may
+already exist and is shown. An open world steps in its own updater: its
+readout shows the tick the world has stepped to, the clock's when the
+readout comes after the world in the scene's update order (added after
+it), the tick before when it comes before.
+
+Outside its world's stays (the world removed from the scene) it holds the
+last value its updater set, which may come from a play's closing
+evaluation, and ``sim.reads_tick`` and ``sim.reads_body`` keep naming the
+row it is. Before it has read any stay, ``sim.reads_body`` and
 ``sim.reads_tick`` are unreadable (the lint reports
-``sim.quantity_unreadable``) and it shows 0.
+``sim.quantity_unreadable``) and it shows 0. An animation of the readout
+itself (``FadeIn``) holds its updating, so it shows an old tick while its
+body moves: the lint reports ``sim.readout_stale`` when that is more than
+a tick behind the scene while its world is in the scene.
+
+**Only the world sets it.** :meth:`BodyReadout.set_value`, and so
+:class:`~arachne.mobject.annotation.CountUp`, are refused, so the number
+shown is never one the declared row does not hold: a number chosen by hand
+is a plain :class:`~arachne.mobject.annotation.Readout`, set between plays
+from :meth:`.World.at_tick`.
 """
 
 from __future__ import annotations
@@ -57,10 +71,12 @@ from arachne.quantities import SOURCES, At, Quantity
 from arachne.timeline.bake import bakes_of
 
 from . import measures
-from .stay import live_stay
+from .stay import clock_row
 from .world import Body
 
 if TYPE_CHECKING:
+    from typing import Self
+
     from arachne.assets.anchor import Anchor
 
     from .world import World
@@ -132,29 +148,27 @@ def _shown_quantity(
 
 
 def show_quantity(readout: BodyReadout, dt: float) -> None:
-    """A body readout's updater: show the body's quantity at the tick its
-    world's stay is at (computing a closed world to the scene clock's tick,
-    as the world's own updater does), and declare which tick it is of.
-    Outside a stay it does nothing. It names ``dt``, as the world's updater
-    does, and never reads it: a ticked play runs it only where a frame
-    reads. It reads the scene clock and the record's bakes, and writes the
-    readout's own family.
+    """A body readout's updater: show the body's quantity at the row its
+    world shows at the scene clock's tick (:func:`.stay.clock_row`: a closed
+    world computed to the clock's tick, as the world's own updater does),
+    and declare which tick it is of. Outside a stay it does nothing. It
+    names ``dt``, as the world's updater does, and never reads it: a ticked
+    play runs it only where a frame reads. It reads the scene clock and the
+    record's bakes, and writes the readout's own family. A play drawn from
+    a sealed bake admits it only for a closed world, handing it the bake's
+    row through :func:`.stay.clock_row`.
     """
     shows = readout._shows
-    stay = live_stay(shows.world)
-    if stay is None:
+    found = clock_row(shows.world, stepping=False)
+    if found is None:
         return
-    tick = stay.now_tick()
-    if not stay.crate.open:
-        stay.compute_through(tick)
-    tick = min(tick, stay.computed_tick)
-    found = measures.body_quantities(
-        bakes_of(stay.record), stay.ordinal, shows.body, tick
+    stay, tick = found
+    (quantity,) = measures.body_quantities(
+        bakes_of(stay.record), stay.ordinal, shows.body, tick, (shows.quantity,)
     )
-    value = next(q.value for q in found if q.name == shows.quantity)
-    if value is None:
+    if quantity.value is None:
         return
-    readout.set_value(shows.scale * _part(value, shows.part))
+    readout._show(shows.scale * _part(quantity.value, shows.part))
     shown = ShownQuantity(
         shows.quantity, shows.part, shows.scale, shows.body, stay.ordinal, tick
     )
@@ -242,3 +256,19 @@ class BodyReadout(Readout):
         # this one sets.
         self.add_updater(show_quantity, index=0)  # type: ignore[arg-type]
         show_quantity(self, 0)
+
+    def set_value(self, value: float) -> Self:
+        """Refused: a body readout shows its body's quantity, set by its
+        world at every frame (a :class:`~arachne.mobject.annotation.CountUp`
+        of it is refused as it begins, for the same reason).
+        """
+        raise TypeError(
+            "A body readout shows its body's quantity, which its world sets at"
+            " every frame: it is not set by hand (set_value) or counted"
+            " (CountUp). To show a number of your own, use a Readout and set"
+            " it between plays, from world.at_tick(...)."
+        )
+
+    def _show(self, value: float) -> None:
+        """Show ``value``: its updater's own path to the readout's."""
+        Readout.set_value(self, value)

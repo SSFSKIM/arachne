@@ -152,5 +152,6 @@ def test_every_name_a_star_imported_subpackage_exports_is_in_the_star(module):
 
 def test_the_simulation_s_classes_are_in_the_star():
     star = _star()
-    for name in ("World", "WorldState", "Body", "BallShape", "Gravity"):
+    for name in ("World", "WorldState", "Body", "BodyReadout", "BallShape", "Gravity"):
         assert star[name] is getattr(arachne.simulation, name)
+    assert callable(star["World"].readout)
