@@ -318,6 +318,16 @@ CHECKED_READS: dict[str, str] = {
         "the digest fixed, or nothing is drawn. A clip's frames are not copied "
         "into the record, which would hold every frame's pixels."
     ),
+    "arachne.mobject.media.frames:checked_member": (
+        "A rig's raster member's picture, read afresh at every decode that is "
+        "not a cache hit (``reader.read_file`` through ``_decoded``), its form "
+        "checked, then the decoded pixels' frame digest compared with the "
+        "``digest`` it was given, each failure ``media.inexact`` with the rig's "
+        "line, and only then cached. The record holds the member's keyed "
+        "``_asset_digest``, ``_file`` and ``_digest``, which fix that file and "
+        "its pixels: the pixels drawn are the pixels the digest fixed, or "
+        "nothing is drawn."
+    ),
 }
 
 #: Functions whose reads are not drawing reads of the scene, by
@@ -1198,13 +1208,16 @@ def _checked_read(caller: types.FrameType | None, opened: Any) -> bool:
     """Whether a file opened while a frame is drawn is a reviewed read
     (:data:`CHECKED_READS`): opened within one of its functions, and either
     the descriptor that function's read opened or a path under the directory
-    of the asset it was given.
+    it was given (``directory``), else the directory of the asset it was
+    given (``asset``).
     """
     frame = caller
     while frame is not None:
         name = f"{frame.f_globals.get('__name__')}:{frame.f_code.co_qualname}"
         if name in CHECKED_READS:
-            directory = getattr(frame.f_locals.get("asset"), "directory", None)
+            directory = frame.f_locals.get(
+                "directory", getattr(frame.f_locals.get("asset"), "directory", None)
+            )
             if directory is None:
                 return False
             if isinstance(opened, int):

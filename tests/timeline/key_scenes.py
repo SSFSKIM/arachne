@@ -34,6 +34,21 @@ def _field(point: np.ndarray) -> np.ndarray:
     return np.array([-point[1], point[0], 0.0])
 
 
+def _raster_part() -> Mobject:
+    from arachne.assets import load_asset
+
+    asset = load_asset("fixture:hinged-flap")
+    part = asset.manifest.parts[0]
+    return RasterPart(
+        part.box,
+        asset_digest=asset.digest,
+        file=part.file,
+        digest=part.digest,
+        asset=asset.name,
+        directory=asset.directory,
+    ).scale(0.02)
+
+
 def _world() -> World:
     world = World(gravity=DOWN * 9.8)
     world.body(Circle(radius=0.25), velocity=RIGHT)
@@ -104,6 +119,7 @@ MADE_WITH_ARGUMENTS = {
         [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]],
         [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]],
     ),
+    "RasterPart": _raster_part,
     "RegularPolygram": lambda: RegularPolygram(5),
     "Rig": lambda: Rig("fixture:lidded-box"),
     "RightAngle": lambda: RightAngle(Line(ORIGIN, RIGHT), Line(ORIGIN, UP)),
