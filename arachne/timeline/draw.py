@@ -1035,11 +1035,15 @@ class LiveFrames:
         write: Callable[[PixelArray, int], None],
         *,
         static_layer: bool | None = None,
+        check: Callable[[], None] | None = None,
     ) -> None:
         if static_layer is None:
             from arachne import config
 
             static_layer = config.static_layer
+        #: Called with each capture recorded and before anything of it is
+        #: painted: the play's static capture, then each sample's.
+        self.check = check
         self.scene = scene
         self.camera: Camera = scene.renderer.camera
         self.fps = fps
@@ -1058,6 +1062,8 @@ class LiveFrames:
         self._open = True
         self._pending = None
         self._static = None
+        if self.check is not None:
+            self.check()
         if play.held and play.static and self.static_layer:
             from arachne.frame_ir.live import live
 
@@ -1081,6 +1087,8 @@ class LiveFrames:
         frames = frames_in(instant, min(until, upto), self.fps)
         if not frames:
             return
+        if self.check is not None:
+            self.check()
         scene = self.scene
         foreground = set(map(id, scene.foreground_mobjects))
         roots = [

@@ -27,12 +27,15 @@ import errno
 import os
 import shutil
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 
 class Staging:
-    """One render's staging directory, made beside ``near`` at the first
-    file staged.
+    """One render's staging directory, made at the first file staged, in
+    the directory that file is meant for: wherever the render's first file
+    goes is writable, whatever other directory its plan names (a still a
+    scene with no play falls back to never touches the video directory).
 
     Each directory a final file is meant for gets one directory of its own
     in staging, and a file keeps its name there, so a file written beside a
@@ -40,8 +43,7 @@ class Staging:
     and published beside it.
     """
 
-    def __init__(self, near: Path) -> None:
-        self._near = Path(near)
+    def __init__(self) -> None:
         self._root: Path | None = None
         #: Every directory a final file is meant for, with its directory in
         #: staging, in the order first staged.
@@ -57,7 +59,8 @@ class Staging:
         directory = final.parent
         staged = self._dirs.get(directory)
         if staged is None:
-            staged = self._dirs[directory] = self._root_dir() / str(len(self._dirs))
+            root = self._root_dir(directory)
+            staged = self._dirs[directory] = root / str(len(self._dirs))
             staged.mkdir()
         return staged / final.name
 
@@ -82,30 +85,35 @@ class Staging:
     #: Files wait here until published.
     waits = True
 
-    def publish(self, only: Path | None = None) -> list[Path]:
+    def publish(self, only: Iterable[Path] | None = None) -> list[Path]:
         """Move every staged file onto its final path, directory by
-        directory in the order they were first staged (only those meant for
-        the directory ``only``, when given), then remove the staging
-        directory: the final paths, in that order.
+        directory in the order they were first staged (only the final paths
+        ``only`` names, when given), then remove the staging directory and
+        what is left in it, whether or not every move succeeded: the final
+        paths moved, in that order.
         """
+        chosen = None if only is None else {Path(path) for path in only}
         published: list[Path] = []
-        for directory, staged in self._dirs.items():
-            if only is not None and directory != only:
-                continue
-            files = sorted(path for path in staged.iterdir() if path.is_file())
-            if not files:
-                continue
-            directory.mkdir(parents=True, exist_ok=True)
-            for path in files:
-                target = directory / path.name
-                _move(path, target)
-                published.append(target)
-        self._remove()
+        try:
+            for directory, staged in self._dirs.items():
+                files = sorted(path for path in staged.iterdir() if path.is_file())
+                if chosen is not None:
+                    files = [path for path in files if directory / path.name in chosen]
+                if not files:
+                    continue
+                directory.mkdir(parents=True, exist_ok=True)
+                for path in files:
+                    target = directory / path.name
+                    _move(path, target)
+                    published.append(target)
+        finally:
+            self.discard()
         return published
 
     def discard(self) -> None:
         """Remove the staging directory and everything in it, and the
-        directories made only to hold it: nothing outside staging changes.
+        directories made only to hold it (one a file was published into is
+        not empty, and stays): nothing outside staging changes.
         """
         self._remove()
         for directory in reversed(self._made):
@@ -115,16 +123,19 @@ class Staging:
                 break
         self._made.clear()
 
-    def _root_dir(self) -> Path:
+    def _root_dir(self, near: Path) -> Path:
+        """The staging directory, made in ``near`` (with the directories
+        it needs) if it is not made yet.
+        """
         if self._root is None:
             missing = []
-            for directory in (self._near, *self._near.parents):
+            for directory in (near, *near.parents):
                 if directory.exists():
                     break
                 missing.append(directory)
-            self._near.mkdir(parents=True, exist_ok=True)
+            near.mkdir(parents=True, exist_ok=True)
             self._made = list(reversed(missing))
-            self._root = Path(tempfile.mkdtemp(prefix=".staging-", dir=self._near))
+            self._root = Path(tempfile.mkdtemp(prefix=".staging-", dir=near))
         return self._root
 
     def _remove(self) -> None:
@@ -153,7 +164,7 @@ class InPlace:
     def staged(self, final: Path) -> Path | None:
         return Path(final)
 
-    def publish(self, only: Path | None = None) -> list[Path]:
+    def publish(self, only: Iterable[Path] | None = None) -> list[Path]:
         return []
 
     def discard(self) -> None:
@@ -161,12 +172,24 @@ class InPlace:
 
 
 def _move(source: Path, target: Path) -> None:
-    """Move ``source`` onto ``target``: a rename where both are on one
-    filesystem, which a reader of ``target`` sees whole or not at all.
+    """Move ``source`` onto ``target`` so that a reader of ``target`` sees
+    the old file or the new one whole, never part of it: a rename where
+    both are on one filesystem; across two, a copy into a sibling of
+    ``target`` renamed onto it.
     """
     try:
         os.replace(source, target)
+        return
     except OSError as error:
         if error.errno != errno.EXDEV:
             raise
-        shutil.move(source, target)
+    handle, name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    os.close(handle)
+    sibling = Path(name)
+    try:
+        shutil.copy2(source, sibling)
+        os.replace(sibling, target)
+    except BaseException:
+        sibling.unlink(missing_ok=True)
+        raise
+    source.unlink()

@@ -165,6 +165,11 @@ class _PartialMovieEncodeJob:
         self._abort_requested = True
         self.seal()
 
+    @property
+    def aborted(self) -> bool:
+        """Whether the segment was to be discarded."""
+        return self._abort_requested
+
     def join(self) -> None:
         """Wait for encoding to finish and propagate worker failures."""
         self.thread.join()
@@ -264,6 +269,11 @@ class SceneFileWriter:
         self._inflight_encode_jobs: list[_PartialMovieEncodeJob] = []
         self._inflight_by_path: dict[str, _PartialMovieEncodeJob] = {}
         self._current_encode_job: _PartialMovieEncodeJob | None = None
+        #: Where each segment being encoded is meant to go, by the path it
+        #: is encoded to; and the segments whose encodes completed, which a
+        #: render that raised keeps (:meth:`discard`).
+        self._segment_finals: dict[str, Path] = {}
+        self._completed_segments: list[Path] = []
         self.init_audio()
         self.frame_count = 0
         self.partial_movie_files: list[str | None] = []
@@ -578,10 +588,10 @@ class SceneFileWriter:
 
     def stage(self) -> None:
         """Hold every file written from now on in a staging directory of
-        this render's (:class:`~.staging.Staging`), beside its primary
-        artifact, until :meth:`publish` or :meth:`discard`.
+        this render's (:class:`~.staging.Staging`), until :meth:`publish` or
+        :meth:`discard`.
         """
-        self.staging = Staging(_staging_near(self.output_plan))
+        self.staging = Staging()
 
     def publish(self) -> None:
         """Move every file the render wrote into place: the render has
@@ -611,9 +621,13 @@ class SceneFileWriter:
         try:
             self.abort_encode_jobs()
         finally:
-            if keep_segments and self.output_spec.is_video:
-                self.staging.publish(only=self.partial_movie_directory)
-            self.staging.discard()
+            try:
+                if keep_segments and self.output_spec.is_video:
+                    # Only segments whose encodes completed: no concat
+                    # manifest, no movie, nothing half written.
+                    self.staging.publish(only=self._completed_segments)
+            finally:
+                self.staging.discard()
 
     def _create_segment_encoder(self, target: Path) -> VideoSegmentEncoder:
         encoder = self.video_encoder
@@ -639,8 +653,10 @@ class SceneFileWriter:
                     "open_partial_movie_stream() called for a play that has no "
                     "partial movie file path.",
                 )
-        file_path = self.staging.path(Path(file_path))
+        final = Path(file_path)
+        file_path = self.staging.path(final)
         path_key = str(file_path)
+        self._segment_finals[path_key] = final
         if path_key in self._inflight_by_path:
             self._join_job_and_drain_on_failure(self._inflight_by_path[path_key])
         segment_encoder = self._create_segment_encoder(file_path)
@@ -656,6 +672,10 @@ class SceneFileWriter:
             self._inflight_encode_jobs.remove(job)
         self._inflight_by_path.pop(str(job.path), None)
         job.join()
+        if not job.aborted:
+            final = self._segment_finals.get(str(job.path))
+            if final is not None:
+                self._completed_segments.append(final)
 
     def _join_job_and_drain_on_failure(
         self,
@@ -1056,13 +1076,3 @@ class SceneFileWriter:
         """Record and report a completed primary artifact."""
         self.final_file_path = Path(file_path)
         logger.info("\nFile ready at %(file_path)s\n", {"file_path": f"'{file_path}'"})
-
-
-def _staging_near(plan: OutputPlan) -> Path:
-    """The directory a render's staging directory is made in: beside its
-    primary artifact, so that publishing it is a rename.
-    """
-    for path in (plan.primary_artifact, plan.segment_cache_dir):
-        if path is not None:
-            return path.parent
-    return Path.cwd()

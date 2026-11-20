@@ -223,7 +223,11 @@ class CairoRenderer:
                     )
                 self.file_writer.write_frame(pixels, repeat=repeat)
 
-            live = LiveFrames(scene, fps, write)
+            def check() -> None:
+                # Each capture of the play, before anything of it is painted.
+                check_render(timeline.ensure_record(), self._live)
+
+            live = LiveFrames(scene, fps, write, check=check)
         play = timeline.play(skipped=skipped, cache_key=cache_key, live=live)
         if timeline.draws:
             check_render(timeline.ensure_record(), self._live)
@@ -420,12 +424,19 @@ class CairoRenderer:
             self.skip_animations = True
             raise EndSceneEarlyException()
 
-    def scene_finished(self, scene: Scene) -> None:
+    def check_finished(self, scene: Scene) -> None:
+        """Refuse a render of a scene holding a GPU-only capability in any
+        capture, its final one included (:func:`.compose.guard.check_render`):
+        asked as the scene's script ends, before anything else of its end.
+        """
         timeline = scene._arachne_timeline
         if timeline.draws and timeline.record is not None:
-            # The scene as its script left it, before its last frame is
-            # drawn and anything is assembled.
             check_render(timeline.record, self._live)
+
+    def scene_finished(self, scene: Scene) -> None:
+        # The scene as its script left it, before its last frame is drawn
+        # and anything is assembled.
+        self.check_finished(scene)
         output = self.file_writer.output_spec
         record = scene._arachne_timeline.record
         if record is not None and scene._arachne_timeline.draws:

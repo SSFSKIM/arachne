@@ -174,15 +174,16 @@ class Manager(Generic[SceneT]):
         self.file_writer.stage()
         try:
             self._render_staged()
-        except Refusal:
+        except BaseException as error:
             # A refused render leaves nothing: every file it wrote waits in
-            # staging, which goes with it.
-            self.file_writer.discard()
-            raise
-        except BaseException:
-            # A render that raised keeps the plays it drew in the cache, as
-            # a render always has, and publishes nothing else.
-            self.file_writer.discard(keep_segments=True)
+            # staging, which goes with it. A render that raised otherwise
+            # keeps the plays it finished drawing in the cache, as a render
+            # always has, and publishes nothing else. Either way the error
+            # raised is the render's own.
+            try:
+                self.file_writer.discard(keep_segments=not isinstance(error, Refusal))
+            except Exception:
+                logger.exception("Cleaning up after %s failed", type(error).__name__)
             raise
         self.file_writer.publish()
 
@@ -289,6 +290,8 @@ class Manager(Generic[SceneT]):
         and logs the number of played animations. It intentionally runs after
         :meth:`tear_down` to preserve the established render lifecycle.
         """
+        # A scene the render refuses is refused before its output is judged.
+        self.renderer.check_finished(self.scene)
         output = self.output_spec
         empty_video_output = self.num_plays == 0 and output.is_video
         if empty_video_output and not output.fallback_to_still:
