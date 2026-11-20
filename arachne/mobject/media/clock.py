@@ -40,11 +40,16 @@ The driver is a scene driver of stepped timing (:mod:`arachne.assets.timing`,
 "Scene drivers"): in a scene that declares timing, before or after its
 first running clock, the scene's timing clock takes the driver's updater
 over and calls the driver at the start of each of its instants, before it
-holds the declared illustrations. So the clock sees the frame each program
-names as the true state, and a media object declared with stepped timing
-shows a new frame only at its drawing boundaries, while its program time
-(``media.time``) runs on. Importing this module registers the driver's
-finder with the timing layer; it reads no asset and builds no object.
+holds the declared illustrations, which then read what the driver wrote as
+a write made since the clock last installed its state. A media object
+declared with stepped timing thus shows a new frame only at its drawing
+boundaries, while its program time (``media.time``) runs on. Known limit:
+the hold reads a write as no write when the value written is, by object
+identity, the one it holds on display (a frame index equal to the frame
+shown, which Python keeps as one object), so such a boundary can show the
+frame before the one its instant names. Importing this module registers
+the driver's finder with the timing layer; it reads no asset and builds no
+object.
 """
 
 from __future__ import annotations

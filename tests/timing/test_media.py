@@ -20,6 +20,7 @@ import pytest
 from arachne import RasterPart, Rig, Sprite, Timing, VideoMobject, timing_of
 from arachne.assets import timing
 from arachne.mobject.media import media_driver
+from arachne.server.dispatch import Dispatcher
 from arachne.session import Session
 from arachne.timeline import admission
 
@@ -229,6 +230,33 @@ def test_a_clip_is_declared_without_a_refusal_and_held_on_its_grid(opened):
         ), t
 
 
+def test_at_the_server_a_declared_clip_reports_its_time_running_on(tmp_path):
+    # Between two drawing boundaries, state_at answers for the instant
+    # asked: the program's time there, and the frame of the last boundary.
+    server = Dispatcher()
+    config = {**SMALL, "frame_rate": 60, "media_dir": str(tmp_path / "media")}
+    server.handle(
+        "open", {"file": str(SCENES), "scene": "DeclaredClip", "config": config}
+    )
+    try:
+        state = server.handle("state_at", {"t": 0.25})["state"]
+    finally:
+        server.handle("close", {})
+    as_of = Fraction(state["as_of_exact"])
+    assert as_of == Fraction(1, 4)
+    (node,) = [n for n in state["nodes"] if n["kind"] == "VideoMobject"]
+    numbers = {q["name"]: q["value"] for q in state["quantities"][node["id"]]}
+    held = _boundary(as_of, HALF)
+    assert held == Fraction(1, 6)
+    assert numbers == {
+        "media.time": float(as_of),
+        "media.frame": _frame_of(held, CLIP),
+        "timing.rate": HALF,
+    }
+    # The two disagree by the frame formula: 4 on display, 6 named.
+    assert (_frame_of(held, CLIP), _frame_of(as_of, CLIP)) == (4, 6)
+
+
 def test_timing_of_reads_the_mark_of_an_installed_capture(opened):
     session = opened("DeclaredClip")
     clip = _of(session, VideoMobject)
@@ -259,3 +287,10 @@ def test_a_rig_of_stills_declared_with_timing_is_posed_only_on_its_grid(opened):
             )
         lifted += expected > 0
     assert lifted
+    # The flap's picture turns with the pose: it stands somewhere new at
+    # every boundary of the play, and only there.
+    (flap,) = [m for m in rig.part("flap").get_family() if isinstance(m, RasterPart)]
+    boundaries = [Fraction(k, HALF) for k in range(HALF + 1)]
+    places = [np.asarray(_held(session, flap, b).get("_points")) for b in boundaries]
+    for b, before, after in zip(boundaries[1:], places, places[1:], strict=False):
+        assert np.abs(after - before).max() > 1e-3, b
