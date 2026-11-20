@@ -9,13 +9,14 @@ from ..mobject.mobject import _AnimationBuilder
 __all__ = ["Scene"]
 
 import copy
+import functools
 import inspect
 import platform
 import random
 from collections.abc import Callable, Iterable, Sequence
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import numpy as np
 from tqdm import tqdm
@@ -60,6 +61,49 @@ class _Timeline:
         if scene is None:
             return self
         return scene._arachne_timeline
+
+
+class _Membership:
+    """What the scene last told the mobjects that take its membership notice
+    (``_scene_membership``): which of them were in the family of its
+    mobjects, and at which instant it looked.
+    """
+
+    __slots__ = ("depth", "present", "seen_at")
+
+    def __init__(self) -> None:
+        self.present: dict[int, Mobject] = {}
+        self.seen_at: Fraction | None = None
+        #: How many of the scene's list-changing methods are running.
+        self.depth = 0
+
+
+_Method = TypeVar("_Method", bound=Callable[..., Any])
+
+
+def _changes_membership(method: _Method) -> _Method:
+    """``method``, a Scene method that changes the scene's mobject lists,
+    telling the mobjects that take the scene's membership notice what changed
+    (:meth:`Scene._membership_changed`): first what changed since the scene
+    last looked, by any other path, then what the method changed. A method
+    called inside another tells nothing of its own; the outermost tells once.
+    """
+
+    @functools.wraps(method)
+    def changing(self: Scene, *args: Any, **kwargs: Any) -> Any:
+        membership = self._membership
+        if membership.depth:
+            return method(self, *args, **kwargs)
+        self._membership_changed()
+        membership.depth += 1
+        try:
+            result = method(self, *args, **kwargs)
+        finally:
+            membership.depth -= 1
+        self._membership_changed(reported=True)
+        return result
+
+    return cast(_Method, changing)
 
 
 class Scene:
@@ -195,6 +239,7 @@ class Scene:
         self.mobjects: list[Mobject] = []
         # TODO, remove need for foreground mobjects
         self.foreground_mobjects: list[Mobject] = []
+        self._membership = _Membership()
         # Records the scene's run, keeping the instants of its frame grid;
         # read as :attr:`timeline`. The engine reads it under this name only:
         # a scene's code may take ``timeline`` for itself.
@@ -221,6 +266,38 @@ class Scene:
         return self._arachne_timeline.record
 
     timeline = _Timeline()
+
+    def _membership_changed(self, *, reported: bool = False) -> None:
+        """Tell each mobject that takes the scene's membership notice, one
+        whose class has a ``_scene_membership(scene, present, at)`` method,
+        that it entered (``present`` true) or left the family of the scene's
+        mobjects and foreground mobjects since the scene last looked: at the
+        scene's instant ``at``, or ``None`` when scene time passed since the
+        scene last looked and the change was not ``reported`` by the method
+        that made it, so its instant is not known. Every Scene method that
+        changes the lists calls it after the change (:func:`_changes_membership`),
+        and each play before and after it runs; the engine's own restores
+        of the lists call nothing. Mobjects that do not take the notice are
+        never called, and nothing else changes.
+        """
+        membership = self._membership
+        now = self.time
+        present: dict[int, Mobject] = {}
+        for top in (*self.mobjects, *self.foreground_mobjects):
+            for member in top.get_family():
+                if getattr(type(member), "_scene_membership", None) is not None:
+                    present.setdefault(id(member), member)
+        before = membership.present
+        known = reported or membership.seen_at in (None, now)
+        membership.present = present
+        membership.seen_at = now
+        at = now if known else None
+        for key, member in before.items():
+            if key not in present:
+                member._scene_membership(self, False, at)
+        for key, member in present.items():
+            if key not in before:
+                member._scene_membership(self, True, at)
 
     def __deepcopy__(self, clone_from_id: dict[int, Any]) -> Scene:
         cls = self.__class__
@@ -457,6 +534,7 @@ class Scene:
             use_z_index=self.renderer.camera.use_z_index,
         )
 
+    @_changes_membership
     def add(self, *mobjects: Mobject) -> Self:
         """
         Mobjects will be displayed, from background to
@@ -499,6 +577,7 @@ class Scene:
                 self.add(mob)
                 curr_mobjects += mob.get_family()
 
+    @_changes_membership
     def remove(self, *mobjects: Mobject) -> Self:
         """
         Removes mobjects in the passed list of mobjects
@@ -515,6 +594,7 @@ class Scene:
                 self.restructure_mobjects(mobjects, list_name, False)
         return self
 
+    @_changes_membership
     def replace(self, old_mobject: Mobject, new_mobject: Mobject) -> None:
         """Replace one mobject in the scene with another, preserving draw order.
 
@@ -621,6 +701,7 @@ class Scene:
         """
         self.updaters = [f for f in self.updaters if f is not func]
 
+    @_changes_membership
     def restructure_mobjects(
         self,
         to_remove: Sequence[Mobject],
@@ -703,6 +784,7 @@ class Scene:
         return new_mobjects
 
     # TODO, remove this, and calls to this
+    @_changes_membership
     def add_foreground_mobjects(self, *mobjects: Mobject) -> Scene:
         """
         Adds mobjects to the foreground, and internally to the list
@@ -739,6 +821,7 @@ class Scene:
         """
         return self.add_foreground_mobjects(mobject)
 
+    @_changes_membership
     def remove_foreground_mobjects(self, *to_remove: Mobject) -> Scene:
         """
         Removes mobjects from the foreground, and internally from the list
@@ -793,6 +876,7 @@ class Scene:
         self.add(*mobjects)
         return self
 
+    @_changes_membership
     def bring_to_back(self, *mobjects: Mobject) -> Scene:
         """
         Removes the mobject from the scene and
@@ -813,6 +897,7 @@ class Scene:
         self.mobjects = list(mobjects) + self.mobjects
         return self
 
+    @_changes_membership
     def clear(self) -> Self:
         """
         Removes all mobjects present in self.mobjects
@@ -1123,6 +1208,7 @@ class Scene:
             All other keywords are passed to the renderer.
 
         """
+        self._membership_changed()
         self._get_manager().play(
             *args,
             subcaption=subcaption,
@@ -1130,6 +1216,7 @@ class Scene:
             subcaption_offset=subcaption_offset,
             **kwargs,
         )
+        self._membership_changed()
 
     def wait(
         self,
