@@ -721,7 +721,7 @@ class _Reader:
                 )
         return Media(pixels=(width, height), alpha=alpha, rate=rate, frames=frames)
 
-    def rate(self, entry: dict[str, Any], kind: str) -> Fraction | None:
+    def rate(self, entry: Mapping[str, Any], kind: str) -> Fraction | None:
         """A clip's or a sprite's frames a second, ``[numerator,
         denominator]``, from the ``media`` member ``entry``; a still has
         none, so it writes no ``rate`` at all (not even ``null``).
