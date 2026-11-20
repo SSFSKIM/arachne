@@ -175,6 +175,13 @@ def _axis_scale(factor: Any) -> np.ndarray | None:
 
 _UNSET: Any = object()
 
+#: What :meth:`Mobject.update` calls, with the mobject and ``dt``, on a
+#: mobject whose updating is suspended, before it returns: a member that
+#: keeps time while an ancestor's updating is held (an open simulation
+#: world) is stepped through it. Empty until something in the process needs
+#: it; a list, not a class attribute, so no engine class changes.
+_suspended_steppers: list[Callable[[Mobject, float], None]] = []
+
 
 def _offset_about(point: np.ndarray, linear: np.ndarray) -> np.ndarray | None:
     """The offset that makes ``points @ linear`` a map about ``point``, or
@@ -1283,6 +1290,9 @@ class Mobject:
 
         """
         if self.updating_suspended:
+            if recursive:
+                for stepper in _suspended_steppers:
+                    stepper(self, dt)
             return self
         steps = Mobject._tick_steps
         for updater in self.updaters:

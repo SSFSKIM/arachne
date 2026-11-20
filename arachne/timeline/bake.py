@@ -24,6 +24,14 @@ its occurrences by ordinal. A producer reserves an ordinal as a stay begins
 (:meth:`Bakes.seal`), when it is dropped. A read by tick (:meth:`Bakes.row`)
 or by instant (:meth:`Bakes.at`, the last tick at or before it) answers a
 sealed occurrence's row, or ``None`` outside its stay.
+
+What computes a stay may also answer for it before it is sealed: its
+``row(tick)``, when it has one, answers :meth:`Bakes.row` for the rows it has
+computed (a lint's forward run reads them while the script runs), and its
+``settle()``, when it has one, is called before every read of the bakes, so
+a stay still open when the script has ended seals itself then. What a
+producer keeps from one stay to the next (:attr:`Bakes.held`) is owned by
+the record the same way, and settled after the stays.
 """
 
 from __future__ import annotations
@@ -436,15 +444,29 @@ class Bakes:
         #: What computes each stay not yet sealed, by ordinal.
         self._live: dict[int, Any] = {}
         self._next = 0
+        #: What a producer keeps through the run for an object of the scene
+        #: from one stay to its next (a solver's world), by that object; each
+        #: value's ``settle()``, when it has one, is called after the open
+        #: stays' on every read, and lets go of what the run no longer needs.
+        self.held: dict[Any, Any] = {}
+
+    def _settle(self) -> None:
+        """Let each open stay seal itself if what computes it is done."""
+        for live in (*self._live.values(), *self.held.values()):
+            settle = getattr(live, "settle", None)
+            if settle is not None:
+                settle()
 
     @property
     def contents(self) -> Mapping[bytes, BakeContent]:
         """Every content an occurrence uses, by key."""
+        self._settle()
         return MappingProxyType(self._contents)
 
     @property
     def occurrences(self) -> tuple[Occurrence, ...]:
         """The sealed occurrences, by ordinal."""
+        self._settle()
         return tuple(self._occurrences[n] for n in sorted(self._occurrences))
 
     def begin(self, live: Any = None) -> int:
@@ -505,20 +527,26 @@ class Bakes:
 
     def occurrence(self, ordinal: int) -> Occurrence | None:
         """The sealed occurrence ``ordinal``, or ``None``."""
+        self._settle()
         return self._occurrences.get(ordinal)
 
     def content_of(self, ordinal: int) -> BakeContent | None:
         """The content of the sealed occurrence ``ordinal``, or ``None``."""
+        self._settle()
         occurrence = self._occurrences.get(ordinal)
         return None if occurrence is None else self._contents[occurrence.content]
 
     def row(self, ordinal: int, tick: int) -> Row | None:
-        """The sealed occurrence ``ordinal``'s row at ``tick``, or ``None``
-        outside its stay (or for an ordinal not sealed).
+        """The occurrence ``ordinal``'s row at ``tick``, or ``None`` outside
+        its stay; for a stay not sealed, the row what computes it answers
+        (``None`` when it answers none).
         """
+        self._settle()
         occurrence = self._occurrences.get(ordinal)
         if occurrence is None:
-            return None
+            live = self._live.get(ordinal)
+            reading = getattr(live, "row", None)
+            return None if reading is None else reading(tick)
         index = occurrence.index(tick)
         if index is None:
             return None
