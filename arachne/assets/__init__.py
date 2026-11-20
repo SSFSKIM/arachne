@@ -3,7 +3,8 @@
 An asset is a directory holding ``manifest.json`` (:mod:`.manifest`) and the
 files it names. :func:`load_asset` reads one whole, or refuses it with a
 finding whose code says why (:mod:`.reader`); :class:`Rig` puts its parts
-in a scene as named vector objects (:mod:`.rig`), moved through the
+in a scene as named vector objects (:mod:`.rig`; a part that is a still,
+as the quad its picture is drawn at, :mod:`.raster`), moved through the
 parameters its maker tested (:mod:`.pose`, :mod:`.motion`), with anchors
 that follow points of its parts (:mod:`.anchor`). An asset loads only once
 admitted by its geometry (:func:`admit`, :mod:`.admission`, and from a
@@ -24,6 +25,7 @@ __all__ = [
     "Boil",
     "MorphParts",
     "Pose",
+    "RasterPart",
     "Rig",
     "Timing",
     "admit",
@@ -35,6 +37,7 @@ __all__ = [
 from .admission import AdmissionReport, admit
 from .anchor import Anchor
 from .motion import MorphParts, Pose
+from .raster import RasterPart
 from .reader import Asset, load_asset
 from .rig import Rig
 from .timing import Boil, Timing, set_timing, timing_of

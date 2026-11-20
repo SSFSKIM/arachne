@@ -34,7 +34,7 @@ SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15}
 
 if importlib.util.find_spec("arachne_gpu") is None:
     # These draw on a device: the launch mode's.
-    collect_ignore = ["test_drawn.py", "test_clock_drawn.py"]
+    collect_ignore = ["test_drawn.py", "test_clock_drawn.py", "test_raster_drawn.py"]
 
 
 def pytest_configure(config):

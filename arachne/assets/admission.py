@@ -28,6 +28,13 @@ absence of paint, never its opacity. Three checks are run over them:
 - ``anchor_off_part``: an anchor whose point lies outside its part's mask
   grown by :data:`REACH` pixels, at any pose, the default included.
 
+A rig with raster members (its manifest requires ``raster``) is drawn and
+checked as any rig, a raster member's mask drawn from its still's pixels:
+every pixel the still's alpha covers at all, placed at its quad's corners
+by the same camera, on the CPU. A rig with none draws exactly as before.
+Such a rig also holds ``frames_exact`` over its raster files (below), each
+file decoded twice to the frame digest its member lists.
+
 A media asset (a still, a clip or a sprite) is admitted by its frames, not
 its geometry, with two checks:
 
@@ -84,9 +91,10 @@ import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
+from PIL.Image import Resampling
 
 from ..camera.camera import Camera
 from ..constants import LineJointType
@@ -95,7 +103,7 @@ from ..utils.color import BLACK, WHITE
 from .anchor import attachments
 from .joins import ENGINE_LIMIT
 from .manifest import MANIFEST, MEDIA_KINDS, Media, PartSpec, normalised, read_json
-from .reader import TOOL, Asset, checks_for, read_asset, read_file
+from .reader import CHECKS, TOOL, Asset, checks_for, raster_files, read_asset, read_file
 from .rig import Rig, unadmitted_rig
 
 #: The longer side of every mask, in pixels.
@@ -220,9 +228,31 @@ def admit(asset: Asset | str | os.PathLike[str]) -> AdmissionReport:
         return AdmissionReport(
             manifest.name, manifest.version, manifest.kind, asset.digest, results
         )
+    coverage: dict[str, np.ndarray] = {}
+    if "raster" in manifest.requires:
+        coverage, broken = _raster_coverage(asset)
+        if broken:
+            # A still that does not decode has no shape: no mask is drawn and
+            # no geometry measured, and frames_exact names it.
+            file, why = broken[0]
+            unmeasured = tuple(
+                CheckResult(
+                    name,
+                    False,
+                    math.nan,
+                    None,
+                    f"not measured: {why}, so no mask of {file} is drawn",
+                )
+                for name in CHECKS
+            )
+            results = (*unmeasured, _raster_exact(asset))
+            assert tuple(result.name for result in results) == checks_for(manifest)
+            return AdmissionReport(
+                manifest.name, manifest.version, manifest.kind, asset.digest, results
+            )
     rig = unadmitted_rig(asset)
     poses = list(_poses(rig))
-    grid = _Grid(rig, poses)
+    grid = _Grid(rig, poses, coverage)
     default = grid.masks(rig, poses[0])
     checks = (_Holes(default), _Detached(rig, default), _Anchors(rig, grid))
     for pose in poses:
@@ -230,6 +260,8 @@ def admit(asset: Asset | str | os.PathLike[str]) -> AdmissionReport:
         for check in checks:
             check.see(pose, masks)
     results = tuple(check.result() for check in checks)
+    if "raster" in manifest.requires:
+        results += (_raster_exact(asset),)
     assert tuple(result.name for result in results) == checks_for(manifest)
     return AdmissionReport(
         manifest.name, manifest.version, manifest.kind, asset.digest, results
@@ -334,7 +366,15 @@ class _Grid:
     into :data:`MASK_SIZE` pixels on its longer side.
     """
 
-    def __init__(self, rig: Rig, poses: Sequence[_Pose]) -> None:
+    def __init__(
+        self,
+        rig: Rig,
+        poses: Sequence[_Pose],
+        coverage: Mapping[str, np.ndarray] | None = None,
+    ) -> None:
+        #: Each raster file's mask picture (:func:`_raster_coverage`), by
+        #: its normalised path, decoded once for every pose.
+        self.coverage = coverage or {}
         low, high = np.full(2, math.inf), np.full(2, -math.inf)
         for pose in poses:
             shapes = _drawn(_posed(rig, pose))
@@ -360,10 +400,27 @@ class _Grid:
         )
 
     def draw(self, shapes: Sequence[VMobject]) -> np.ndarray:
-        """The pixels ``shapes`` paint, all opaque, drawn by the camera."""
+        """The pixels ``shapes`` paint, all opaque, drawn by the camera: a
+        raster member's, every pixel its still's alpha covers at all.
+        """
+        from .raster import RasterPart
+
         camera = self.camera
         camera.reset()
-        camera.capture_mobjects([_opaque(shape) for shape in shapes])
+        stills = [shape for shape in shapes if isinstance(shape, RasterPart)]
+        if not stills:
+            camera.capture_mobjects([_opaque(shape) for shape in shapes])
+            return np.array(camera.pixel_array[:, :, 3] > 0)
+        camera.capture_mobjects(
+            [_opaque(shape) for shape in shapes if not isinstance(shape, RasterPart)]
+        )
+        for still in stills:
+            corners = still.corners()
+            if corners is not None:
+                camera.display_image_mobject(
+                    _Covered(corners, self.coverage[normalised(still.file)]),  # type: ignore[arg-type]
+                    camera.pixel_array,
+                )
         return np.array(camera.pixel_array[:, :, 3] > 0)
 
     def masks(self, rig: Rig, pose: _Pose) -> _Masks:
@@ -400,6 +457,52 @@ def _opaque(shape: VMobject) -> VMobject:
     copy.set_stroke(WHITE, opacity=1.0 if stroke else 0.0)
     copy.set_stroke(WHITE, width=0, background=True)
     return copy
+
+
+@dataclass(frozen=True, eq=False)
+class _Covered:
+    """A raster member's mask as the camera's image painter reads an image:
+    opaque white wherever the still's alpha is above 0, at ``points`` (its
+    corners in CE's image order), resampled bilinearly, so that a pixel the
+    still touches at all is covered.
+    """
+
+    points: np.ndarray
+    pixels: np.ndarray
+    resampling_algorithm: ClassVar[int] = Resampling.BILINEAR
+
+    def get_pixel_array(self) -> np.ndarray:
+        return self.pixels
+
+
+def _raster_coverage(
+    asset: Asset,
+) -> tuple[dict[str, np.ndarray], list[tuple[str, str]]]:
+    """Each raster file of ``asset``, a rig, as its mask picture: opaque
+    white where its alpha is above 0, transparent elsewhere, by its
+    normalised path; decoded once, as it is, so that a frame unlike its
+    digest (which ``frames_exact`` finds) still has a shape. And each file
+    in no admitted form, or that does not decode, with what is wrong.
+    """
+    from ..mobject.media.frames import EXPECTED_FORM, decode, form_of
+
+    coverage: dict[str, np.ndarray] = {}
+    broken: list[tuple[str, str]] = []
+    for file in raster_files(asset.manifest):
+        data = read_file(asset.directory, file, asset.name)
+        found = form_of(data)
+        if isinstance(found, str):
+            broken.append((file, f"{file} is {found}, and not {EXPECTED_FORM}"))
+            continue
+        try:
+            alpha = decode(data)[:, :, 3] > 0
+        except ValueError as error:
+            broken.append((file, f"{file} is {error}"))
+            continue
+        mask = np.zeros((*alpha.shape, 4), dtype=np.uint8)
+        mask[alpha] = 255
+        coverage[file] = mask
+    return coverage, broken
 
 
 # The checks
@@ -642,6 +745,54 @@ def _frame_checks(asset: Asset, media: Media) -> tuple[CheckResult, ...]:
         _frames_result("frames_exact", inexact, len(media.frames)),
         _frames_result("frames_uniform", unlike, len(media.frames)),
     )
+
+
+def _raster_exact(asset: Asset) -> CheckResult:
+    """``frames_exact`` over the raster files of ``asset``, a rig: each in
+    an admitted form, decoding twice to the frame digest its member lists.
+    A check's ``worst`` is how many files fail it.
+    """
+    listed: dict[tuple[str, str], None] = {}
+    for part in asset.manifest.parts:
+        if part.box is not None and part.digest is not None:
+            listed[(part.file, part.digest)] = None
+    for slot in asset.manifest.slots:
+        for drawing in slot.drawings:
+            if drawing.box is not None and drawing.digest is not None:
+                listed[(drawing.file, drawing.digest)] = None
+    return _frames_result(
+        "frames_exact",
+        [
+            found
+            for file, digest in listed
+            if (found := _inexact_file(asset, file, digest)) is not None
+        ],
+        len(listed),
+    )
+
+
+def _inexact_file(asset: Asset, file: str, digest: str) -> tuple[str, str] | None:
+    """What is wrong with the frame file ``file`` of ``asset``, listed with
+    the frame digest ``digest``, as ``frames_exact`` finds it; ``None`` for
+    a file in an admitted form decoding twice to ``digest``.
+    """
+    from ..mobject.media.frames import EXPECTED_FORM, decode, form_of, frame_digest
+
+    data = read_file(asset.directory, normalised(file), asset.name)
+    found = form_of(data)
+    if isinstance(found, str):
+        return (file, f"{file} is {found}, and not {EXPECTED_FORM}")
+    try:
+        digests = {frame_digest(decode(data)), frame_digest(decode(data))}
+    except ValueError as error:
+        return (file, f"{file} is {error}")
+    if digests != {digest}:
+        return (
+            file,
+            f"{file} decodes to {' and '.join(sorted(digests))}, and its listed"
+            f" digest is {digest}",
+        )
+    return None
 
 
 def _frames_result(

@@ -43,6 +43,9 @@ __all__ = [
     "home_box",
     "member_box",
     "member_place",
+    "picture_corners",
+    "picture_place",
+    "picture_shows",
     "pixel_box",
     "pixel_points",
     "point_thickness",
@@ -746,12 +749,89 @@ def _image_painted(camera: Camera, view: View, member: Mobject) -> bool:
     (``Camera.display_image_mobject``), and a raster whose every pixel is
     fully transparent paints nothing (its opacity is in its alpha).
     """
-    raster = getattr(member, "pixel_array", None)
-    if raster is not None:
-        raster = np.asarray(raster)
-        if raster.ndim == 3 and raster.shape[-1] == 4 and not raster[..., 3].any():
-            return False
-    shown = _pre_display(camera, member, member.points)
+    return _quad_painted(camera, view, member, member.points)
+
+
+def picture_shows(member: Mobject) -> bool:
+    """Whether a pixel of the picture ``member`` draws shows: not every
+    pixel of it fully transparent, its source alpha read in scene space. An
+    image's picture is its ``pixel_array`` (its opacity is in its alpha); a
+    path whose fill is a picture (``fill_is_picture``) draws its picture at
+    its fill opacity (``member.pixels()``). A picture whose pixels the
+    engine refuses to read, or with no pixels to read, is taken to show,
+    standing where it would be drawn: its refusal is a frame's.
+
+    The one reading of a picture's presence the lint's parts and ``apart``
+    share. ``apart`` asks only this, with no cutoff by size; the parts also
+    leave out a picture drawn under half a pixel high (:func:`_quad_painted`).
+    """
+    from arachne.lint.raised import RaisedFinding
+
+    try:
+        if getattr(member, "fill_is_picture", False):
+            read = getattr(member, "pixels", None)
+            raster = read() if read is not None else None
+        else:
+            raster = getattr(member, "pixel_array", None)
+    except RaisedFinding:
+        return True
+    if raster is None:
+        return True
+    raster = np.asarray(raster)
+    return not (raster.ndim == 3 and raster.shape[-1] == 4 and not raster[..., 3].any())
+
+
+def picture_corners(member: Mobject) -> np.ndarray | None:
+    """Where the picture ``member`` draws has its corners, in CE's image
+    order (upper left, upper right, lower left, lower right): an image's
+    first four points; a path whose fill is a picture, its own
+    ``corners()``, or, for one that only declares its fill a picture, the
+    corners of its points' box. ``None`` for one with no points.
+    """
+    points = np.asarray(member.points, dtype=float)
+    if not len(points):
+        return None
+    if not getattr(member, "fill_is_picture", False):
+        return points[:4]
+    read = getattr(type(member), "corners", None)
+    if read is not None:
+        found = read(member)
+        return None if found is None else np.asarray(found, dtype=float)
+    (x0, y0), (x1, y1) = points[:, :2].min(axis=0), points[:, :2].max(axis=0)
+    z = float(points[:, 2].mean())
+    return np.array([[x0, y1, z], [x1, y1, z], [x0, y0, z], [x1, y0, z]])
+
+
+def picture_place(
+    camera: Camera, view: View, member: Mobject
+) -> tuple[Box, np.ndarray, None] | None:
+    """What :func:`member_place` gives for an image, for a path whose fill is
+    a picture (``fill_is_picture``): its picture placed as the camera places
+    an image at its corners (:func:`picture_corners`), around the frame's
+    centre, its ink the corners' box; ``None`` where the camera's draw of
+    that image paints nothing (:func:`_image_painted`): no corners, a
+    picture under half a pixel high, or one no pixel of which shows
+    (:func:`picture_shows`).
+    """
+    corners = picture_corners(member)
+    if corners is None:
+        return None
+    if not _quad_painted(camera, view, member, corners):
+        return None
+    shown = _pre_display(camera, member, corners)
+    ink = _span(_placed(view, shown, view.frame_center, home=True))
+    return ink, _placed(view, shown, view.frame_center, home=False), None
+
+
+def _quad_painted(
+    camera: Camera, view: View, member: Mobject, points: np.ndarray
+) -> bool:
+    """:func:`_image_painted` for the picture of ``member`` at ``points``
+    (its corners, CE's image order).
+    """
+    if not picture_shows(member):
+        return False
+    shown = _pre_display(camera, member, points)
     target = _placed(view, shown, view.frame_center, home=False)
     target = target - target.astype(np.int64).min(axis=0)
     vertices = [target[i] for i in (0, 1, 3, 2)]

@@ -54,6 +54,16 @@ PNG encoder's compression library, so a media asset drawn again is compared
 with the committed one by its frame digests and its manifest, never by its
 files' bytes or its admission digest.
 
+Beside them, in a list of their own (:data:`RASTER`), are two rigs whose
+parts are stills, each part's picture a PNG file drawn with NumPy alone,
+compared like a media asset by its manifest and frame digests:
+
+- ``hinged-flap``: a body, a flap on a hinge (``lift``, a ``rotate``), and a
+  slot of two raster drawings of one pixel size and different pixels, which
+  ``grow`` scales; an ``interior`` anchor at the flap's free end.
+- ``layered-ground``: three raster layers at the depths 6, 2 and 0 (far,
+  middle and near), with an ``interior`` anchor on the middle one.
+
 Run as ``python tests/assets/draw_fixture_pack.py <directory> [<defects>
 [<media defects>]]``; the committed pack is ``arachne/assets/fixtures``, the
 defects are ``tests/assets/defects``, and the media defects
@@ -95,6 +105,12 @@ DEFECTS = {
 #: Every fixture media asset's name, in the order drawn: a list apart from
 #: :data:`NAMES`, the rigs.
 MEDIA = ("numbered-clip", "stepper", "swatch")
+
+#: The rigs whose parts are stills, in a list of their own beside
+#: :data:`NAMES`.
+RASTER = ("hinged-flap", "layered-ground")
+#: The scene units to a canvas unit of the raster rigs.
+RASTER_SCALE = 0.02
 
 #: Every planted media defect's name, and the one check it fails.
 MEDIA_DEFECTS = {
@@ -1113,6 +1129,263 @@ def draw_media_defects(root: Path) -> None:
         record_checks(root / name)
 
 
+# Rigs of stills
+
+
+def write_png(directory: Path, file: str, pixels: np.ndarray) -> dict[str, Any]:
+    """Write ``pixels`` as the PNG file ``file`` of the asset in
+    ``directory``, and give its member's ``file`` and ``digest``.
+    """
+    target = directory / file
+    target.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(pixels).save(target, format="PNG")
+    return {"file": file, "digest": frame_digest(pixels)}
+
+
+def bordered(width: int, height: int, fill: tuple, edge: tuple) -> np.ndarray:
+    """An opaque ``width`` by ``height`` picture of ``fill``, a one-pixel
+    ``edge`` round it.
+    """
+    pixels = np.empty((height, width, 4), dtype=np.uint8)
+    pixels[...] = (*edge, 255)
+    pixels[1:-1, 1:-1] = (*fill, 255)
+    return pixels
+
+
+def disc(size: int, colour: tuple, mark: tuple) -> np.ndarray:
+    """A ``size`` square picture: an opaque disc of ``colour`` on
+    transparency, a bar of ``mark`` across it.
+    """
+    rows, columns = np.mgrid[0:size, 0:size]
+    centre = (size - 1) / 2
+    pixels = np.zeros((size, size, 4), dtype=np.uint8)
+    inside = (rows - centre) ** 2 + (columns - centre) ** 2 <= (size / 2 - 0.5) ** 2
+    pixels[inside] = (*colour, 255)
+    pixels[inside & (abs(rows - centre) < 2)] = (*mark, 255)
+    return pixels
+
+
+def ridge(width: int, height: int, colour: tuple, crest: list[int]) -> np.ndarray:
+    """A ``width`` by ``height`` band, opaque ``colour`` from the row
+    ``crest[x]`` of each column ``x`` down, transparent above, a lighter
+    line along its crest.
+    """
+    rows = np.arange(height)[:, None]
+    top = np.array(crest)[None, :]
+    pixels = np.zeros((height, width, 4), dtype=np.uint8)
+    pixels[rows >= top] = (*colour, 255)
+    lighter = tuple(min(255, c + 50) for c in colour)
+    pixels[rows == top] = (*lighter, 255)
+    return pixels
+
+
+def crest(width: int, low: int, high: int, peak: int) -> list[int]:
+    """A crest for :func:`ridge`: at the row ``low`` in the column
+    ``peak``, falling evenly to ``high`` rows ``width`` columns away.
+    """
+    return [low + (high - low) * abs(x - peak) // width for x in range(width)]
+
+
+def raster_manifest(
+    directory: Path,
+    size: tuple[float, float],
+    origin: tuple[float, float],
+    requires: list[str],
+    **members: Any,
+) -> None:
+    """Write the manifest of a rig of stills: its canvas ``size`` wide and
+    tall at :data:`RASTER_SCALE`, the canvas point ``origin`` at the scene's
+    origin.
+    """
+    document = {
+        "manifest_version": "1.1",
+        "name": directory.name,
+        "version": 1,
+        "kind": "parts",
+        "requires": requires,
+        "size": {
+            "scene_units_per_unit": RASTER_SCALE,
+            "origin": list(origin),
+            "width": size[0] * RASTER_SCALE,
+            "height": size[1] * RASTER_SCALE,
+        },
+        **members,
+        "provenance": PROVENANCE,
+    }
+    (directory / "manifest.json").write_text(json_text(clean(document)) + "\n")
+
+
+def still(
+    name: str,
+    member: dict[str, Any],
+    box: list[float],
+    parent: str | None,
+    pivot: tuple[float, float],
+    order: int,
+    **more: Any,
+) -> dict[str, Any]:
+    """A raster part: its file and digest (``member``), its ``box``."""
+    return {
+        "name": name,
+        **member,
+        "box": box,
+        "parent": parent,
+        "pivot": list(pivot),
+        "order": order,
+        **more,
+    }
+
+
+def hinged_flap(root: Path) -> None:
+    """A body, a flap lifting on a hinge, and a badge slot of two stills of
+    one size, on a canvas 160 by 140 (four canvas units to a pixel).
+    """
+    directory = root / "hinged-flap"
+    body = bordered(40, 30, (150, 110, 70), (90, 60, 40))
+    flap = bordered(40, 6, (200, 160, 90), (120, 90, 50))
+    on = disc(10, (60, 180, 90), (230, 240, 230))
+    off = disc(10, (120, 120, 130), (60, 60, 70))
+    badge = [100, 80, 140, 120]
+    raster_manifest(
+        directory,
+        (160, 140),
+        (80, 90),
+        ["raster"],
+        parts=[
+            still(
+                "body",
+                write_png(directory, "pieces/body.png", body),
+                [0, 40, 160, 160],
+                None,
+                (80, 160),
+                0,
+            ),
+            still(
+                "flap",
+                write_png(directory, "pieces/flap.png", flap),
+                [0, 20, 160, 44],
+                "body",
+                (6, 42),
+                1,
+            ),
+        ],
+        slots=[
+            {
+                "name": "badge",
+                "parent": "body",
+                "pivot": [120, 100],
+                "order": 2,
+                "default": "on",
+                "drawings": [
+                    {
+                        "name": "on",
+                        **write_png(directory, "pieces/on.png", on),
+                        "box": badge,
+                    },
+                    {
+                        "name": "off",
+                        **write_png(directory, "pieces/off.png", off),
+                        "box": badge,
+                    },
+                ],
+            }
+        ],
+        parameters=[
+            {
+                "name": "lift",
+                "min": 0,
+                "max": 80,
+                "default": 0,
+                "unit": "deg",
+                "drives": [
+                    {
+                        "part": "flap",
+                        "kind": "rotate",
+                        "unit": "deg",
+                        "keys": keys((0, 0), (80, 80)),
+                    }
+                ],
+            },
+            {
+                "name": "grow",
+                "min": 0.8,
+                "max": 1.2,
+                "default": 1,
+                "drives": [
+                    {
+                        "part": "badge",
+                        "kind": "scale",
+                        "keys": keys((0.8, 0.8), (1.2, 1.2)),
+                    }
+                ],
+            },
+        ],
+        anchors=[
+            {"name": "tip", "part": "flap", "attach": "interior", "at": [150, 32]}
+        ],
+    )
+
+
+def layered_ground(root: Path) -> None:
+    """Three layers of stills at the depths 6, 2 and 0 (far, middle and
+    near), on a canvas 240 by 160 (five canvas units to a pixel).
+    """
+    directory = root / "layered-ground"
+    far = ridge(48, 20, (110, 130, 190), crest(48, 2, 9, 30))
+    middle = ridge(48, 16, (80, 150, 90), crest(48, 1, 8, 24))
+    near = bordered(48, 10, (120, 90, 60), (90, 65, 40))
+    raster_manifest(
+        directory,
+        (240, 160),
+        (120, 80),
+        ["raster", "depth"],
+        parts=[
+            still(
+                "far",
+                write_png(directory, "layers/far.png", far),
+                [0, 0, 240, 100],
+                None,
+                (120, 50),
+                0,
+                depth=6,
+            ),
+            still(
+                "middle",
+                write_png(directory, "layers/middle.png", middle),
+                [0, 60, 240, 140],
+                None,
+                (120, 100),
+                1,
+                depth=2,
+            ),
+            still(
+                "near",
+                write_png(directory, "layers/near.png", near),
+                [0, 110, 240, 160],
+                None,
+                (120, 135),
+                2,
+                depth=0,
+            ),
+        ],
+        anchors=[
+            {"name": "peak", "part": "middle", "attach": "interior", "at": [120, 90]}
+        ],
+    )
+
+
+def draw_raster(root: Path) -> None:
+    """Draw the rigs of stills into ``root``, one directory each, and admit
+    each.
+    """
+    hinged_flap(root)
+    layered_ground(root)
+    for name in RASTER:
+        report = record_checks(root / name)
+        if not report.passed:
+            raise AssertionError("\n".join(report.lines()))
+
+
 def draw(root: Path) -> None:
     """Draw every fixture asset into ``root``, one directory each, and
     admit it.
@@ -1143,6 +1416,7 @@ def draw_defects(root: Path) -> None:
 if __name__ == "__main__":
     draw(Path(sys.argv[1]))
     draw_media(Path(sys.argv[1]))
+    draw_raster(Path(sys.argv[1]))
     if len(sys.argv) > 2:
         draw_defects(Path(sys.argv[2]))
     if len(sys.argv) > 3:

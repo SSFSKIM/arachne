@@ -25,6 +25,21 @@ none); ``media.frames`` the frame files in order, each with its frame
 digest (:func:`arachne.mobject.media.frames.frame_digest`). A still has
 one frame.
 
+In the kind ``parts``, two members each change what is drawn, so a manifest
+carrying one lists its feature name in ``requires``, and a manifest that
+carries the member without the name is refused (a reader that knows
+neither would keep and ignore the member, and draw the asset wrong):
+
+- a part or a slot's drawing whose ``file`` is a PNG is a **raster member**
+  (feature ``raster``): it carries ``box``, ``[x0, y0, x1, y1]``, the
+  rectangle on the canvas its picture fills (``x1`` above ``x0``, ``y1``
+  above ``y0``), and ``digest``, the frame digest of its file. A still does
+  not bend: a raster part takes ``rotate``, ``translate`` and ``scale``
+  drivers only, and no ``lattice`` or ``element``;
+- a part or a slot may carry ``depth``, a finite number of scene units of
+  depth (feature ``depth``): what the camera's focus blurs it by and, under
+  a moving camera, how it slides (:meth:`.Rig.view_through`).
+
 :func:`digest` is the asset's digest: ``sha256:`` and the hex SHA-256 of
 every file the manifest names, sorted by relative path, each as its path in
 UTF-8, a zero byte, its length as 8 bytes big-endian and its bytes; then of
@@ -48,6 +63,7 @@ __all__ = [
     "MEDIA_KINDS",
     "NAME",
     "PROVENANCE",
+    "RIGID_DRIVERS",
     "SPRITE_TICKS",
     "UNIT",
     "AnchorKey",
@@ -95,8 +111,11 @@ MAJOR = 1
 MEDIA_KINDS = ("still", "clip", "sprite")
 #: The kinds of asset this reader reads.
 KINDS = ("parts", *MEDIA_KINDS)
-#: The feature names a manifest may require that this reader knows: none in 1.0.
-FEATURES: frozenset[str] = frozenset()
+#: The feature names a manifest may require that this reader knows, from
+#: 1.1: raster members and depths in the kind ``parts``.
+FEATURES: frozenset[str] = frozenset({"raster", "depth"})
+#: The drivers a raster member takes: a still is moved, never bent.
+RIGID_DRIVERS = ("rotate", "translate", "scale")
 #: What a parameter can do to a part.
 DRIVER_KINDS = ("rotate", "translate", "scale", "warp", "shape")
 #: The units a ``rotate`` driver's output may be in.
@@ -199,15 +218,35 @@ class PartSpec:
     pivot: Point
     order: int
     lattice: Lattice | None
+    #: A raster member's rectangle on the canvas (``x0, y0, x1, y1``) and
+    #: the frame digest of its file; ``None`` for a part of vector shapes.
+    box: tuple[float, float, float, float] | None = None
+    digest: str | None = None
+    #: Its declared depth, if any.
+    depth: float | None = None
+
+    @property
+    def raster(self) -> bool:
+        """Whether the part is a raster member: a still, not vector shapes."""
+        return self.box is not None
 
 
 @dataclass(frozen=True)
 class DrawingSpec:
-    """One drawing a slot can show: ``file``, or its element ``element``."""
+    """One drawing a slot can show: ``file``, or its element ``element``;
+    a raster drawing's ``box`` and ``digest`` as a raster part's.
+    """
 
     name: str
     file: str
     element: str | None
+    box: tuple[float, float, float, float] | None = None
+    digest: str | None = None
+
+    @property
+    def raster(self) -> bool:
+        """Whether the drawing is a raster member."""
+        return self.box is not None
 
 
 @dataclass(frozen=True)
@@ -222,6 +261,8 @@ class SlotSpec:
     order: int
     default: str
     drawings: tuple[DrawingSpec, ...]
+    #: Its declared depth, if any.
+    depth: float | None = None
 
     def drawing(self, name: str) -> DrawingSpec | None:
         """The drawing ``name``, or ``None``."""
@@ -495,6 +536,8 @@ class _Reader:
 
     def __init__(self, asset: str) -> None:
         self.asset = asset
+        #: The feature names the manifest requires, once read.
+        self.requires: tuple[str, ...] = ()
 
     def invalid(self, member: str, reason: str, **name: str) -> NoReturn:
         refuse(
@@ -611,6 +654,7 @@ class _Reader:
             self.text(name, f"requires[{i}]")
             for i, name in enumerate(self.array(top.get("requires", []), "requires"))
         )
+        self.requires = requires
         unknown = [name for name in requires if name not in FEATURES]
         if unknown:
             self.invalid(
@@ -791,6 +835,12 @@ class _Reader:
     def part(self, value: Any, at: str) -> PartSpec:
         entry = self.object(value, at)
         lattice = entry.get("lattice")
+        box, digest = self.raster(entry, at)
+        if box is not None and lattice is not None:
+            self.invalid(
+                f"{at}.lattice",
+                "a raster member is a still, which does not bend: it has no lattice",
+            )
         return PartSpec(
             name=self.name(self.member(entry, "name", at), f"{at}.name"),
             file=self.text(self.member(entry, "file", at), f"{at}.file"),
@@ -799,7 +849,61 @@ class _Reader:
             pivot=self.point(self.member(entry, "pivot", at), f"{at}.pivot"),
             order=self.integer(self.member(entry, "order", at), f"{at}.order"),
             lattice=None if lattice is None else self.lattice(lattice, f"{at}.lattice"),
+            box=box,
+            digest=digest,
+            depth=self.depth(entry, at),
         )
+
+    def raster(
+        self, entry: Mapping[str, Any], at: str
+    ) -> tuple[tuple[float, float, float, float] | None, str | None]:
+        """A member's ``box`` and ``digest``, both or neither: a raster
+        member, whose picture is one PNG file, has both, and no ``element``.
+        """
+        if "box" not in entry and "digest" not in entry:
+            return None, None
+        if "box" not in entry or "digest" not in entry:
+            given, missing = ("box", "digest") if "box" in entry else ("digest", "box")
+            self.invalid(
+                f"{at}.{missing}",
+                f"a raster member carries both box and digest, and this one has"
+                f" {given} alone",
+            )
+        if "raster" not in self.requires:
+            self.invalid(
+                f"{at}.box",
+                "a raster member is read only by a reader that knows rasters:"
+                ' the manifest lists "raster" in requires',
+            )
+        if entry.get("element") is not None:
+            self.invalid(
+                f"{at}.element",
+                "a raster member is one PNG file, which has no elements",
+            )
+        found = self.array(entry["box"], f"{at}.box")
+        if len(found) != 4:
+            self.invalid(f"{at}.box", "it must be four numbers, x0, y0, x1, y1")
+        x0, y0, x1, y1 = (self.number(b, f"{at}.box") for b in found)
+        if not (x1 > x0 and y1 > y0):
+            self.invalid(f"{at}.box", "x1 must be above x0 and y1 above y0")
+        digest = self.text(entry["digest"], f"{at}.digest")
+        if FRAME_DIGEST.fullmatch(digest) is None:
+            self.invalid(
+                f"{at}.digest", "it must be sha256: and 64 lower-case hex digits"
+            )
+        return (x0, y0, x1, y1), digest
+
+    def depth(self, entry: Mapping[str, Any], at: str) -> float | None:
+        """A part's or a slot's ``depth``, if it carries one."""
+        if "depth" not in entry:
+            return None
+        if "depth" not in self.requires:
+            self.invalid(
+                f"{at}.depth",
+                "a depth is read only by a reader that knows depths: the manifest"
+                ' lists "depth" in requires',
+            )
+        return self.number(entry["depth"], f"{at}.depth")
 
     def lattice(self, value: Any, at: str) -> Lattice:
         entry = self.object(value, at)
@@ -841,14 +945,18 @@ class _Reader:
             order=self.integer(self.member(entry, "order", at), f"{at}.order"),
             default=default,
             drawings=drawings,
+            depth=self.depth(entry, at),
         )
 
     def drawing(self, value: Any, at: str) -> DrawingSpec:
         entry = self.object(value, at)
+        box, digest = self.raster(entry, at)
         return DrawingSpec(
             name=self.name(self.member(entry, "name", at), f"{at}.name"),
             file=self.text(self.member(entry, "file", at), f"{at}.file"),
             element=self.optional_text(entry.get("element"), f"{at}.element"),
+            box=box,
+            digest=digest,
         )
 
     def placed(
@@ -952,6 +1060,12 @@ class _Reader:
                 self.invalid(
                     f"{at}.unit", f"a rotation's unit is {' or '.join(ANGLE_UNITS)}"
                 )
+        if kind not in RIGID_DRIVERS and isinstance(target, PartSpec) and target.raster:
+            self.invalid(
+                f"{at}.kind",
+                f"a {kind} bends or replaces an outline, and {part!r} is a raster"
+                f" member, a still: it takes {', '.join(RIGID_DRIVERS)} only",
+            )
         if kind in ("warp", "shape"):
             if not isinstance(target, PartSpec):
                 self.invalid(

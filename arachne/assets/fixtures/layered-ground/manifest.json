@@ -1,0 +1,63 @@
+{
+  "manifest_version": "1.1",
+  "name": "layered-ground",
+  "version": 1,
+  "kind": "parts",
+  "requires": ["raster", "depth"],
+  "size": {
+    "scene_units_per_unit": 0.02,
+    "origin": [120, 80],
+    "width": 4.8,
+    "height": 3.2
+  },
+  "parts": [
+    {
+      "name": "far",
+      "file": "layers/far.png",
+      "digest": "sha256:c7d9b1f7a18172b2307633ac7d1b89c5421893a6fdd4c7dac19e29495b3c7aff",
+      "box": [0, 0, 240, 100],
+      "parent": null,
+      "pivot": [120, 50],
+      "order": 0,
+      "depth": 6
+    },
+    {
+      "name": "middle",
+      "file": "layers/middle.png",
+      "digest": "sha256:ad80c7e57daafce120e7d8c9ca8073eea443d4f3a6e0f63adcfd0fc6b29c6b37",
+      "box": [0, 60, 240, 140],
+      "parent": null,
+      "pivot": [120, 100],
+      "order": 1,
+      "depth": 2
+    },
+    {
+      "name": "near",
+      "file": "layers/near.png",
+      "digest": "sha256:c57861c8e3e215810aac70c199ed79f9383bf9096a1c4173c4351c9804b5a06c",
+      "box": [0, 110, 240, 160],
+      "parent": null,
+      "pivot": [120, 135],
+      "order": 2,
+      "depth": 0
+    }
+  ],
+  "anchors": [{"name": "peak", "part": "middle", "attach": "interior", "at": [120, 90]}],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:2befdaef314db5246a3effdac66d07821248f9e62643ef5ac436202469cf6316",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true},
+      {"name": "frames_exact", "pass": true}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}
