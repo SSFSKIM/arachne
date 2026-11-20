@@ -151,7 +151,32 @@ def test_two_stills_of_one_size_show_their_own_pixels_in_either_load_order(
     )
     rigs, images = session_of("Two", file), session_of("TwoAsImages", file)
     for t in (Fraction(1, 4), Fraction(3, 4)):
-        assert _close(_pixels(rigs, t), _pixels(images, t)), t
+        drawn, expected = _pixels(rigs, t), _pixels(images, t)
+        assert _close(drawn, expected), (t, _where(drawn, expected))
+
+
+def _where(drawn: np.ndarray, expected: np.ndarray) -> dict:
+    """Where two frames differ by more than 1: how much, the box of those
+    pixels, and a few of them with both values.
+    """
+    off = np.abs(drawn - expected).max(axis=2) > 1
+    rows, columns = np.nonzero(off)
+    if not len(rows):
+        return {}
+    picked = list(zip(rows[:4].tolist(), columns[:4].tolist(), strict=True))
+    return {
+        "most": int(np.abs(drawn - expected).max()),
+        "box": (
+            int(columns.min()),
+            int(rows.min()),
+            int(columns.max()),
+            int(rows.max()),
+        ),
+        "count": int(off.sum()),
+        "at": [
+            (r, c, drawn[r, c].tolist(), expected[r, c].tolist()) for r, c in picked
+        ],
+    }
 
 
 def test_a_still_that_decodes_otherwise_draws_nothing_and_names_its_file(
