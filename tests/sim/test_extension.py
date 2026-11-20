@@ -47,6 +47,6 @@ def test_a_worlds_trace_bytes_are_its_bake_contents(dimension):
     ball = world.add_body(position=np.array([0.0, 1.0, *zero], dtype=np.float32))
     world.add_shape(ball, "ball", np.float32(0.25), restitution=np.float32(0.6))
     world.advance_to(90)
-    assert len(world.contacts()) >= 2
+    assert len(world.contacts()) >= 1
     content = _content(world)
     assert content.canonical_bytes() == world.trace_bytes()

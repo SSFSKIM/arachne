@@ -24,3 +24,11 @@ if [ "$(uname)" = Darwin ]; then
   fi
   echo "$tinytex/bin/universal-darwin" >> "$GITHUB_PATH"
 fi
+
+# The Rust toolchain the core and the simulation crate both pin (core/rust-toolchain.toml,
+# sim/rust-toolchain.toml), installed here once: the install step builds both extras at the same
+# time, and two rustup installs of one toolchain at once fail on each other's files.
+if command -v rustup >/dev/null; then
+  channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' core/rust-toolchain.toml)
+  rustup toolchain install "$channel" --profile minimal --component rustfmt,clippy --no-self-update
+fi
