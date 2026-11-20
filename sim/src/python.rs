@@ -627,5 +627,7 @@ fn _sim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SPEED", finding::SPEED)?;
     m.add("ANGULAR_SPEED", finding::ANGULAR_SPEED)?;
     m.add("TUNNELLED", finding::TUNNELLED)?;
+    m.add("SPEED_CAPPED", finding::SPEED_CAPPED)?;
+    m.add("ANGULAR_SPEED_CAPPED", finding::ANGULAR_SPEED_CAPPED)?;
     Ok(())
 }

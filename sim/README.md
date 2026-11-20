@@ -75,6 +75,21 @@ case prints its closed form, tolerance and measured value), `sim-identity` (the 
 3.12 and 3.14) and `sim-macos`. The workflow `sim-probe.yml` runs the probe on Linux x86-64, Windows
 x86-64 and macOS arm64 and compares the outputs; `sim-wheels.yml` builds the wheels.
 
+## What a world finds
+
+Beside its rows, never in the trace, a world records what it found (`World::findings`, each
+with a value, `World::finding_values`): a body whose state went non-finite; a body whose speed or
+angular speed rose above the world's limit, as its row shows it or as the solver's cap scaled it
+down in the step (the vendored solver flags that, `vendor/VENDORED.md`; the value is then a lower
+bound, the cap); and two bodies that may have passed through each other in a step. The last is
+decided by a bound that does not miss a crossing and by conservative advancement through the
+step, which reports two shapes that came within the allowed linear error (0.005 units) of each
+other, overlapping or not; anything indeterminate (a number that is not finite, a distance the
+query cannot measure) is reported too. The allowance also covers single-precision rounding of
+the poses and of the distance query while the shapes and their motion stay within about 1000
+units of the origin, where a number is exact to about 6e-5 units; beyond that the sweep claims
+nothing.
+
 ## Determinism
 
 "The same bytes" rests on three things: the same declaration (the same numbers, inserted in the

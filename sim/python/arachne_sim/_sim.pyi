@@ -13,6 +13,8 @@ NON_FINITE: int
 SPEED: int
 ANGULAR_SPEED: int
 TUNNELLED: int
+SPEED_CAPPED: int
+ANGULAR_SPEED_CAPPED: int
 
 # A float32 number or numbers: a numpy.float32, or any object exposing a float32 buffer.
 Floats = Any

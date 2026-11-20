@@ -268,6 +268,7 @@ fn a_fast_body_through_a_thin_wall_is_found_without_continuous_detection() {
     let (mut w, disc) = thin_wall(false);
     w.advance_to(30).expect("the rows");
     assert_eq!(w.findings(), &[[1, finding::TUNNELLED, 0, disc]]);
+    assert_eq!(w.finding_values(), &[0.0], "seen overlapping");
     assert!(common::poses(&w, disc)[1][0] > 0.05, "it passed through");
     // The same findings however the rows are grouped into calls.
     let (mut pieces, _) = thin_wall(false);
@@ -375,6 +376,18 @@ fn two_bodies_that_pass_through_each_other_in_a_step_are_found() {
             &[[1, finding::TUNNELLED, 0, 1]],
             "{dimension}D"
         );
+        assert_eq!(w.finding_values(), &[0.0], "{dimension}D, seen overlapping");
+        // Passing 0.003 apart, within the allowed linear error and short of touching: found,
+        // and not seen overlapping.
+        let mut close = crossing(dimension, 0.103, false);
+        close.advance_to(10).expect("the rows");
+        assert_eq!(
+            close.findings(),
+            &[[1, finding::TUNNELLED, 0, 1]],
+            "{dimension}D, close"
+        );
+        let closest = close.finding_values()[0];
+        assert!(closest > 0.0 && closest <= 0.005, "{dimension}D: {closest}");
         for (offset, joined, why) in [(0.5, false, "a miss"), (0.0, true, "kept apart")] {
             let mut twin = crossing(dimension, offset, joined);
             twin.advance_to(10).expect("the rows");
@@ -436,8 +449,8 @@ fn a_speed_the_solver_scales_down_is_found_at_least_at_its_cap() {
     // 30000 on a mass of 1 is 500 u/s after one tick, which the solver scales down to 400.
     let (mut w, b) = pushed([30000.0, 0.0], 0.0);
     w.advance_to(5).expect("the rows");
-    assert_eq!(w.findings(), &[[1, finding::SPEED, b, b]]);
-    // The row's speed is the cap's, to rounding.
+    assert_eq!(w.findings(), &[[1, finding::SPEED_CAPPED, b, b]]);
+    // The row's speed is the cap's, to rounding: the value is a lower bound.
     assert!((w.finding_values()[0] - w.speed_cap()).abs() < 1e-3);
     assert!(w.finding_values()[0] >= w.speed_cap());
     // A disc of radius 0.5 and density 1 has an inertia of pi/32; this torque turns it at 60
@@ -445,7 +458,7 @@ fn a_speed_the_solver_scales_down_is_found_at_least_at_its_cap() {
     let inertia = std::f32::consts::PI / 32.0;
     let (mut spun, d) = pushed([0.0, 0.0], 3600.0 * inertia);
     spun.advance_to(5).expect("the rows");
-    assert_eq!(spun.findings(), &[[1, finding::ANGULAR_SPEED, d, d]]);
+    assert_eq!(spun.findings(), &[[1, finding::ANGULAR_SPEED_CAPPED, d, d]]);
     assert!((spun.finding_values()[0] - spun.angular_speed_cap()).abs() < 1e-3);
     assert!(spun.finding_values()[0] >= spun.angular_speed_cap());
 }
@@ -458,7 +471,8 @@ fn a_speed_the_solver_scales_to_nothing_is_found_though_its_row_is_at_rest() {
     w.advance_to(5).expect("the rows");
     let rows = common::velocities(&w, b);
     assert!(rows.iter().all(|v| v[0] == 0.0 && v[1] == 0.0), "{rows:?}");
-    assert_eq!(w.findings(), &[[1, finding::SPEED, b, b]]);
+    assert_eq!(w.findings(), &[[1, finding::SPEED_CAPPED, b, b]]);
+    // The finite cap, a lower bound, though the speed overflowed.
     assert_eq!(w.finding_values(), &[w.speed_cap()]);
 }
 

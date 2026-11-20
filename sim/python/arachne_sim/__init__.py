@@ -12,10 +12,13 @@ its callbacks. Rows are handed out as read-only arrays: :meth:`World.pose` (``x,
 ``a < b`` began to touch and 0 when they parted).
 
 :meth:`World.findings` is what a world found as it computed its rows (``row, kind, a, b``):
-a body whose state went non-finite (:data:`NON_FINITE`), whose speed or angular speed rose above
-the world's limit (:data:`SPEED`, :data:`ANGULAR_SPEED`; ``speed_limit`` and
+a body whose state went non-finite (:data:`NON_FINITE`); whose speed or angular speed rose above
+the world's limit as its row shows (:data:`SPEED`, :data:`ANGULAR_SPEED`; ``speed_limit`` and
 ``angular_speed_limit``, below the solver's caps :data:`SPEED_CAP` and
-:data:`ANGULAR_SPEED_CAP`), and two bodies that passed through each other (:data:`TUNNELLED`).
+:data:`ANGULAR_SPEED_CAP`), or reached at least the cap, which scaled it down in the step
+(:data:`SPEED_CAPPED`, :data:`ANGULAR_SPEED_CAPPED`); and two bodies that may have passed
+through each other: a crossing, or a pass within the allowed linear error that could not be
+told from one (:data:`TUNNELLED`).
 
 :meth:`World.declaration_bytes` is everything the world was given, in order;
 :meth:`World.trace_bytes` is the canonical bytes of the bake content its rows make (channels
@@ -30,12 +33,14 @@ import numpy.typing as npt
 from arachne_sim._sim import (
     ANGULAR_SPEED,
     ANGULAR_SPEED_CAP,
+    ANGULAR_SPEED_CAPPED,
     ANGULAR_SPEED_LIMIT,
     CONTENT_LAYOUT,
     DECLARATION_LAYOUT,
     NON_FINITE,
     SPEED,
     SPEED_CAP,
+    SPEED_CAPPED,
     SPEED_LIMIT,
     TUNNELLED,
 )
@@ -44,12 +49,14 @@ from arachne_sim._sim import World as _World
 __all__ = [
     "ANGULAR_SPEED",
     "ANGULAR_SPEED_CAP",
+    "ANGULAR_SPEED_CAPPED",
     "ANGULAR_SPEED_LIMIT",
     "CONTENT_LAYOUT",
     "DECLARATION_LAYOUT",
     "NON_FINITE",
     "SPEED",
     "SPEED_CAP",
+    "SPEED_CAPPED",
     "SPEED_LIMIT",
     "TUNNELLED",
     "World",
@@ -86,8 +93,11 @@ class World(_World):
         return np.frombuffer(data, dtype="<u4").reshape((count, 4))
 
     def finding_values(self) -> npt.NDArray[np.float32]:
-        """The value of each of :meth:`findings`, in order, read-only: the speed (u/s) or
-        angular speed (rad/s) found above its limit, the largest the solver scaled down to its
-        cap when it did (infinite when it overflowed); NaN for the other kinds.
+        """The value of each of :meth:`findings`, in order, read-only: for :data:`SPEED` and
+        :data:`ANGULAR_SPEED` the row's speed (u/s) or angular speed (rad/s); for
+        :data:`SPEED_CAPPED` and :data:`ANGULAR_SPEED_CAPPED` a lower bound, the larger of the
+        row's and the cap (the finite cap, even where the speed overflowed); for
+        :data:`TUNNELLED` the closest the sweep saw the two bodies (0 when seen overlapping, NaN
+        when a number could not be told); NaN for :data:`NON_FINITE`.
         """
         return np.frombuffer(self._finding_values(), dtype="<f4")
