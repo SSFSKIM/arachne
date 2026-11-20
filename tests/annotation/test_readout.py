@@ -34,7 +34,7 @@ from arachne.timeline import admission
 from arachne.timeline.clock import frames_in
 
 from . import annotation_scenes
-from .annotation_scenes import COUNT_FONT_SIZE, COUNTS
+from .annotation_scenes import COUNT_FONT_SIZE, COUNTS, WORDED_FONT_SIZE
 
 SCENES = Path(annotation_scenes.__file__)
 RATES = (15, 30, 60)
@@ -93,14 +93,16 @@ def test_as_of_answers_the_last_frame_of_the_record_s_grid(opened, key):
     assert answers[60] == (Fraction(1, 12), _shown(key, Fraction(1, 12)))
 
 
-def _rendered(name: str, fps: int, media: Path) -> list[np.ndarray]:
+def _rendered(
+    name: str, fps: int, media: Path, picture: dict[str, int] = PICTURE
+) -> list[np.ndarray]:
     """The frames a render of the scene ``name`` at ``fps`` delivers, in
-    order.
+    order, at the size ``picture``.
     """
     scene = getattr(annotation_scenes, name)
     with tempconfig(
         {
-            **PICTURE,
+            **picture,
             "frame_rate": fps,
             "media_dir": str(media),
             "format": "png-sequence",
@@ -334,6 +336,18 @@ def test_a_count_s_target_is_set_without_its_easing_s_last_value():
 
 #: A format with a leading word, as a sheet labels a number.
 WORDED = "swell {:.0f}%"
+#: The picture a worded count is rendered at: twice :data:`PICTURE`, so
+#: its glyphs at :data:`WORDED_FONT_SIZE` span as many pixels as a count's.
+WORDED_PICTURE = {"pixel_width": 384, "pixel_height": 216}
+
+
+def _on_one_line(placed: Readout) -> None:
+    """A precondition of a worded render: the widest text the count shows
+    stays on one line (a text wider than its layout wraps, and where it
+    wraps depends on the machine's fonts).
+    """
+    widest = Readout(100, format=WORDED, font_size=WORDED_FONT_SIZE)
+    assert widest.label.height == pytest.approx(placed.label.height, rel=0.25)
 
 
 def _drawn_alone(mobject) -> np.ndarray:
@@ -506,18 +520,20 @@ def test_a_count_on_a_plate_draws_the_plate_in_every_frame(tmp_path):
     from arachne.utils.color import ManimColor
 
     plate_rgb = np.array(ManimColor(PILL_COLOR).to_int_rgb(), dtype=float)
-    placed = Readout(0, format=WORDED, pill=True, font_size=COUNT_FONT_SIZE)
+    placed = Readout(0, format=WORDED, pill=True, font_size=WORDED_FONT_SIZE)
+    _on_one_line(placed)
     spot = _over_first_glyph(placed)
-    frames = _rendered("CountOnAPlate", 15, tmp_path)
+    frames = _rendered("CountOnAPlate", 15, tmp_path, WORDED_PICTURE)
     assert len(frames) == 15
     for index, frame in enumerate(frames):
         assert np.abs(_pixel(frame, spot) - plate_rgb).max() <= 2, index
 
 
 def test_a_count_with_a_leading_word_draws_the_word_still(tmp_path):
-    frames = _rendered("CountAfterAWord", 15, tmp_path)
+    frames = _rendered("CountAfterAWord", 15, tmp_path, WORDED_PICTURE)
     assert len(frames) == 15
-    placed = Readout(0, format=WORDED, font_size=COUNT_FONT_SIZE)
+    placed = Readout(0, format=WORDED, font_size=WORDED_FONT_SIZE)
+    _on_one_line(placed)
     # The columns the word "swell" covers, and a margin left of it.
     glyphs = placed.label.family_members_with_points()
     word_start = min(m.get_left()[0] for m in glyphs[:5])
@@ -535,7 +551,6 @@ def test_a_count_with_a_leading_word_draws_the_word_still(tmp_path):
             moved[:, 1].max() + left if len(moved) else None,
             _ink_runs(frames[0]),
             _ink_runs(frame),
-            _recorded_glyphs("CountAfterAWord", index),
         )
 
 
@@ -550,19 +565,3 @@ def _ink_runs(frame: np.ndarray) -> list[tuple[int, int]]:
             runs.append((start, col - 1))
             start = None
     return runs
-
-
-def _recorded_glyphs(name: str, index: int) -> list[tuple[float, float]]:
-    """The x extents of the readout's glyphs the record holds at frame
-    ``index`` of a 15 fps render of ``name``: what a failure reports.
-    """
-    admission.DEMOTED.clear()
-    session = Session.open(SCENES, name, config={**PICTURE, "frame_rate": 15})
-    try:
-        state = session.state_at(Fraction(index, 15))
-        label = state.node(state.node(state.roots[0]).children[0])
-        boxes = [state.node(c).scene_box for c in label.children]
-        return [(round(b[0], 3), round(b[2], 3)) for b in boxes]
-    finally:
-        session.close()
-        admission.DEMOTED.clear()

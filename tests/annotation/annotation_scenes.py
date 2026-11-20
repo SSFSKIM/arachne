@@ -463,6 +463,11 @@ class StillReadout(Scene):
         self.wait(0.25)
 
 
+#: How large a worded count is drawn: as large as fits on one line at every
+#: font a test machine has, since a text wider than its layout wraps.
+WORDED_FONT_SIZE = 96
+
+
 class CountOnAPlate(Scene):
     """A readout on its plate, with a leading word, counted over one
     second.
@@ -470,7 +475,7 @@ class CountOnAPlate(Scene):
 
     def construct(self) -> None:
         reading = Readout(
-            0, format="swell {:.0f}%", pill=True, font_size=COUNT_FONT_SIZE
+            0, format="swell {:.0f}%", pill=True, font_size=WORDED_FONT_SIZE
         )
         self.add(reading)
         self.play(CountUp(reading, 100, rate_func=linear), run_time=1)
@@ -482,6 +487,6 @@ class CountAfterAWord(Scene):
     """
 
     def construct(self) -> None:
-        reading = Readout(0, format="swell {:.0f}%", font_size=COUNT_FONT_SIZE)
+        reading = Readout(0, format="swell {:.0f}%", font_size=WORDED_FONT_SIZE)
         self.add(reading)
         self.play(CountUp(reading, 100, rate_func=linear), run_time=1)
