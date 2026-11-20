@@ -143,6 +143,15 @@
               ]
             }
           ]
+        },
+        {
+          "part": "eyes",
+          "kind": "translate",
+          "keys": [
+            {"at": -25, "value": [-6.667, 0]},
+            {"at": 0, "value": [0, 0]},
+            {"at": 25, "value": [6.667, 0]}
+          ]
         }
       ]
     }
@@ -153,6 +162,15 @@
     {"name": "chest", "part": "torso", "attach": "interior", "at": [150, 190]},
     {"name": "elbow", "part": "lower_arm", "attach": "interior", "at": [195, 232]}
   ],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:681e6b9b20d8334b6c930efb5c6a68b73614381f473f4b65d538bce07abe2f51",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true}
+    ]
+  },
   "provenance": {
     "source_url": null,
     "author": "the engine's fixture generator",

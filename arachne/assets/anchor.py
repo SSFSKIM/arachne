@@ -8,8 +8,8 @@ answers it as the live scene does.
 A rig's anchors are its manifest's, each on a named part:
 
 - ``outline``: the anchor lies on the part's rest outline (within
-  :data:`ON_OUTLINE` canvas units) and is resolved, when the asset's first
-  rig is made, to one cubic curve of one shape of it and a place along that
+  :data:`ON_OUTLINE` canvas units) and is resolved, when the asset is
+  loaded, to one cubic curve of one shape of it and a place along that
   curve. Every stored outline has the rest outline's structure, so that curve
   and place name the same landmark in each: the anchor is that point of the
   part's outline as posed, through ``S``, ``W``, ``G`` and ``F``

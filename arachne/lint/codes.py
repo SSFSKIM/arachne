@@ -323,6 +323,20 @@ _TABLE = (
         " the nearest.",
         ("asset", "name", "nearest"),
     ),
+    Code(
+        "asset.unadmitted",
+        "error",
+        "AssetUnadmitted",
+        "an asset's manifest does not hold the complete, passing checks of the"
+        " admission tool this engine supports, recorded at the digest of the"
+        " asset as it is: it was never admitted, was admitted by another tool"
+        " version or has changed since, or a check is missing or failing; the"
+        " finding's reason says which",
+        "Admit the asset with python -m arachne.assets admit <its directory>"
+        " --write; where a check fails, correct the asset at its source and"
+        " admit it again.",
+        ("asset", "reason", "checks", "expected", "found"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

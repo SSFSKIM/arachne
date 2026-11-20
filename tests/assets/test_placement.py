@@ -23,6 +23,7 @@ from arachne.timeline import admission
 from arachne.utils.rate_functions import smooth
 
 from . import draw_fixture_pack, rig_scenes
+from .helpers import admitted
 from .rig_scenes import MOVE, OPEN
 
 SCENES = Path(rig_scenes.__file__)
@@ -60,7 +61,7 @@ def rod(tmp_path: Path) -> Path:
     directory.mkdir()
     (directory / "rod.svg").write_text(ROD_SVG)
     (directory / "manifest.json").write_text(ROD_MANIFEST)
-    return directory
+    return admitted(directory)
 
 
 def _scene_of(asset, points: np.ndarray) -> np.ndarray:

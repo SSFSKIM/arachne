@@ -23,11 +23,11 @@ from arachne import VMobject, load_asset, tempconfig
 from arachne.assets import Asset, Rig
 from arachne.assets.manifest import digest, thawed
 from arachne.assets.pose import CARRIER_WIDTH
-from arachne.assets.reader import FIXTURES
+from arachne.assets.reader import FIXTURES, read_asset
 from arachne.timeline.frozen import engine_class
 
 from . import draw_fixture_pack
-from .helpers import copied, edited, refused
+from .helpers import admitted, copied, edited, refused
 
 SVG = "{http://www.w3.org/2000/svg}"
 
@@ -244,13 +244,13 @@ def test_the_digest_attests_every_file_and_the_manifest_but_not_its_checks(tmp_p
     directory = copied(tmp_path, "figure")
     before = load_asset(directory).digest
     edited(directory, lambda d: d.update(checks={"tool": "arachne.assets 1"}))
-    assert load_asset(directory).digest == before
+    assert read_asset(directory).digest == before
     edited(directory, lambda d: d.update(version=2))
-    changed = load_asset(directory).digest
+    changed = read_asset(directory).digest
     assert changed != before
     head = directory / "pieces" / "head.svg"
     head.write_text(head.read_text().replace('stroke-width="2"', 'stroke-width="3"'))
-    assert load_asset(directory).digest not in (before, changed)
+    assert read_asset(directory).digest not in (before, changed)
 
 
 def test_an_unknown_minor_version_with_nothing_required_loads(tmp_path):
@@ -258,7 +258,7 @@ def test_an_unknown_minor_version_with_nothing_required_loads(tmp_path):
         copied(tmp_path, "dial"),
         lambda d: d.update(manifest_version="1.7", newer_member={"kept": True}),
     )
-    asset = load_asset(directory)
+    asset = load_asset(admitted(directory))
     assert asset.manifest.manifest_version == "1.7"
     assert asset.manifest.document["newer_member"] == {"kept": True}
 
@@ -332,24 +332,24 @@ def _rod(tmp_path: Path) -> Path:
 def test_the_digest_of_a_fixed_asset_is_pinned(tmp_path):
     directory = _rod(tmp_path)
     assert _second_digest(directory) == ROD_DIGEST
-    assert load_asset(directory).digest == ROD_DIGEST
+    assert read_asset(directory).digest == ROD_DIGEST
 
 
 def test_an_asset_may_be_a_line_with_one_extent_zero(tmp_path):
-    rig = Rig(_rod(tmp_path))
+    rig = Rig(read_asset(_rod(tmp_path)))
     assert rig.width == pytest.approx(1.0)
     # Its carrier, which says where it is placed, spans 10**-4 units.
     assert rig.height == pytest.approx(0, abs=CARRIER_WIDTH)
 
 
 def test_a_parameter_with_no_unit_is_a_plain_number(tmp_path):
-    asset = load_asset(_rod(tmp_path))
+    asset = read_asset(_rod(tmp_path))
     assert asset.parameters["slide"].unit == "u/s"
     assert asset.parameters["tilt"].unit == "1"
 
 
 def test_an_asset_shared_by_its_rigs_cannot_be_written(tmp_path):
-    rig = Rig(_rod(tmp_path))
+    rig = Rig(read_asset(_rod(tmp_path)))
     asset = rig.copy().asset
     assert asset is rig.asset
     with pytest.raises(AttributeError):

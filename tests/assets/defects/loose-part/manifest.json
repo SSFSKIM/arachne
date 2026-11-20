@@ -1,0 +1,68 @@
+{
+  "manifest_version": "1.0",
+  "name": "loose-part",
+  "version": 1,
+  "kind": "parts",
+  "requires": [],
+  "size": {
+    "scene_units_per_unit": 0.01,
+    "origin": [150, 165],
+    "width": 1.8,
+    "height": 1.5
+  },
+  "parts": [
+    {
+      "name": "body",
+      "file": "loose-part.svg",
+      "element": "body",
+      "parent": null,
+      "pivot": [150, 180],
+      "order": 0
+    },
+    {
+      "name": "handle",
+      "file": "loose-part.svg",
+      "element": "handle",
+      "parent": "body",
+      "pivot": [150, 108],
+      "order": 1
+    }
+  ],
+  "slots": [],
+  "parameters": [
+    {
+      "name": "pull",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": "1",
+      "drives": [
+        {
+          "part": "handle",
+          "kind": "translate",
+          "keys": [{"at": 0, "value": [0, 0]}, {"at": 1, "value": [0, -60]}]
+        }
+      ]
+    }
+  ],
+  "anchors": [
+    {"name": "grip", "part": "handle", "attach": "interior", "at": [150, 100]},
+    {"name": "base", "part": "body", "attach": "interior", "at": [150, 200]}
+  ],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:91761395e674474941f5322e3208f00b016849af3d91a2536fe1a481c88fb749",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": false},
+      {"name": "anchor_off_part", "pass": true}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

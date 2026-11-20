@@ -19,7 +19,7 @@ from arachne.timeline import admission
 from arachne.timeline.draw import Drawing
 
 from . import rig_scenes
-from .helpers import copied, edited
+from .helpers import admitted, copied, edited
 
 SCENES = Path(rig_scenes.__file__)
 SMALL = {"pixel_width": 96, "pixel_height": 54}
@@ -54,7 +54,7 @@ def pair(tmp_path: Path):
     part the other lacks, and they share a face and a lamp slot.
     """
     source = copied(tmp_path, "dial")
-    destination = edited(copied(tmp_path, "dial", "pointer-dial"), _renamed)
+    destination = admitted(edited(copied(tmp_path, "dial", "pointer-dial"), _renamed))
     scene = tmp_path / "pair.py"
     scene.write_text(
         textwrap.dedent(PAIR.format(source=str(source), destination=str(destination)))
@@ -170,7 +170,7 @@ def _layers(roots) -> list[str]:
 
 def test_a_part_only_the_destination_has_comes_in_at_its_own_layer(tmp_path):
     source = copied(tmp_path, "dial")
-    destination = edited(copied(tmp_path, "dial", "backed-dial"), _backed)
+    destination = admitted(edited(copied(tmp_path, "dial", "backed-dial"), _backed))
     scene = tmp_path / "backed.py"
     scene.write_text(BACKED.format(source=str(source), destination=str(destination)))
     admission.DEMOTED.clear()

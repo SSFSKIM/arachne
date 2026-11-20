@@ -150,7 +150,7 @@ class Model:
         )
 
 
-#: Each asset's model, made with its first rig; gone with the asset, which
+#: Each asset's model, made when it is loaded; gone with the asset, which
 #: its model does not hold.
 _MODELS: weakref.WeakKeyDictionary[Asset, Model] = weakref.WeakKeyDictionary()
 

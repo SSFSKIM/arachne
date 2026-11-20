@@ -143,10 +143,6 @@ class Rig(VGroup):
     ) -> None:
         asset = load_asset(asset)
         model = model_of(asset)
-        from .anchor import attachments
-
-        # An anchor the manifest places off its part refuses the rig whole.
-        attachments(model)
         super().__init__(**vmobject_kwargs)
         self.asset = asset
         self.model = model

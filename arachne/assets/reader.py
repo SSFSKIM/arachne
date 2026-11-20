@@ -10,9 +10,14 @@ file the manifest names by anything but a plain relative path inside the
 asset's directory (an address, an absolute path, a ``..``, a link), is
 ``asset.remote``. Every way an asset can be unusable is a finding raised
 with its code: no manifest (``asset.manifest_missing``), a manifest that is
-not valid (``asset.manifest_invalid``), a file not there
+not valid (``asset.manifest_invalid``, an anchor placed off its part's
+outline and a name a pose could not tell apart included), a file not there
 (``asset.file_missing``), one that cannot be read or drawn exactly
-(``asset.unreadable``). Nothing is cached between loads.
+(``asset.unreadable``), and, once all of that holds, an asset not admitted
+(``asset.unadmitted``): it loads only when its manifest's ``checks`` record
+the tool version :data:`TOOL`, the digest of its files and manifest as they
+are, and every check of :data:`CHECKS` by name, each passing
+(:mod:`.admission` writes that record). Nothing is cached between loads.
 
 A ``shape`` driver's stored outlines are the rest outline moved: a supplier
 keeps, shape for shape, the contours in the same order, each with as many
@@ -23,7 +28,7 @@ outline is a place along one contour.
 
 from __future__ import annotations
 
-__all__ = ["FIXTURES", "Asset", "load_asset"]
+__all__ = ["CHECKS", "FIXTURES", "TOOL", "Asset", "load_asset", "read_asset"]
 
 import os
 import stat
@@ -48,9 +53,15 @@ from .manifest import (
     parse_manifest,
     read_json,
     refuse,
+    thawed,
 )
 from .svg_parts import SvgFile, Unreadable, read_svg, structure
 
+#: The admission tool's version this engine supports: an asset loads only
+#: with the passing checks of this version recorded at its digest.
+TOOL = "arachne.assets 1"
+#: The checks of :data:`TOOL`, in the order its record lists them.
+CHECKS = ("hole", "detached_part", "anchor_off_part")
 #: The engine's own fixture assets, each a directory named as it is asked
 #: for: ``fixture:<name>``.
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -130,11 +141,22 @@ class Asset:
 
 
 def load_asset(ref: str | os.PathLike[str] | Asset) -> Asset:
-    """The asset ``ref`` names (see the module), checked and read whole;
-    raises the finding of the first thing that makes it unusable.
+    """The asset ``ref`` names (see the module), checked and read whole, and
+    admitted; raises the finding of the first thing that makes it unusable.
+    An :class:`Asset` is what loading gave, and is returned as it is.
     """
     if isinstance(ref, Asset):
         return ref
+    asset = read_asset(ref)
+    _admitted(asset, os.fspath(ref))
+    return asset
+
+
+def read_asset(ref: str | os.PathLike[str]) -> Asset:
+    """The asset ``ref`` names, checked and read whole as :func:`load_asset`
+    reads it, its admission left unasked: the admission tool's own entry
+    (:mod:`.admission`), which admits what it reads.
+    """
     label = os.fspath(ref)
     directory = _directory(label)
     document = _document(_bytes(directory, MANIFEST, label), label)
@@ -156,13 +178,81 @@ def load_asset(ref: str | os.PathLike[str] | Asset) -> Asset:
     files = {file: _read(contents[file], file, label) for file in contents}
     canvas = _canvas(files, label)
     shapes = _shapes(manifest, files, label)
-    return Asset(
+    asset = Asset(
         directory,
         manifest,
         digest(manifest.document, contents),
         canvas,
         MappingProxyType(shapes),
     )
+    # What needs the asset's geometry: its names as a pose reads them, and
+    # every anchor resolved on its part, so that an asset loaded is whole.
+    from .anchor import attachments
+    from .pose import model_of
+
+    attachments(model_of(asset))
+    return asset
+
+
+def _admitted(asset: Asset, label: str) -> None:
+    """Refuse ``asset`` (asked for as ``label``) unless its manifest records
+    the passing checks of :data:`TOOL` at its digest, every one:
+    ``asset.unadmitted``, whose ``reason`` says what is not so.
+    """
+    checks = asset.manifest.checks
+    if checks is None:
+        _unadmitted(
+            label,
+            f"the asset {label} carries no admission record",
+            "unchecked",
+        )
+    tool = checks.get("tool")
+    if tool != TOOL:
+        _unadmitted(
+            label,
+            f"the asset {label} was admitted by {tool!r}, not by {TOOL!r}, the"
+            " admission this engine supports",
+            "tool",
+            expected=TOOL,
+            found=thawed(tool),
+        )
+    recorded = checks.get("digest")
+    if recorded != asset.digest:
+        _unadmitted(
+            label,
+            f"the asset {label} has changed since it was admitted: its digest is"
+            f" {asset.digest}, and its checks were recorded at {recorded}",
+            "digest",
+            expected=asset.digest,
+            found=thawed(recorded),
+        )
+    results = checks.get("results")
+    passing: dict[str, bool] = {}
+    for entry in results if isinstance(results, (list, tuple)) else ():
+        if isinstance(entry, Mapping) and entry.get("name") in CHECKS:
+            name = entry["name"]
+            passing[name] = passing.get(name, True) and entry.get("pass") is True
+    missing = [name for name in CHECKS if name not in passing]
+    if missing:
+        _unadmitted(
+            label,
+            f"the admission record of the asset {label} lacks the check"
+            f" {', '.join(missing)} of {TOOL}",
+            "missing",
+            checks=missing,
+        )
+    failing = [name for name in CHECKS if not passing[name]]
+    if failing:
+        _unadmitted(
+            label,
+            f"the asset {label} fails the admission check {', '.join(failing)}",
+            "failing",
+            checks=failing,
+        )
+
+
+def _unadmitted(label: str, what: str, reason: str, **detail: Any) -> NoReturn:
+    refuse("asset.unadmitted", what, asset=label, reason=reason, **detail)
 
 
 def _bytes(directory: Path, file: str, label: str) -> bytes:

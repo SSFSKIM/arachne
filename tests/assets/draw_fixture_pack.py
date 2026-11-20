@@ -17,12 +17,23 @@ The pack is six plain assets, each exercising part of the manifest:
   driver with three keys; an ``outline`` anchor at its tip and an
   ``interior`` anchor with keyed positions.
 
+Then each asset is admitted by the engine's admission tool, and its
+manifest records the checks' results with its digest, every one passing.
+
+Three more assets each carry one defect admission must find, and nothing
+else it finds: ``open-seam`` (a pane that slides in its frame and opens a
+seam inside the figure: ``hole``), ``loose-part`` (a handle pulled clear of
+its body: ``detached_part``) and ``stray-anchor`` (a lid's anchor named on
+the body: ``anchor_off_part``). Their manifests record the checks as the tool
+finds them, failing.
+
 Numbers are rounded to three decimals and files are written as the
 repository's hooks leave them (no trailing space, one final newline), so that
 drawing the pack again gives the committed files.
 
-Run as ``python tests/assets/draw_fixture_pack.py <directory>``; the
-committed pack is ``arachne/assets/fixtures``.
+Run as ``python tests/assets/draw_fixture_pack.py <directory> [<defects>]``;
+the committed pack is ``arachne/assets/fixtures``, and the defects are
+``tests/assets/defects``.
 """
 
 from __future__ import annotations
@@ -36,6 +47,7 @@ from typing import Any
 import numpy as np
 
 from arachne import Circle, Polygon, Rectangle, RoundedRectangle, VMobject
+from arachne.assets.admission import AdmissionReport, admit
 
 #: Every fixture asset's name, in the order drawn.
 NAMES = (
@@ -46,6 +58,13 @@ NAMES = (
     "figure",
     "layered-section",
 )
+
+#: Every planted defect's name, and the one check it fails.
+DEFECTS = {
+    "open-seam": "hole",
+    "loose-part": "detached_part",
+    "stray-anchor": "anchor_off_part",
+}
 
 #: Canvas units to scene units, for every fixture.
 SCALE = 0.01
@@ -548,6 +567,11 @@ def figure(root: Path) -> None:
         shown=False,
     )
     turn = [4, 8, 4] * 3
+    lattice = {"cols": 2, "rows": 2, "bounds": [114, 68, 186, 152]}
+    # The eyes, a slot under the warped head, slide as far as the warp
+    # carries the points they sit at: a warp moves its own part only.
+    eyes = [(138, 105), (162, 105)]
+    follow = np.mean([warp_at(lattice, turn, eye) for eye in eyes])
     pack.manifest(
         (150, 225),
         parts=[
@@ -558,7 +582,7 @@ def figure(root: Path) -> None:
                 "torso",
                 (150, 148),
                 1,
-                lattice={"cols": 2, "rows": 2, "bounds": [114, 68, 186, 152]},
+                lattice=lattice,
             ),
             part("upper_arm", file, "torso", (195, 168), 3, element="upper_arm"),
             part("lower_arm", file, "upper_arm", (195, 230), 4, element="lower_arm"),
@@ -618,7 +642,14 @@ def figure(root: Path) -> None:
                             (25, [[dx, 0] for dx in turn]),
                             member="offsets",
                         ),
-                    }
+                    },
+                    {
+                        "part": "eyes",
+                        "kind": "translate",
+                        "keys": keys(
+                            (-25, [-follow, 0]), (0, [0, 0]), (25, [follow, 0])
+                        ),
+                    },
                 ],
             },
         ],
@@ -638,6 +669,27 @@ def figure(root: Path) -> None:
                 "at": [195, 232],
             },
         ],
+    )
+
+
+def warp_at(
+    lattice: dict[str, Any], offsets: list[float], point: tuple[float, float]
+) -> float:
+    """The horizontal offset a lattice whose points move by ``offsets``
+    (one per point, row by row) gives ``point``, blended bilinearly.
+    """
+    x0, y0, x1, y1 = lattice["bounds"]
+    cols, rows = lattice["cols"], lattice["rows"]
+    u = (point[0] - x0) / (x1 - x0) * cols
+    v = (point[1] - y0) / (y1 - y0) * rows
+    i, j = min(int(u), cols - 1), min(int(v), rows - 1)
+    fu, fv = u - i, v - j
+    grid = np.reshape(offsets, (rows + 1, cols + 1))
+    return float(
+        (1 - fu) * (1 - fv) * grid[j, i]
+        + fu * (1 - fv) * grid[j, i + 1]
+        + (1 - fu) * fv * grid[j + 1, i]
+        + fu * fv * grid[j + 1, i + 1]
     )
 
 
@@ -728,15 +780,166 @@ def layered_section(root: Path) -> None:
     )
 
 
+# The planted defects
+
+
+def one_parameter(
+    name: str,
+    low: float,
+    high: float,
+    part: str,
+    kind: str,
+    out: list[Any],
+    **more: Any,
+) -> dict[str, Any]:
+    """A parameter from ``low`` (its default) to ``high`` that drives
+    ``part`` by ``kind`` from the output ``out[0]`` to ``out[1]``.
+    """
+    driver = {"part": part, "kind": kind, **more}
+    driver["keys"] = keys((low, out[0]), (high, out[1]))
+    return {
+        "name": name,
+        "min": low,
+        "max": high,
+        "default": low,
+        "unit": "1",
+        "drives": [driver],
+    }
+
+
+def open_seam(root: Path) -> None:
+    """A frame whose pane slides and opens a seam inside it."""
+    pack = Pack(root, "open-seam", (300, 300))
+    frame = pack.file(
+        "pieces/frame.svg",
+        {
+            None: [
+                Shape(rect(50, 50, 200, 20), "#6d4c41", "#3e2723"),
+                Shape(rect(50, 230, 200, 20), "#6d4c41", "#3e2723"),
+                Shape(rect(50, 70, 20, 160), "#6d4c41", "#3e2723"),
+                Shape(rect(230, 70, 20, 160), "#6d4c41", "#3e2723"),
+            ]
+        },
+    )
+    pane = pack.file(
+        "pieces/pane.svg", {None: [Shape(rect(66, 66, 168, 168), "#b3e5fc")]}
+    )
+    pack.manifest(
+        (150, 150),
+        parts=[
+            part("frame", frame, None, (150, 150), 1),
+            part("pane", pane, "frame", (150, 150), 0),
+        ],
+        slots=[],
+        parameters=[
+            one_parameter("slide", 0, 1, "pane", "translate", [[0, 0], [10, 0]])
+        ],
+        anchors=[
+            {"name": "latch", "part": "frame", "attach": "interior", "at": [240, 150]}
+        ],
+    )
+
+
+def loose_part(root: Path) -> None:
+    """A body whose handle is pulled clear of it."""
+    pack = Pack(root, "loose-part", (300, 300))
+    file = pack.file(
+        "loose-part.svg",
+        {
+            "body": [Shape(rect(60, 120, 180, 120), "#90a4ae", "#37474f")],
+            "handle": [Shape(rect(120, 90, 60, 36, corner=8), "#ffb300", "#37474f")],
+        },
+    )
+    pack.manifest(
+        (150, 165),
+        parts=[
+            part("body", file, None, (150, 180), 0, element="body"),
+            part("handle", file, "body", (150, 108), 1, element="handle"),
+        ],
+        slots=[],
+        parameters=[
+            one_parameter("pull", 0, 1, "handle", "translate", [[0, 0], [0, -60]])
+        ],
+        anchors=[
+            {"name": "grip", "part": "handle", "attach": "interior", "at": [150, 100]},
+            {"name": "base", "part": "body", "attach": "interior", "at": [150, 200]},
+        ],
+    )
+
+
+def stray_anchor(root: Path) -> None:
+    """A box whose lid's anchor is named on the body."""
+    pack = Pack(root, "stray-anchor", (400, 300))
+    file = pack.file(
+        "stray-anchor.svg",
+        {
+            "body": [Shape(rect(80, 140, 240, 120), "#a1887f", "#4e342e")],
+            "lid": [
+                Shape(rect(76, 118, 248, 22), "#8d6e63", "#4e342e"),
+                Shape(rect(190, 108, 20, 10), "#4e342e"),
+            ],
+        },
+    )
+    pack.manifest(
+        (200, 184),
+        parts=[
+            part("body", file, None, (200, 260), 0, element="body"),
+            part("lid", file, "body", (80, 140), 1, element="lid"),
+        ],
+        slots=[],
+        parameters=[
+            one_parameter("lid_open", 0, 90, "lid", "rotate", [0, 90], unit="deg")
+        ],
+        anchors=[
+            {"name": "knob", "part": "body", "attach": "interior", "at": [200, 112]}
+        ],
+    )
+
+
+# Admission
+
+
+def record_checks(directory: Path) -> AdmissionReport:
+    """Admit the asset in ``directory`` and write what admission found into
+    its manifest, before its provenance.
+    """
+    report = admit(directory)
+    path = directory / "manifest.json"
+    document = json.loads(path.read_text())
+    provenance = document.pop("provenance")
+    document |= {"checks": report.checks(), "provenance": provenance}
+    path.write_text(json_text(document) + "\n")
+    return report
+
+
 def draw(root: Path) -> None:
-    """Draw every fixture asset into ``root``, one directory each."""
+    """Draw every fixture asset into ``root``, one directory each, and
+    admit it.
+    """
     lidded(root, "lidded-box", crate=False)
     lidded(root, "lidded-crate", crate=True)
     dial(root)
     gate_valve(root)
     figure(root)
     layered_section(root)
+    for name in NAMES:
+        report = record_checks(root / name)
+        if not report.passed:
+            raise AssertionError("\n".join(report.lines()))
+
+
+def draw_defects(root: Path) -> None:
+    """Draw every planted defect into ``root``, one directory each, and
+    record what admission finds of it.
+    """
+    open_seam(root)
+    loose_part(root)
+    stray_anchor(root)
+    for name in DEFECTS:
+        record_checks(root / name)
 
 
 if __name__ == "__main__":
     draw(Path(sys.argv[1]))
+    if len(sys.argv) > 2:
+        draw_defects(Path(sys.argv[2]))
