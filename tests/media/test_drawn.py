@@ -8,12 +8,7 @@ that drew a clip. Collected only where the GPU build is installed.
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
-import textwrap
 from fractions import Fraction
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,10 +18,10 @@ from arachne.mobject.media import frames
 from arachne.mobject.media.frames import FrameCache
 from arachne.server.dispatch import Dispatcher
 from arachne.server.protocol import REFUSED, RpcError
+from tests.helpers.gpu_door import run_child
 
 from .conftest import SCENES, SMALL, line_of
 
-ROOT = Path(__file__).resolve().parents[2]
 #: An opaque backdrop the clip stands over.
 BACKDROP = (32, 96, 160)
 INSTANTS = (Fraction(0), Fraction(1, 4), Fraction(1, 2))
@@ -40,10 +35,10 @@ def _close(a: np.ndarray, b: np.ndarray, within: int = 1) -> bool:
     return a.shape == b.shape and int(np.abs(a - b).max()) <= within
 
 
-def test_a_clip_s_transparent_pixels_show_what_is_behind_them(session_of, gpu_door):
+def test_a_clip_s_transparent_pixels_show_what_is_behind_them(session_of, door):
     backdrop = "#{:02x}{:02x}{:02x}".format(*BACKDROP)
     drawn = _pixels(session_of("ClipOverBackdrop", background_color=backdrop), 0)
-    assert gpu_door.draws == 1
+    assert door.draws == 1
     clip = load_asset("fixture:numbered-clip")
     straight = frames.checked_frame(clip, 0).astype(float)
     alpha = straight[..., 3:] / 255
@@ -55,31 +50,29 @@ def test_a_clip_s_transparent_pixels_show_what_is_behind_them(session_of, gpu_do
 
 
 def test_the_routing_fixture_s_clip_is_drawn_by_the_compositor_as_the_still(
-    session_of, gpu_door
+    session_of, door
 ):
     still = session_of("FixtureImage")
     clip = session_of("FixtureClip")
     for t in INSTANTS:
         assert _close(_pixels(clip, t), _pixels(still, t))
-    assert gpu_door.draws == len(INSTANTS)
-    (opened,) = gpu_door.opened
+    assert door.draws == len(INSTANTS)
+    (opened,) = door.opened
     named = {"name": "gpu", "pin": dict(opened.pin)}
     assert clip.renderer == named
     assert [answer.renderer for answer in clip.answers(list(INSTANTS))] == [named] * 3
 
 
-def test_clips_and_a_sprite_moved_and_faded_draw_on_the_device(session_of, gpu_door):
+def test_clips_and_a_sprite_moved_and_faded_draw_on_the_device(session_of, door):
     for name in ("ClipMoved", "SpriteAlone", "TwoOfOneAsset"):
         session = session_of(name)
         assert session.route == "gpu"
         pictures = [_pixels(session, t) for t in (Fraction(1, 5), Fraction(1))]
         assert pictures[0].shape == (54, 96, 4)
-    assert gpu_door.draws == 6
+    assert door.draws == 6
 
 
-def test_a_clip_frame_that_decodes_otherwise_draws_nothing(
-    tmp_path, monkeypatch, gpu_door
-):
+def test_a_clip_frame_that_decodes_otherwise_draws_nothing(tmp_path, monkeypatch, door):
     monkeypatch.setattr(frames, "cache", FrameCache())
     decoded = frames.decode
 
@@ -104,12 +97,12 @@ def test_a_clip_frame_that_decodes_otherwise_draws_nothing(
     assert finding["code"] == "media.inexact"
     assert finding["detail"]["reason"] == "digest"
     assert finding["line"] == line_of("fixture-clip").line
-    assert gpu_door.draws == 0
+    assert door.draws == 0
     assert not picture.exists()
 
 
 def test_a_warm_clip_whose_frame_decodes_otherwise_once_evicted_draws_nothing(
-    tmp_path, monkeypatch, gpu_door
+    tmp_path, monkeypatch, door
 ):
     """A clip already drawn on the device, its frame then let go by the cache
     and decoded again otherwise, is refused at the next frame with the line
@@ -125,7 +118,7 @@ def test_a_warm_clip_whose_frame_decodes_otherwise_once_evicted_draws_nothing(
         )
         server.handle("frame", {"t": 0.25, "path": str(drawn)})
         assert drawn.exists()
-        assert gpu_door.draws == 1
+        assert door.draws == 1
         assert len(kept) == 1
         kept.clear()
         decoded = frames.decode
@@ -145,7 +138,7 @@ def test_a_warm_clip_whose_frame_decodes_otherwise_once_evicted_draws_nothing(
     assert finding["code"] == "media.inexact"
     assert finding["detail"]["reason"] == "digest"
     assert finding["line"] == line_of("fixture-clip").line
-    assert gpu_door.draws == 1
+    assert door.draws == 1
     assert not refused_at.exists()
 
 
@@ -154,10 +147,11 @@ def test_a_warm_clip_whose_frame_decodes_otherwise_once_evicted_draws_nothing(
 PROGRAM = """\
 import hashlib, json, sys
 
-from tests.helpers.gpu_door import install
-
-door = install()
+from arachne.compose import device
 from arachne.session import Session
+from tests.helpers.gpu_door import LaunchDoor
+
+door = device.door = LaunchDoor()
 
 directory, media, scenes = sys.argv[1:4]
 config = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 4, "media_dir": media}
@@ -191,17 +185,8 @@ def test_old_scenes_draw_the_same_bytes_after_a_scene_drew_clips(tmp_path):
     from tests.assets.test_old_constructors import _scenes
 
     directory = _scenes(tmp_path / "scenes")
-    done = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(PROGRAM), str(directory)]
-        + [str(tmp_path / "media"), str(SCENES)],
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        env={**os.environ},
-        timeout=300,
-    )
-    assert done.returncode == 0, done.stderr
-    found = json.loads(done.stdout.strip().splitlines()[-1])
+    printed = run_child(PROGRAM, str(directory), str(tmp_path / "media"), str(SCENES))
+    found = json.loads(printed.strip().splitlines()[-1])
     assert found["clips"]["route"] == "gpu"
     assert found["drawn"] == 4
     assert found["fresh"] == found["after"]

@@ -23,12 +23,7 @@ from arachne.assets.reader import FIXTURES
 from arachne.compose import device
 from arachne.session import Session
 from arachne.timeline import SourceLine
-from tests.helpers.gpu_door import (  # noqa: F401 - the fixture and the hooks
-    gpu_door,
-    pytest_sessionfinish,
-    pytest_terminal_summary,
-    pytest_testnodedown,
-)
+from tests.helpers import gpu_door
 
 SCENES = Path(__file__).parent / "media_scenes.py"
 #: The planted media assets the frame checks must refuse.
@@ -40,6 +35,16 @@ SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15}
 if importlib.util.find_spec("arachne_gpu") is None:
     # These draw on a device: the launch mode's.
     collect_ignore = ["test_drawn.py"]
+
+
+def pytest_configure(config):
+    gpu_door.report_adapters(config)
+
+
+@pytest.fixture
+def door(monkeypatch) -> gpu_door.LaunchDoor:
+    """This run's device, the one every frame of the test is drawn on."""
+    return gpu_door.install(monkeypatch)
 
 
 class _NoGpu:
