@@ -110,15 +110,16 @@ class TwoAsImages(Scene):
 
 
 def _images(directory: Path, shown: str, shift: float) -> str:
-    """Source building the flap rig's pictures from ``directory`` as images,
-    at rest with ``shown`` on its badge, moved ``shift`` across.
+    """Source of the flap rig's pictures from ``directory`` as images, at
+    rest with ``shown`` on its badge, moved ``shift`` across: the items of a
+    list.
     """
     files = files_of(directory)
     made = []
     for name, corners in flap_pictures(0, 1, shown).items():
         at = (corners + [shift, 0, 0]).tolist()
         made.append(f"image({str(directory / files[name])!r}, {at!r})")
-    return "[" + ", ".join(made) + "]"
+    return ", ".join(made)
 
 
 @pytest.mark.parametrize("a_first", [True, False])
@@ -143,16 +144,8 @@ def test_two_stills_of_one_size_show_their_own_pixels_in_either_load_order(
                 a=str(FLAP),
                 b=str(other),
                 a_first=a_first,
-                before="["
-                + _images(FLAP, "on", -2.5)
-                + ", *"
-                + _images(other, "on", 2.5)
-                + "]",
-                after="["
-                + _images(FLAP, "off", -2.5)
-                + ", *"
-                + _images(other, "off", 2.5)
-                + "]",
+                before=f"[{_images(FLAP, 'on', -2.5)}, {_images(other, 'on', 2.5)}]",
+                after=f"[{_images(FLAP, 'off', -2.5)}, {_images(other, 'off', 2.5)}]",
             )
         )
     )
@@ -210,12 +203,21 @@ def test_a_layered_set_slides_by_its_depths_in_the_drawn_frame(session_of, door)
     for k in range(1, 61):
         t = Fraction(k, 60)
         state = session.state_at(t)
-        nodes = {node.name: node for node in state.nodes if node.name}
-        ids = [nodes[names[name]].id for name in home]
-        drawn = object_map(session, t, ids)
+        by_id = {node.id: node for node in state.nodes}
+        named = {node.name: node for node in state.nodes if node.name}
+        # Each layer's quad, the one drawable its group holds.
+        quads = {
+            name: next(
+                by_id[child]
+                for child in named[names[name]].children
+                if by_id[child].type == "RasterPart"
+            )
+            for name in home
+        }
+        drawn = object_map(session, t, [quad.id for quad in quads.values()])
         moved = PAN * k / 60
         for name, corners in home.items():
-            node = nodes[names[name]]
+            node = quads[name]
             slide = (1 - DISTANCE / (DISTANCE + depth_of(name))) * moved
             x0, x1 = (corners[:, 0] + slide[0]).min(), (corners[:, 0] + slide[0]).max()
             left, right = _columns(x0, x1, moved[0])
