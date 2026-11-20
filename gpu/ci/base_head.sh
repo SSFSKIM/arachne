@@ -30,6 +30,9 @@ for arm in base head; do
 done
 # Each arm draws with its own interpreter from its own tree: the head's script and scene list,
 # the arm's engine.
+# Every pass hashes strings under one seed: a partial-movie key that reads an unordered container
+# otherwise takes another value in another process, at either commit (ThreeDCamera's key moves so).
+export PYTHONHASHSEED=0
 for arm in base head; do
   tree=$root
   [ "$arm" = base ] && tree=$work/base
