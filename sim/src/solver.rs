@@ -763,6 +763,16 @@ impl Solver {
     }
 }
 
+#[cfg(test)]
+impl Solver {
+    /// The solver's world and each shape with its body (`shapes`), for the tests that read what
+    /// the solver holds.
+    #[allow(dead_code)] // Read by the 3D pile's tests only (world::pile).
+    pub(crate) fn physics(&self) -> (&PhysicsWorld, &[(ColliderHandle, u32)]) {
+        (&self.world, &self.shapes)
+    }
+}
+
 /// A spring's force on its first anchor, from the second anchor's offset `d` and relative
 /// velocity `dv`, along the line between the anchors: an elastic term `k d` at rest length 0
 /// (no direction needed) and `k (|d| - rest) n` otherwise, `n` the line's direction, and a

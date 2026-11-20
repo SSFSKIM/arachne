@@ -888,6 +888,10 @@ impl World {
     }
 }
 
+// The 200-box pile's tunnelling evidence: what the solver held between each pair it finds.
+#[cfg(test)]
+mod pile;
+
 impl std::fmt::Debug for World {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("World")

@@ -1,0 +1,456 @@
+//! The 200-box pile: a walled tray, and 8 layers of 5 x 5 spinning cubes dropped into it, stepped
+//! 3,600 ticks (W200's literals). For each pair the step's checks find tunnelled in it, the
+//! evidence of what happened: the sweep's class and value, the pair's distance through the step,
+//! and what the solver's contact graph held between the two after the step before it, after the
+//! step itself (the contacts its every substep solved: one narrow-phase pass per step, since the
+//! world takes one continuous-collision substep) and after the next (computed from the step's
+//! end). Printed for CI's log, one line per finding.
+
+use std::collections::HashMap;
+use std::fmt;
+
+use rapier3d::parry::query::{self, NonlinearRigidMotion};
+use rapier3d::prelude::{ColliderHandle, PhysicsWorld, Pose, Rotation, Vector};
+use sha2::{Digest, Sha256};
+
+use super::{Engine, Integrator, Options, World, finding};
+use crate::spec::{Body, Force, Shape, ShapeKind};
+
+const LAST_TICK: usize = 3600;
+const GRAVITY: [f64; 3] = [0.0, 0.0, -9.8];
+const BOX_SIDE: f64 = 0.4;
+/// Boxes along x, along y, and layers.
+const GRID: [usize; 3] = [5, 5, 8];
+const SPACING: f64 = 0.6;
+const FIRST_LAYER_Z: f64 = 1.0;
+const ODD_LAYER_SHIFT: f64 = 0.3;
+const SPINS: [[f64; 3]; 5] = [
+    [1.5, 0.0, 0.0],
+    [0.0, 1.5, 0.0],
+    [0.0, 0.0, 1.5],
+    [-1.0, 1.0, 0.0],
+    [0.0, -1.0, 1.0],
+];
+/// Every shape's material: the boxes' and the tray's (a fixed body's density is the default, 1).
+const DENSITY: f64 = 1.0;
+const FRICTION: f64 = 0.5;
+const RESTITUTION: f64 = 0.1;
+/// The tray's fixed parts, each its size and centre: the floor, then the four walls.
+const TRAY: [([f64; 3], [f64; 3]); 5] = [
+    ([8.0, 8.0, 0.2], [0.0, 0.0, -0.1]),
+    ([0.2, 4.4, 2.5], [-2.1, 0.0, 1.25]),
+    ([0.2, 4.4, 2.5], [2.1, 0.0, 1.25]),
+    ([4.0, 0.2, 2.5], [0.0, -2.1, 1.25]),
+    ([4.0, 0.2, 2.5], [0.0, 2.1, 1.25]),
+];
+const POSE: usize = 7;
+const VELOCITY: usize = 6;
+/// Instants at which a finding's pair is measured through its step.
+const SAMPLES: usize = 1024;
+
+fn stored(x: f64) -> f32 {
+    x as f32
+}
+
+/// A body of one box shape at its centre, in the pile's material.
+fn cuboid(w: &mut World, fixed: bool, size: [f64; 3], centre: [f64; 3], spin: [f64; 3]) {
+    let body = w
+        .add_body(Body {
+            fixed,
+            position: centre.map(stored).to_vec(),
+            rotation: vec![0.0, 0.0, 0.0, 1.0],
+            velocity: vec![0.0; 3],
+            angular_velocity: spin.map(stored).to_vec(),
+            mass: 0.0,
+            gravity_scale: 1.0,
+        })
+        .expect("a body");
+    w.add_shape(Shape {
+        body,
+        kind: ShapeKind::Cuboid {
+            half_extents: size.map(|x| stored(x / 2.0)).to_vec(),
+        },
+        position: vec![0.0; 3],
+        rotation: vec![0.0, 0.0, 0.0, 1.0],
+        density: stored(DENSITY),
+        friction: stored(FRICTION),
+        restitution: stored(RESTITUTION),
+    })
+    .expect("a shape");
+}
+
+/// The pile as the authoring API declares it: gravity, the tray's parts, then the boxes layer by
+/// layer, y then x within a layer, each odd layer shifted by half a spacing.
+fn pile() -> World {
+    let mut w =
+        World::with_options(3, Integrator::Solver, false, Options::default()).expect("a world");
+    w.add_force(Force::Gravity {
+        acceleration: GRAVITY.map(stored).to_vec(),
+    })
+    .expect("gravity");
+    for (size, centre) in TRAY {
+        cuboid(&mut w, true, size, centre, [0.0; 3]);
+    }
+    let mut boxes = 0;
+    for layer in 0..GRID[2] {
+        let shift = if layer % 2 == 1 { ODD_LAYER_SHIFT } else { 0.0 };
+        let z = FIRST_LAYER_Z + layer as f64 * SPACING;
+        for j in 0..GRID[1] {
+            for i in 0..GRID[0] {
+                let x = (i as f64 - (GRID[0] - 1) as f64 / 2.0) * SPACING + shift;
+                let y = (j as f64 - (GRID[1] - 1) as f64 / 2.0) * SPACING + shift;
+                let spin = SPINS[boxes % SPINS.len()];
+                cuboid(&mut w, false, [BOX_SIDE; 3], [x, y, z], spin);
+                boxes += 1;
+            }
+        }
+    }
+    w
+}
+
+fn physics(w: &World) -> (&PhysicsWorld, &[(ColliderHandle, u32)]) {
+    match &w.engine {
+        Engine::Three(s) => s.physics(),
+        _ => unreachable!("the pile is a 3D solver's world"),
+    }
+}
+
+/// A body's name in the pile.
+fn name(body: u32) -> String {
+    const PARTS: [&str; 5] = ["floor", "wall -x", "wall +x", "wall -y", "wall +y"];
+    match PARTS.get(body as usize) {
+        Some(part) => part.to_string(),
+        None => {
+            let n = body as usize - PARTS.len();
+            format!("box {n} (layer {})", n / (GRID[0] * GRID[1]))
+        }
+    }
+}
+
+/// What the solver's contact graph held between two shapes after a step: the pair's manifolds,
+/// their points, the contacts handed to the solver (an active contact), and the closest of each.
+#[derive(Clone, Copy)]
+struct Held {
+    manifolds: usize,
+    points: usize,
+    solver: usize,
+    closest_point: f32,
+    closest_solver: f32,
+}
+
+impl Held {
+    fn active(held: Option<Held>) -> bool {
+        held.is_some_and(|h| h.solver > 0)
+    }
+}
+
+/// A pair's entry, or `none` when the graph holds no pair of the two (their boxes apart).
+struct Entry(Option<Held>);
+
+impl fmt::Display for Entry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            None => f.write_str("none"),
+            Some(h) => write!(
+                f,
+                "{} manifolds {} points (closest {:.6}) {} solver contacts (closest {:.6})",
+                h.manifolds, h.points, h.closest_point, h.solver, h.closest_solver
+            ),
+        }
+    }
+}
+
+/// Every pair of bodies the solver's contact graph holds now.
+fn held(w: &World) -> HashMap<(u32, u32), Held> {
+    let (physics, shapes) = physics(w);
+    let body: HashMap<ColliderHandle, u32> = shapes.iter().copied().collect();
+    let mut found = HashMap::new();
+    for pair in physics.narrow_phase.contact_pairs() {
+        let (a, b) = (body[&pair.collider1], body[&pair.collider2]);
+        let mut h = Held {
+            manifolds: 0,
+            points: 0,
+            solver: 0,
+            closest_point: f32::INFINITY,
+            closest_solver: f32::INFINITY,
+        };
+        for m in pair.manifolds() {
+            h.manifolds += 1;
+            h.points += m.points.len();
+            for p in &m.points {
+                h.closest_point = h.closest_point.min(p.dist);
+            }
+        }
+        for m in pair.solver_manifolds() {
+            h.solver += m.data.solver_contacts.len();
+            for c in &m.data.solver_contacts {
+                h.closest_solver = h.closest_solver.min(c.dist);
+            }
+        }
+        assert_eq!(h.solver > 0, pair.has_any_active_contact());
+        found.insert((a.min(b), a.max(b)), h);
+    }
+    found
+}
+
+fn body_pose(row: &[f32], b: u32) -> Pose {
+    let p = &row[b as usize * POSE..(b as usize + 1) * POSE];
+    Pose::from_parts(
+        Vector::new(p[0], p[1], p[2]),
+        Rotation::from_xyzw(p[3], p[4], p[5], p[6]),
+    )
+}
+
+/// The turn from `from` to `to` as a rotation vector, as the step's checks take it.
+fn turn(from: Rotation, to: Rotation) -> Vector {
+    let q = to * from.inverse();
+    let sign = if q.w < 0.0 { -1.0 } else { 1.0 };
+    let axis = Vector::new(q.x, q.y, q.z) * sign;
+    let half = axis.length();
+    if half == 0.0 {
+        return Vector::ZERO;
+    }
+    axis * (2.0 * libm::atan2f(half, q.w * sign) / half)
+}
+
+/// The pair's distance through the step, its two shapes swept as the step's checks sweep them
+/// (each body's centre of mass along a line, its turn at a constant rate): at its start and end,
+/// the closest (zero when they intersect) and the deepest penetration (a contact's negative
+/// distance), each with its instant; and the rate the checks bound the closing by.
+struct Profile {
+    start: f32,
+    end: f32,
+    closest: (f32, f32),
+    deepest: (f32, f32),
+    rate: f32,
+}
+
+fn profile(w: &World, pair: (u32, u32), row: usize) -> Profile {
+    let (physics, shapes) = physics(w);
+    let n = w.bodies();
+    let (before, after) = (w.pose(row - 1, row), w.pose(row, row + 1));
+    let mut moving = Vec::new();
+    for b in [pair.0, pair.1] {
+        let (handle, _) = shapes.iter().find(|&&(_, on)| on == b).expect("a shape");
+        let collider = &physics.colliders[*handle];
+        let local = *collider
+            .position_wrt_parent()
+            .expect("a shape is on a body");
+        let com = physics.bodies[collider.parent().expect("a body")].local_center_of_mass();
+        let (from, to) = (body_pose(before, b), body_pose(after, b));
+        let start = from * local;
+        let spin = turn(from.rotation, to.rotation);
+        let linvel = to.transform_point(com) - from.transform_point(com);
+        let sphere = collider.shape().compute_local_bounding_sphere();
+        let reach = (local.transform_point(sphere.center) - com).length() + sphere.radius;
+        moving.push((
+            NonlinearRigidMotion::new(start, local.inverse_transform_point(com), linvel, spin),
+            collider.shape(),
+            linvel,
+            spin.length() * reach,
+        ));
+    }
+    assert_eq!(before.len(), n * POSE);
+    let ((m1, s1, v1, r1), (m2, s2, v2, r2)) = (&moving[0], &moving[1]);
+    let at = |t: f32| -> (f32, f32) {
+        let (p1, p2) = (m1.position_at_time(t), m2.position_at_time(t));
+        let distance = query::distance(&p1, *s1, &p2, *s2).map_or(f32::NAN, |d| d.distance);
+        let depth = match query::contact(&p1, *s1, &p2, *s2, 0.0) {
+            Ok(Some(c)) => c.dist,
+            _ => f32::INFINITY,
+        };
+        (distance, depth)
+    };
+    let mut p = Profile {
+        start: at(0.0).0,
+        end: at(1.0).0,
+        closest: (f32::INFINITY, 0.0),
+        deepest: (f32::INFINITY, 0.0),
+        rate: (*v1 - *v2).length() + r1 + r2,
+    };
+    for i in 0..=SAMPLES {
+        let t = i as f32 / SAMPLES as f32;
+        let (distance, depth) = at(t);
+        if distance < p.closest.0 {
+            p.closest = (distance, t);
+        }
+        if depth < p.deepest.0 {
+            p.deepest = (depth, t);
+        }
+    }
+    p
+}
+
+fn class(value: f32) -> &'static str {
+    if value.is_nan() {
+        "indeterminate"
+    } else if value < 0.0 {
+        "overlap"
+    } else {
+        "near"
+    }
+}
+
+fn speed(row: &[f32], b: u32) -> (f32, f32) {
+    let v = &row[b as usize * VELOCITY..(b as usize + 1) * VELOCITY];
+    let length = |x: &[f32]| (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+    (length(&v[..3]), length(&v[3..]))
+}
+
+/// One tunnelling finding and its evidence.
+struct Evidence {
+    row: usize,
+    pair: (u32, u32),
+    value: f32,
+    profile: Profile,
+    /// After the step before, the step itself, and the next step.
+    held: [Option<Held>; 3],
+    speeds: [(f32, f32); 2],
+    heights: [f32; 2],
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[test]
+fn the_pile_s_tunnelling_findings_with_what_the_solver_held() {
+    let started = std::time::Instant::now();
+    let mut w = pile();
+    w.advance_to(0).expect("the first row");
+    let mut before = held(&w);
+    let mut seen = w.findings().len();
+    let (mut pending, mut found): (Vec<Evidence>, Vec<Evidence>) = (Vec::new(), Vec::new());
+    for row in 1..=LAST_TICK {
+        w.advance_to(row).expect("the rows");
+        let now = held(&w);
+        for mut e in pending.drain(..) {
+            e.held[2] = now.get(&e.pair).copied();
+            found.push(e);
+        }
+        let (findings, values) = (w.findings(), w.finding_values());
+        for (&[at, kind, a, b], &value) in findings.iter().zip(values).skip(seen) {
+            if kind != finding::TUNNELLED {
+                eprintln!("pile: row {at}: finding kind {kind} of {a}, {b}");
+                continue;
+            }
+            assert_eq!(at as usize, row);
+            let pair = (a, b);
+            let (last, this) = (w.pose(row, row + 1), w.velocity(row, row + 1));
+            pending.push(Evidence {
+                row,
+                pair,
+                value,
+                profile: profile(&w, pair, row),
+                held: [before.get(&pair).copied(), now.get(&pair).copied(), None],
+                speeds: [speed(this, a), speed(this, b)],
+                heights: [last[a as usize * POSE + 2], last[b as usize * POSE + 2]],
+            });
+        }
+        seen = findings.len();
+        before = now;
+    }
+    found.append(&mut pending);
+    let elapsed = started.elapsed();
+
+    let contacts = w.contacts();
+    for e in &found {
+        let (a, b) = e.pair;
+        let p = &e.profile;
+        let near: Vec<String> = contacts
+            .iter()
+            .filter(|c| (c[1], c[2]) == e.pair && c[0].abs_diff(e.row as u32) <= 10)
+            .map(|c| format!("{}@{}", if c[3] == 1 { "began" } else { "ended" }, c[0]))
+            .collect();
+        eprintln!(
+            "pile-finding: row {} pair ({a}, {b}) [{} | {}] class {} value {:e}\n  \
+             distance: start {:.6} end {:.6} closest {:.6} at t={:.4} deepest contact {:.6} at \
+             t={:.4} rate {:.6}\n  \
+             solver held: before {} | during {} | after (from the end) {}\n  \
+             active: before {} during {} after {}; speeds (u/s, rad/s) {:?} {:?}; heights {:.4} \
+             {:.4}; contact events within 10 rows {:?}",
+            e.row,
+            name(a),
+            name(b),
+            class(e.value),
+            e.value,
+            p.start,
+            p.end,
+            p.closest.0,
+            p.closest.1,
+            p.deepest.0,
+            p.deepest.1,
+            p.rate,
+            Entry(e.held[0]),
+            Entry(e.held[1]),
+            Entry(e.held[2]),
+            Held::active(e.held[0]),
+            Held::active(e.held[1]),
+            Held::active(e.held[2]),
+            e.speeds[0],
+            e.speeds[1],
+            e.heights[0],
+            e.heights[1],
+            near,
+        );
+    }
+    let count = |c: &str| found.iter().filter(|e| class(e.value) == c).count();
+    eprintln!(
+        "pile: {} tunnelling findings: {} overlap, {} near, {} indeterminate; with an active \
+         contact before {}, during {}, after {}, at either end or during {}",
+        found.len(),
+        count("overlap"),
+        count("near"),
+        count("indeterminate"),
+        found.iter().filter(|e| Held::active(e.held[0])).count(),
+        found.iter().filter(|e| Held::active(e.held[1])).count(),
+        found.iter().filter(|e| Held::active(e.held[2])).count(),
+        found
+            .iter()
+            .filter(|e| e.held.iter().any(|&h| Held::active(h)))
+            .count(),
+    );
+
+    // What the last row shows (W200's rest facts), and the run's bytes.
+    let n = w.bodies();
+    let fixed = TRAY.len();
+    let (last, velocity) = (
+        w.pose(LAST_TICK, LAST_TICK + 1),
+        w.velocity(LAST_TICK, LAST_TICK + 1),
+    );
+    let boxes = fixed as u32..n as u32;
+    let max_speed = boxes
+        .clone()
+        .map(|b| speed(velocity, b).0)
+        .fold(0.0, f32::max);
+    let max_turning = boxes
+        .clone()
+        .map(|b| speed(velocity, b).1)
+        .fold(0.0, f32::max);
+    let top = boxes
+        .clone()
+        .map(|b| last[b as usize * POSE + 2])
+        .fold(f32::MIN, f32::max);
+    let in_tray = boxes
+        .filter(|&b| {
+            let p = &last[b as usize * POSE..];
+            p[0].abs() < 2.0 && p[1].abs() < 2.0
+        })
+        .count();
+    let (rows, events, seconds) = (w.rows(), contacts.len(), elapsed.as_secs_f64());
+    let (max_speed, max_turning, top) =
+        (f64::from(max_speed), f64::from(max_turning), f64::from(top));
+    eprintln!(
+        "pile: rows {rows} bodies {n}; at the last row max speed {max_speed:?} max angular speed \
+         {max_turning:?} top centre z {top:?} boxes in the tray {in_tray}; contact events \
+         {events}; advanced and read in {seconds:.3} s"
+    );
+    let identity = w.identity();
+    eprintln!(
+        "pile: build {:?} features {:?}; trace sha256 {}",
+        identity.build,
+        identity.features,
+        hex(Sha256::digest(w.trace_bytes()).as_slice()),
+    );
+    eprintln!("pile-declaration: {}", hex(w.declaration_bytes()));
+}
