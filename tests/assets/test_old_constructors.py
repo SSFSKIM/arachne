@@ -2,7 +2,7 @@
 opened by path draw exactly as before, whether or not a ``manifest.json``
 sits beside them, and whether or not a scene that used an asset ran before
 them in the same process; that scene poses its rig, alone and while it
-moves.
+moves, with a callout on one of its anchors and a readout counting.
 """
 
 from __future__ import annotations
@@ -49,9 +49,16 @@ from arachne import *
 class WithAsset(Scene):
     def construct(self):
         box = Rig("fixture:lidded-box")
-        self.add(box)
+        knob = Callout("knob", at=box.anchor("knob"))
+        reading = Readout(0, format="{:.0f} deg", at=anchor(box), offset=DOWN)
+        self.add(box, knob, reading)
         self.play(box.animate.shift(RIGHT), run_time=0.5)
-        self.play(Pose(box, lid_open=80), box.animate.shift(UP), run_time=0.5)
+        self.play(
+            Pose(box, lid_open=80),
+            CountUp(reading, 80),
+            box.animate.shift(UP),
+            run_time=0.5,
+        )
         box.pose(lid_open=30)
         self.wait(0.25)
 """
