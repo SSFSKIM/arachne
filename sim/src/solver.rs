@@ -256,11 +256,11 @@ impl Sweep<'_> {
         }
     }
 
-    /// A lower bound on the two shapes' signed distance through the step (negative: how deep
-    /// they penetrate each other), or `None` when it cannot be measured: their signed distance
-    /// at instants over which they close by at most a quarter of the allowance, each interval
-    /// between two bounded below by the mean of its ends less the most the distance can dip
-    /// between them (it changes at most at `rate`), less the rounding.
+    /// A certified lower bound on the two shapes' signed distance through the step (negative:
+    /// how deep they penetrate each other), or `None` when one cannot be certified: a certified
+    /// bound at instants over which they close by at most a quarter of the allowance (`bound`),
+    /// each interval between two bounded below by the mean of its ends less the most the distance
+    /// can dip between them (it changes at most at `rate`).
     fn least(&self) -> Option<f32> {
         let instants = (self.rate / (self.allowance / 4.0)).ceil();
         if !instants.is_finite() || instants > MOST_INSTANTS {
@@ -268,30 +268,53 @@ impl Sweep<'_> {
         }
         let instants = (instants as u32).max(1);
         let dip = self.rate / instants as f32 / 2.0;
-        let mut last = self.signed(0.0)?;
+        let (mut last, mut axis) = self.bound(0.0, None)?;
         let mut least = f32::INFINITY;
         for i in 1..=instants {
-            let next = self.signed(i as f32 / instants as f32)?;
+            let (next, along) = self.bound(i as f32 / instants as f32, Some(axis))?;
             least = least.min((last + next) / 2.0 - dip);
-            last = next;
+            (last, axis) = (next, along);
         }
-        Some(least - ROUNDING)
+        Some(least)
     }
 
-    /// The two shapes' signed distance at the instant `t` of the step: minus the depth of a
-    /// contact query's penetration, else their distance; `None` when it cannot be measured.
-    fn signed(&self, t: f32) -> Option<f32> {
+    /// A certified lower bound on the two shapes' signed distance at the instant `t` of the step,
+    /// and the axis that certifies it: the largest of their support planes' separations
+    /// (`separation`, with its rounding) along the axes the queries offer, a contact query's
+    /// normal on the first shape, the reverse of its normal on the second, and the direction
+    /// between their closest points, and along `carried`, the axis that certified the instant
+    /// before. The queries only offer axes: a support-plane separation along any axis is at most
+    /// the signed distance. The carried axis keeps the bound tight where two shapes all but touch,
+    /// and the queries' axes, taken from the difference of two nearly equal points, are rounded
+    /// off the true one. `None` when the queries offer no axis that certifies a bound (a
+    /// penetration the contact query cannot answer, which the closest points report as
+    /// intersecting): an unknown depth is never certified.
+    fn bound(&self, t: f32, carried: Option<Vector>) -> Option<(f32, Vector)> {
         let (p1, p2) = (
             self.motions.0.position_at_time(t),
             self.motions.1.position_at_time(t),
         );
         let (s1, s2) = self.shapes;
-        let signed = match query::contact(&p1, s1, &p2, s2, 0.0) {
-            Ok(Some(c)) if c.dist < 0.0 => c.dist,
-            Ok(_) => query::distance(&p1, s1, &p2, s2).ok()?.distance,
-            Err(_) => return None,
+        let (normal1, normal2) = match query::contact(&p1, s1, &p2, s2, 0.0) {
+            Ok(Some(c)) => (Some(c.normal1), Some(-c.normal2)),
+            _ => (None, None),
         };
-        signed.is_finite().then_some(signed)
+        let certify = |axis: Vector| {
+            let length = axis.dot(axis).sqrt();
+            let axis = (length.is_finite() && length > 0.0).then(|| axis / length)?;
+            separation(&p1, s1, &p2, s2, axis).map(|bound| (bound, axis))
+        };
+        let best = |a: (f32, Vector), b: (f32, Vector)| if b.0 > a.0 { b } else { a };
+        let offered = [normal1, normal2, direction(&p1, s1, &p2, s2)]
+            .into_iter()
+            .flatten()
+            .filter_map(certify)
+            .reduce(best)?;
+        Some(
+            carried
+                .and_then(certify)
+                .map_or(offered, |c| best(offered, c)),
+        )
     }
 
     /// The two shapes' gap at the instant `t` of the step.
@@ -760,11 +783,14 @@ impl Solver {
 
     /// Whether two shapes the sweep did not show apart are a contact the solver took one step
     /// late rather than a passing through: at the step's end they are within the solver's
-    /// prediction distance (its next step holds them in contact); the direction between their
-    /// closest points at the end agrees with that at the start (they end on the side they began);
-    /// and the deepest they penetrate each other through the step, as measured (`Sweep::least`),
-    /// is at most the allowed linear error (the depth the solver lets two resting shapes sink).
-    /// Both numbers are the solver's own. Anything that cannot be measured keeps the pair found.
+    /// prediction distance; the direction between their closest points at the end agrees with
+    /// that at the start (they end on the side they began); and the deepest they penetrate each
+    /// other through the step, as certified (`Sweep::least`), is at most the allowed linear error
+    /// (the depth the solver lets two resting shapes sink). Both numbers are the solver's own.
+    /// Anything that cannot be certified keeps the pair found. A stated limit: a shape that grazes
+    /// over an edge of a thin one no deeper than the allowed linear error, ending within the
+    /// prediction distance on its far side, keeps closest-point directions that agree, and is not
+    /// found (`world::late_contact`).
     fn late_contact(&self, sweep: &Sweep, start: (&Pose, &Pose), end: (&Pose, &Pose)) -> bool {
         let parameters = &self.world.integration_parameters;
         let (s1, s2) = sweep.shapes;
@@ -779,11 +805,10 @@ impl Solver {
                 (direction(start.0, s1, start.1, s2), direction(end.0, s1, end.1, s2)),
                 (Some(from), Some(to)) if from.dot(to) > 0.0
             );
+        let allowed = parameters.allowed_linear_error();
         same_side
             && (!self.checks(Condition::Shallow)
-                || sweep
-                    .least()
-                    .is_some_and(|least| least >= -parameters.allowed_linear_error()))
+                || sweep.least().is_some_and(|least| least >= -allowed))
     }
 
     /// Whether the late-contact rule checks `condition`: always, but in a test that drops it.
@@ -1047,6 +1072,105 @@ mod tests {
         let mut short = [0.0; DIM];
         short[1] = -0.4;
         assert_eq!(sweep(&short, 0.4), Swept::Apart);
+    }
+
+    /// A bar 2 long and 0.04 thick about its centre at the origin, at -0.3 rad and turning 0.52
+    /// rad through the step (about z in 3D), beside a fixed wall 1 thick whose near face is at
+    /// x = 0.998: the bar's end goes 0.0022 into the wall at angle 0 and out again.
+    fn swing() -> (
+        query::NonlinearRigidMotion,
+        query::NonlinearRigidMotion,
+        Cuboid,
+        Cuboid,
+        f32,
+    ) {
+        let turned = |angle: f32| {
+            let mut turn = [0.0; ANGULAR];
+            turn[ANGULAR - 1] = angle;
+            angular(&turn)
+        };
+        let origin = vector(&[0.0; DIM]);
+        let bar = query::NonlinearRigidMotion::new(
+            Pose::new(origin, turned(-0.3)),
+            origin,
+            origin,
+            turned(0.52),
+        );
+        let mut half = [0.02; DIM];
+        half[0] = 1.0;
+        let mut wall = [2.0; DIM];
+        wall[0] = 0.5;
+        let reach = vector(&half).length();
+        (
+            bar,
+            still(&along_x(1.498)),
+            Cuboid::new(vector(&half)),
+            Cuboid::new(vector(&wall)),
+            0.52 * reach,
+        )
+    }
+
+    #[test]
+    fn a_shallow_swing_s_depth_is_certified_tightly() {
+        // The bar's end goes 0.0022 into the wall: certified within the rounding and the dip
+        // between instants, where a bound over fewer axes once certified only -0.028.
+        let (bar, wall, bar_shape, wall_shape, rate) = swing();
+        let sweep = Sweep {
+            motions: (bar, wall),
+            shapes: (&bar_shape, &wall_shape),
+            rate,
+            allowance: 0.005,
+        };
+        let least = sweep.least();
+        let worst = (0..=1024)
+            .map(|i| i as f32 / 1024.0)
+            .map(|t| (sweep.bound(t, None).map(|(bound, _)| bound), t))
+            .min_by(|a, b| a.0.unwrap_or(f32::MIN).total_cmp(&b.0.unwrap_or(f32::MIN)));
+        assert!(
+            least.is_some_and(|least| (-0.0022 - 0.0005 - 0.0009..=-0.0022).contains(&least)),
+            "least {least:?}; the loosest instant {worst:?}"
+        );
+    }
+
+    #[test]
+    fn the_least_bound_is_certified_or_none() {
+        let ball = Ball::new(0.1);
+        let sweep = |x: f32, travel: f32| Sweep {
+            motions: (still(&[0.0; DIM]), moving(&along_x(x), &along_x(travel))),
+            shapes: (&ball, &ball),
+            rate: travel.abs().max(1.0e-3),
+            allowance: 0.005,
+        };
+        // Overlapping by 0.1 throughout: at most minus the depth, by no more than the margins.
+        let least = sweep(0.1, 0.0).least().expect("a bound");
+        assert!((-0.1 - 0.002..=-0.1).contains(&least), "{least}");
+        // Closing from 0.3 apart to 0.003 apart: at most the closest, and positive.
+        let least = sweep(0.5, -0.297).least().expect("a bound");
+        assert!(least > 0.0 && least <= 0.003, "{least}");
+        // A pose that is not a number certifies nothing.
+        assert_eq!(sweep(f32::NAN, 0.0).least(), None);
+        // A shape the contact query answers for but that has no support map certifies nothing:
+        // an ambiguous instant keeps the pair found (`late_contact`).
+        let mut up = [0.0; DIM];
+        up[0] = 1.0;
+        let plane = HalfSpace::new(vector(&up));
+        let half = Sweep {
+            motions: (still(&[0.0; DIM]), moving(&along_x(0.05), &along_x(0.0))),
+            shapes: (&plane, &ball),
+            rate: 1.0e-3,
+            allowance: 0.005,
+        };
+        assert!(matches!(
+            query::contact(
+                &Pose::from_translation(vector(&[0.0; DIM])),
+                &plane,
+                &Pose::from_translation(vector(&along_x(0.05))),
+                &ball,
+                0.0
+            ),
+            Ok(Some(_))
+        ));
+        assert_eq!(half.least(), None);
     }
 
     #[test]

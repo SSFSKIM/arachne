@@ -465,7 +465,10 @@ _TABLE = (
         " found; two that end the step within the solver's prediction distance, on"
         " the side they began, never deeper into each other than the allowed"
         " linear error, are a contact the solver registered a tick late, and are"
-        " not found",
+        " not found."
+        " A stated limit: a body that grazes over an edge of a thin shape no"
+        " deeper than the solver's allowed linear error, and ends within the"
+        " prediction distance on its far side, is also not found",
         "The tick is fixed, so let no body cross more than its own thickness in"
         " a step: thicken the thinner body, slow the faster one, or stiffen or"
         " soften the joint that flings it; and keep the world's"

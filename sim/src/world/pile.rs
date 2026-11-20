@@ -1,5 +1,5 @@
 //! Two contact-rich scenes, each of which finds nothing: the 200-box pile (a walled tray, and 8
-//! layers of 5 x 5 spinning cubes dropped into it, stepped 3,600 ticks: W200's literals), and a
+//! layers of 5 x 5 spinning cubes dropped into it, stepped 3,600 ticks, as measured), and a
 //! smaller pour of balls and boxes. For any pair the step's checks find tunnelled, the evidence
 //! of what happened is printed for CI's log: the sweep's class and value, the pair's distance
 //! through the step, and what the solver's contact graph held between the two after the step
@@ -481,9 +481,12 @@ fn report(scene: &str, w: &World, found: &[Evidence]) {
     );
 }
 
-/// The build the pile's trace is pinned on: the shipped wheel's (x86-64 Linux, the pinned
-/// toolchain, baseline target features). Elsewhere the bytes differ by design (README.md,
-/// "Determinism"), and the pin does not apply.
+/// Whether this is the baseline lane, x86-64 Linux, the shipped wheel's target: there the build
+/// identity must be the pinned one, so that a drift fails rather than skips. Elsewhere the bytes
+/// are the build's own by design (README.md, "Determinism"), and the pin does not apply.
+const BASELINE: bool = cfg!(all(target_arch = "x86_64", target_os = "linux"));
+/// The build the pile's trace is pinned on: the shipped wheel's (the pinned toolchain, baseline
+/// target features).
 const PINNED_BUILD: &str =
     "rustc 1.99.1 (58cf8f9c3 2026-10-13); x86_64-unknown-linux-gnu; fxsr,sse,sse2";
 /// The pile's trace bytes on that build, as they were before the late-contact rule: the rule
@@ -498,7 +501,7 @@ fn the_pile_comes_to_rest_with_nothing_found_and_its_trace_unchanged() {
     let seconds = started.elapsed().as_secs_f64();
     report("pile", &w, &found);
 
-    // What the last row shows (W200's rest facts), and the run's bytes.
+    // What the last row shows (the measured rest facts), and the run's bytes.
     let n = w.bodies();
     let (last, velocity) = (
         w.pose(LAST_TICK, LAST_TICK + 1),
@@ -532,10 +535,14 @@ fn the_pile_comes_to_rest_with_nothing_found_and_its_trace_unchanged() {
     );
     assert_eq!(in_tray, n - TRAY.len());
     assert_eq!(w.findings(), &[] as &[[u32; 4]], "the pile finds nothing");
-    if build == PINNED_BUILD {
+    if BASELINE {
+        assert_eq!(
+            build, PINNED_BUILD,
+            "the baseline lane's build identity moved: the pin is the shipped build's"
+        );
         assert_eq!(trace, PINNED_TRACE, "the pile's motion moved");
     } else {
-        eprintln!("pile: not the pinned build; its trace is not compared");
+        eprintln!("pile: not the baseline lane; its trace is its build's own, not compared");
     }
 }
 

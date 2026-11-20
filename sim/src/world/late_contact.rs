@@ -78,8 +78,8 @@ fn through_a_thin_wall() -> World {
 /// tick (31.2 rad/s), beside a fixed wall 1 thick whose near face is at x = `face`. The bar's end
 /// starts 0.029 short of 0.99 and 0.037 short of 0.998, reaches x = 1 at angle 0 and turns back
 /// to 0.0097 short of 0.99 and 0.0177 short of 0.998 by the step's end: within the prediction
-/// distance, on the side it began, having gone 0.0102 into the wall at 0.99 (deeper than the
-/// allowed linear error) and 0.0022 into the wall at 0.998 (within it).
+/// distance, on the side it began, having gone 0.0102 into the wall at
+/// 0.99 (deeper than the allowed linear error) and 0.0022 into the wall at 0.998 (within it).
 fn swinging(face: f32) -> World {
     let mut w = world();
     plate(&mut w, false, [1.0, 0.02], [0.0, 0.0], -0.3, [0.0; 2], 31.2);
@@ -91,6 +91,28 @@ fn swinging(face: f32) -> World {
         0.0,
         [0.0; 2],
         0.0,
+    );
+    w
+}
+
+/// The rule's stated limit. A fixed wall 0.0006 thick (|x| <= 0.0003) whose top is at y = 0, and
+/// a plate 0.001 thick and 1 long centred at y = 0.4965, moving from x = -0.15772 to 0.15372 in
+/// the first step while turning from 0.2962 to -0.2962 rad: its lower edge grazes over the
+/// wall's top through both of its faces, at most about 3.5 mm below the top (at or under the
+/// allowed linear error), and ends 0.01996 from the wall on its far side, within the prediction
+/// distance. The directions between the two at the step's ends agree, so the rule does not find
+/// it. A change that starts finding it changes the rule, and should say so.
+fn over_a_thin_edge() -> World {
+    let mut w = world();
+    plate(&mut w, true, [0.0003, 1.0], [0.0, -1.0], 0.0, [0.0; 2], 0.0);
+    plate(
+        &mut w,
+        false,
+        [0.0005, 0.5],
+        [-0.15772, 0.4965],
+        0.2962,
+        [18.6864, 0.0],
+        -35.544,
     );
     w
 }
@@ -152,7 +174,18 @@ fn a_corner_that_swings_deep_and_back_out_on_its_side_is_found_for_its_depth() {
 }
 
 #[test]
+fn a_plate_that_grazes_over_a_thin_wall_s_edge_is_not_found_a_stated_limit() {
+    assert_eq!(found(over_a_thin_edge(), None), NONE, "the stated limit");
+    // Without the depth's condition it is still not found, and without the side's: only the
+    // nearness at the end, the side and the depth decide, and each holds.
+    assert_eq!(found(over_a_thin_edge(), Some(Condition::SameSide)), NONE);
+    assert_eq!(found(over_a_thin_edge(), Some(Condition::Shallow)), NONE);
+}
+
+#[test]
 fn a_shallow_contact_taken_a_step_late_is_not_found() {
+    // The swing 0.0022 deep, which a looser certified bound on its depth (-0.028, over fewer
+    // axes) used to find.
     assert_eq!(found(swinging(0.998), None), NONE);
 }
 

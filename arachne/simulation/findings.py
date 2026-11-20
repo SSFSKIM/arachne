@@ -18,7 +18,10 @@ step. A stay's occurrence holds those of its rows as
   told from a crossing) or ``indeterminate`` (a crossing could not be ruled
   out); a contact the solver registered a tick late (the pair ends the step
   within its prediction distance, on the side it began, never deeper into
-  each other than the allowed linear error) is not found.
+  each other than the allowed linear error) is not found. A stated limit: a
+  body that grazes over an edge of a thin shape no deeper than the allowed
+  linear error, ending within the prediction distance on its far side, is
+  also not found.
 
 Each carries the scene's ``tick``. A stay that begins where an earlier one
 left the world shares that row with it: the earlier stay holds what was

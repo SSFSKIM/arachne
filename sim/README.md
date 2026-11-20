@@ -92,17 +92,18 @@ and their motion stay within about 1000 units of the origin, where a number is e
 6e-5 units; beyond that the sweep claims nothing.
 
 The solver prepares a contact only within its prediction distance (0.02 units) of the poses a step
-starts from, so two bodies that close faster than that in a tick meet a tick before it holds them
-in contact. Such a pair is not found when it ends the step within the prediction distance, the
+starts from, so two bodies that close faster than that in a tick meet a tick before it holds them in
+contact. Such a pair is not found when it ends the step within the prediction distance, the
 direction between the two at the end agrees with the direction at the start, and the deepest the
 step's motion takes them into each other, measured at instants over which they close by at most a
 quarter of the allowed linear error and bounded between them, is at most that error. Both numbers
 are read from the solver's settings. In short: two bodies that pass through each other and end on
-swapped sides, that sink into each other deeper than the solver's allowed linear error, or that
-come within it and part again without the solver registering a contact stay found; two that end
-the step within the solver's prediction distance, on the side they began, never deeper into each
-other than the allowed linear error, are a contact the solver registered a tick late, and are not
-found.
+swapped sides, that sink into each other deeper than the solver's allowed linear error, or that come
+within it and part again without the solver registering a contact stay found; two that end the step
+within the solver's prediction distance, on the side they began, never deeper into each other than
+the allowed linear error, are a contact the solver registered a tick late, and are not found. A
+stated limit: a body that grazes over an edge of a thin shape no deeper than the solver's allowed
+linear error, and ends within the prediction distance on its far side, is also not found.
 
 ## Determinism
 

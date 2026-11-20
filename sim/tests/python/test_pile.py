@@ -1,13 +1,16 @@
-"""The 200-box pile (W200's literals: a walled tray, and 8 layers of 5 x 5 spinning cubes
-dropped into it, 3,600 ticks) through the binding's closed world: it finds nothing, its content
-key is the one the measurement sitting recorded on the shipped build, and the closed-world path
-stays under the sitting's bound.
+"""The 200-box pile (the measured workload's literals: a walled tray, and 8 layers of 5 x 5
+spinning cubes dropped into it, 3,600 ticks) through the binding's closed world: it finds
+nothing; on the baseline lane its declaration digest and content key are the ones the
+measurement sitting recorded on the shipped build; and a coarse alarm times the crate's part of
+the closed-world path.
 
-The path timed is the crate's part of a closed world's stay, from the numbers to the sealed
-content: the world built item by item, advanced to its last row in one call, and its channels,
-contact table, findings, declaration digest and content key read out. The authoring API's own
-declaration (arachne's ``World.body``), which the sitting's interval also holds, needs the engine,
-which this gate does not install.
+The alarm is not the sitting's measurement and not a pin of it. It times the crate's part of a
+closed world's stay, from the numbers to the sealed content: the world built item by item,
+advanced to its last row in one call, and its channels, contact table, findings, declaration
+digest and content key read out. The authoring step (arachne's ``World.body`` calls, about 2.2 s
+at the sitting), which the sitting's interval holds, needs the engine, which this gate does not
+install, and is outside it. The acceptance number is the sitting's measurement on the
+production CPU class; this runner is shared.
 
 Collected only when this crate's tests run on their own (sim/conftest.py), never inside the
 engine's parallel run, where other tests share the machine.
@@ -16,6 +19,7 @@ engine's parallel run, where other tests share the machine.
 from __future__ import annotations
 
 import hashlib
+import platform
 import time
 from types import SimpleNamespace
 
@@ -56,9 +60,12 @@ PINNED_BUILD = (
 #: must not move it.
 DECLARATION_DIGEST = "13b0b70a72953f06ff877e592e3ba8ca"
 CONTENT_DIGEST = "67e552f526893930051eae6cecd7a046"
-#: The bound, seconds: its authority is the sitting's result file (the pile on the production
-#: CPU class, confirmed at 10 s), not this runner.
-BOUND_S = 10.0
+#: The alarm's bound, seconds: the sitting's (the whole path on the production CPU class,
+#: confirmed at 10 s), held over a part of the path on a shared runner.
+ALARM_S = 10.0
+#: The baseline lane: x86-64 Linux, the shipped wheel's target. There the build identity must
+#: be the pinned one, so that a drift fails rather than skips.
+BASELINE = platform.system() == "Linux" and platform.machine() == "x86_64"
 
 
 def f32(*xs: float) -> np.ndarray:
@@ -137,19 +144,27 @@ def test_the_pile_finds_nothing(pile):
 def test_the_pile_s_content_key_is_the_sitting_s(pile):
     build = pile.world.identity()[5]
     print(f"pile: build {build!r}, declaration {pile.declared}, content key {pile.key}")
-    if build != PINNED_BUILD:
-        pytest.skip(f"not the pinned build ({build}): its bytes are its own")
+    if not BASELINE:
+        pytest.skip(f"not the baseline lane ({build}): its bytes are its build's own")
+    assert build == PINNED_BUILD, "the baseline lane's build identity moved"
     assert pile.declared == DECLARATION_DIGEST
     assert pile.key == CONTENT_DIGEST, "the pile's motion moved"
 
 
-def test_the_closed_world_path_stays_under_the_sitting_s_bound(pile):
-    """A tripwire on a shared runner: a pass shows nothing about the production CPU class, and
-    a failure is a regression to measure there, against the sitting's result file, before it is
-    called one.
+def test_alarm_the_crate_s_part_of_the_closed_world_path_stays_coarsely_fast(pile):
+    """A coarse alarm on a shared runner, over the crate's part of the closed-world path only
+    (the authoring step, about 2.2 s at the sitting, is outside it). A pass shows nothing about
+    the production CPU class; the acceptance number is the sitting's measurement, not this test.
+    A failure is a regression to measure there before it is called one.
     """
-    print(f"pile: the closed-world path took {pile.seconds:.3f} s (bound {BOUND_S} s)")
-    assert pile.seconds <= BOUND_S, (
-        f"tripwire: the pile's closed-world path took {pile.seconds:.3f} s on this runner,"
-        f" over the {BOUND_S} s the sitting's result file bounds it by"
+    print(
+        f"pile: alarm: the crate's part of the closed-world path took {pile.seconds:.3f} s"
+        f" on this shared runner (alarm at {ALARM_S} s; the authoring step is outside it;"
+        " the acceptance number is the sitting's measurement)"
+    )
+    assert pile.seconds <= ALARM_S, (
+        f"alarm: the crate's part of the pile's closed-world path took {pile.seconds:.3f} s on"
+        f" this shared runner, over {ALARM_S} s. This coarse alarm excludes the authoring step"
+        " (about 2.2 s at the sitting) and is not the acceptance measurement, which is the"
+        " sitting's on the production CPU class: measure there before calling it a regression."
     )

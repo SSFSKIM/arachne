@@ -80,7 +80,9 @@ pub mod finding {
     /// part again without the solver registering a contact stay found; two that end the step within
     /// the solver's prediction distance, on the side they began, never deeper into each other than
     /// the allowed linear error, are a contact the solver registered a tick late, and are not
-    /// found.
+    /// found. A stated limit: a body that grazes over an edge of a thin shape no deeper than the
+    /// solver's allowed linear error, and ends within the prediction distance on its far side, is
+    /// also not found.
     pub const TUNNELLED: u32 = 4;
     /// The solver scaled a body's speed down to its cap in the step to the row: the speed
     /// reached at least the cap, above the world's limit, whatever the row shows.
@@ -106,7 +108,8 @@ pub(crate) struct Recorded {
 /// the step's end, which a test may drop to show what each keeps found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Condition {
-    /// The pair ends the step on the side it began.
+    /// The pair ends the step on the side it began: the directions between the two shapes'
+    /// closest points at the step's start and end agree.
     SameSide,
     /// The pair penetrates no deeper than the allowed linear error through the step.
     Shallow,
