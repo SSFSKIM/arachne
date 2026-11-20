@@ -155,7 +155,9 @@ describes it.
   exempts every finding about an object it selects, a pair ``[a, b]`` of
   selectors a finding about exactly two objects, one selected by each.
   ``at`` is ``"held+sampled"`` or a list of times, the frames on screen
-  there. ``rules`` is ``"armed"`` (the temporal rules the scene armed) or a
+  there. ``rules`` is ``"armed"`` (the temporal rules the scene armed, and
+  ``"anchored"`` and ``"diagram_clear"`` for a scene holding an attached
+  annotation or a diagram) or a
   list of ``"hold_watch"`` and ``"departures"``, each armed from the scene's
   start, ``"anchored"`` (annotations at their anchors) and
   ``"diagram_clear"`` (a diagram's labels); ``[]`` runs the scene's own

@@ -135,8 +135,9 @@ def lint(
     that hold at no time in ``t_range`` are left out, and so are those the
     selectors and pairs of ``exempt`` exempt (:mod:`.exempt`).
 
-    ``rules="armed"`` runs the temporal rules the scene armed
-    (:func:`.arming.armed`), the hold watch sampling at ``sample_fps``,
+    ``rules="armed"`` runs the temporal rules the scene armed and those
+    what it holds arms (:func:`.arming.armed`), the hold watch sampling at
+    ``sample_fps``,
     which is theirs alone: raises :class:`ValueError` for a ``sample_fps``
     given with any other rules.
 
