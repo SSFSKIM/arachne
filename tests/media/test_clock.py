@@ -38,9 +38,11 @@ SCENES = Path(__file__).parent / "clock_scenes.py"
 class _Server:
     """A session server with one scene of the clock scenes open."""
 
-    def __init__(self, tmp_path: Path, scene: str, scenes: Path = SCENES) -> None:
+    def __init__(
+        self, tmp_path: Path, scene: str, scenes: Path = SCENES, **settings: object
+    ) -> None:
         self.server = Dispatcher()
-        config = {**SMALL, "media_dir": str(tmp_path / "media")}
+        config = {**SMALL, "media_dir": str(tmp_path / "media"), **settings}
         self.server.handle(
             "open", {"file": str(scenes), "scene": scene, "config": config}
         )
@@ -68,8 +70,8 @@ class _Server:
 def server(tmp_path):
     opened: list[_Server] = []
 
-    def open_scene(scene: str, scenes: Path = SCENES) -> _Server:
-        opened.append(_Server(tmp_path, scene, scenes))
+    def open_scene(scene: str, scenes: Path = SCENES, **settings: object) -> _Server:
+        opened.append(_Server(tmp_path, scene, scenes, **settings))
         return opened[-1]
 
     yield open_scene
@@ -88,58 +90,107 @@ def _refused(tmp_path: Path, scene: str, scenes: Path = SCENES) -> RpcError:
 
 #: Instants each program is asked about: around its start, at instants on
 #: and between the session's frames, and past its end.
-INSTANTS = [Fraction(k, 20) for k in range(0, 48)] + [
-    START,
-    START + 2,
-    Fraction(1234, 1000),
-]
-
-
-def evaluated(as_of: Fraction) -> Fraction:
-    """The last instant at or before ``as_of`` the timeline evaluated: the
-    clock's driver runs at every tick, and a play that ends between two
-    ticks ends on its last tick's state.
-    """
-    return Fraction(math.floor(as_of * 60), 60)
+INSTANTS = [Fraction(k, 20) for k in range(0, 48)] + [START, Fraction(1234, 1000)]
 
 
 @pytest.mark.parametrize("program", sorted(PROGRAMS))
 def test_state_at_reports_each_media_object_s_time_and_frame(server, program):
     """``media.time`` is the program's time at the instant the answer is
-    of; ``media.frame`` the frame drawn then, which the program named at
-    the last instant evaluated.
+    of, and ``media.frame`` the frame that time names: every answer here is
+    on the session's frame grid, whose instants are ticks.
     """
     opened = server(program)
     for t in INSTANTS:
         as_of, media = opened.media(t)
-        drawn = evaluated(as_of)
+        assert as_of * 60 == math.floor(as_of * 60), as_of
+        clip, sprite = clip_time(program, as_of), sprite_time(program, as_of)
         assert media["VideoMobject"] == {
-            "media.frame": frame_of(clip_time(program, drawn), CLIP),
-            "media.time": float(clip_time(program, as_of)),
+            "media.frame": frame_of(clip, CLIP),
+            "media.time": float(clip),
         }, (t, as_of)
         assert media["Sprite"] == {
-            "media.frame": frame_of(sprite_time(program, drawn), SPRITE),
-            "media.time": float(sprite_time(program, as_of)),
+            "media.frame": frame_of(sprite, SPRITE),
+            "media.time": float(sprite),
         }, (t, as_of)
         assert media["Still"] == {"media.frame": 0, "media.time": 0.0}
 
 
-def test_the_frame_and_time_agree_by_the_frame_formula_on_the_tick(server):
-    """The displayed frame is the one the program's time names at every
-    instant the timeline evaluated (here, every answer but the scenes' last,
-    at 2.37 s, between two ticks).
-    """
+def test_the_frame_and_time_agree_by_the_frame_formula(server):
+    """The displayed frame is the one the program's time names."""
     for program in sorted(PROGRAMS):
         opened = server(program)
         for t in INSTANTS:
-            as_of, media = opened.media(t)
-            if evaluated(as_of) != as_of:
-                assert as_of == START + 2
-                continue
+            _, media = opened.media(t)
             for kind, of in (("VideoMobject", CLIP), ("Sprite", SPRITE)):
                 numbers = media[kind]
                 time = Fraction(numbers["media.time"]).limit_denominator(10**6)
                 assert numbers["media.frame"] == frame_of(time, of)
+
+
+# A stated limit, the timeline's and not the clock's: a play is evaluated at
+# its ticks and its start, never at an end that falls between two ticks, and
+# the scene's last capture is not ticked there. So at such an end the frame
+# on display is the one the program named at the play's last tick, while
+# media.time is the program's time at the end itself; and a clock that runs
+# past its clip by less than a tick there is not refused. The two tests below
+# pin that behaviour as it is: a timeline that comes to evaluate a play's
+# end changes them.
+
+
+def test_stated_limit_a_play_ending_between_ticks_shows_its_last_tick_s_frame(
+    server,
+):
+    opened = server("ClockHalf")
+    as_of, media = opened.media(10)
+    assert as_of == START + 2
+    last_tick = Fraction(math.floor(as_of * 60), 60)
+    assert last_tick < as_of
+    assert media["VideoMobject"] == {
+        "media.frame": frame_of(clip_time("ClockHalf", last_tick), CLIP),
+        "media.time": float(clip_time("ClockHalf", as_of)),
+    }
+    # The two then disagree by the frame formula: 23 shown, 24 named.
+    assert frame_of(clip_time("ClockHalf", last_tick), CLIP) == 23
+    assert frame_of(clip_time("ClockHalf", as_of), CLIP) == 24
+
+
+def test_stated_limit_a_clock_past_its_end_by_less_than_a_tick_is_not_refused(
+    server,
+):
+    opened = server("RunsOnPastAnOffTickEnd")
+    end = Fraction(2) + Fraction(1, 120)
+    as_of, media = opened.media(10)
+    assert as_of == end
+    assert media["VideoMobject"] == {"media.frame": 47, "media.time": float(end)}
+
+
+def test_a_copy_of_a_running_clip_stands_on_the_frame_it_was_copied_with(server):
+    """Neither a copy the scene's code makes nor one an animation makes is
+    set by the driver: each stands on the frame and at the media time it
+    was copied with, the two agreeing, while the clip runs on.
+    """
+    opened = server("CopiesOfARunningClip")
+    seen = set()
+    for k in range(8, 23):
+        t = Fraction(k, 15)
+        state = opened.server.handle("state_at", {"t": float(t)})["state"]
+        as_of = Fraction(state["as_of_exact"])
+        numbers = {
+            node["name"]: {
+                n["name"]: n["value"] for n in state["quantities"].get(node["id"], [])
+            }
+            for node in state["nodes"]
+            if node["kind"] == "VideoMobject"
+        }
+        assert numbers["clip"] == {
+            "media.frame": frame_of(as_of, CLIP),
+            "media.time": float(as_of),
+        }
+        assert numbers["twin"] == {"media.frame": 12, "media.time": 0.5}
+        if "started" in numbers:
+            assert numbers["started"] == {"media.frame": 12, "media.time": 0.5}
+            seen.add(as_of)
+    assert min(seen) == 1
 
 
 def test_a_clip_s_time_is_read_by_the_scene_as_it_runs(tmp_path):
@@ -242,6 +293,18 @@ def test_the_ways_that_end_a_clip_build_and_show_its_last_frame(server, scene, h
     assert through == ([47] * 7 if held else [])
 
 
+def test_a_fade_that_ends_with_the_clip_shows_its_last_frame_last(server):
+    """At 60 frames a second, the fade's last visible tick shows the clip's
+    last frame; at the fade's end the clip has left the scene.
+    """
+    opened = server("FadeEndsWithTheClip", frame_rate=60)
+    as_of, media = opened.media(Fraction(119, 60))
+    assert as_of == Fraction(119, 60)
+    assert media["VideoMobject"]["media.frame"] == 47
+    _, media = opened.media(2)
+    assert "VideoMobject" not in media
+
+
 def test_a_clock_that_runs_out_offstage_is_refused_when_shown_again(tmp_path):
     error = _refused(tmp_path, "RanOutOffstage")
     detail = _assert_past_end(error, line_of("back-on", SCENES).line)
@@ -311,7 +374,7 @@ class Calls(Scene):
         ("clip.loop(at=2.5)", "ValueError", "2 s"),
         ("clip.hold(at=Fraction(9, 4))", "ValueError", "2 s"),
         ("clip.hold(frame=48)", "ValueError", "0 to 47"),
-        ("sprite.show(8)", "ValueError", "0 to 7"),
+        ("sprite.hold(frame=8)", "ValueError", "0 to 7"),
         ("clip.hold(at=1, frame=3)", "ValueError", "not both"),
         ("clip.hold(frame=1.5)", "TypeError", "index"),
         ("clip.scrub(to=2.5, over=1)", "ValueError", "2 s"),

@@ -15,8 +15,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from arachne.assets.reader import FIXTURES
+from arachne.lint.codes import CODES
 from arachne.mobject.media import frames
 from arachne.mobject.media.frames import FrameCache
 from arachne.server.dispatch import Dispatcher
@@ -79,16 +81,29 @@ def _stamps(session, instants, box=None) -> list[tuple[Fraction, int | None]]:
     return found
 
 
-def _evaluated(as_of: Fraction) -> Fraction:
-    """The last tick at or before ``as_of``: the instant whose frame the
-    clock's driver set, a play ending between two ticks ending on its last.
+#: The scenes' end: their last play, a wait from 0.37 s, ends between two
+#: ticks.
+END = START + 2
+#: The last tick before it.
+LAST_TICK = Fraction(math.floor(END * 60), 60)
+
+
+def answered(t: Fraction) -> Fraction:
+    """The instant a session at 60 frames a second answers a request for
+    ``t`` with, from how the scenes are built: the end's own capture from
+    the end on; else the last tick at or before ``t``, where that tick lies
+    in the play that starts at 0.37 s; else the first play's one state, its
+    start's (a still wait, before any clock runs).
     """
-    return Fraction(math.floor(as_of * 60), 60)
+    if t >= END:
+        return END
+    tick = Fraction(math.floor(t * 60), 60)
+    return tick if tick > START else Fraction(0)
 
 
-#: Instants between ticks, and the first and last instants of the plays
-#: that start at 0.37 s.
-OFF_TICK = [START, START + 2, Fraction(1234, 1000), Fraction(61, 120)]
+#: Instants between ticks, among them the first and last instants of the
+#: plays that start at 0.37 s.
+OFF_TICK = [START, END, Fraction(1234, 1000), Fraction(61, 120)]
 
 
 @pytest.mark.parametrize("program", sorted(PROGRAMS))
@@ -97,12 +112,11 @@ def test_the_stamp_is_the_frame_the_program_names(session_of, door, program):
     instants = ticks(142) + OFF_TICK
     found = _stamps(session, instants, box=(0, 0, *CLIP_PIXELS))
     for t, (as_of, read) in zip(instants, found, strict=True):
-        # Until the first tick after 0.37 s the scene is a still frame,
-        # answered by its first state; 2.37 s is the scene's end.
-        first = _evaluated(t) if _evaluated(t) > START else 0
-        assert as_of in (first, START + 2), (t, as_of)
-        expected = frame_of(clip_time(program, _evaluated(as_of)), CLIP)
-        assert read == expected, (t, as_of)
+        assert as_of == answered(t), (t, as_of)
+        # At the end, the stated limit (test_clock.py): a play ending between
+        # two ticks ends on its last tick's frame.
+        drawn_at = LAST_TICK if as_of == END else as_of
+        assert read == frame_of(clip_time(program, drawn_at), CLIP), (t, as_of)
     # Asked out of order, each instant gives what it gave in order.
     backward = _stamps(session, reversed(instants), box=(0, 0, *CLIP_PIXELS))
     assert backward == found[::-1]
@@ -209,9 +223,12 @@ def test_a_later_frame_that_decodes_otherwise_is_refused_when_first_needed(
         )
         for k in range(20):
             drawn = tmp_path / f"{k}.png"
-            # Frame k of the clip shows from k/24 s on.
-            server.handle("frame", {"t": float(Fraction(k, 24)), "path": str(drawn)})
-            assert drawn.exists()
+            # Frame k of the clip shows from k/24 s on: the first tick on or
+            # after that shows it.
+            tick = Fraction(math.ceil(Fraction(k, 24) * 60), 60)
+            server.handle("frame", {"t": float(tick), "path": str(drawn)})
+            with Image.open(drawn) as picture:
+                assert stamp(np.asarray(picture), (0, 0, *CLIP_PIXELS)) == k
         before = door.draws
         assert before == 20
         with pytest.raises(RpcError) as refused:
@@ -251,5 +268,7 @@ def test_a_clip_added_back_after_its_clock_ran_out_refuses_its_frame(tmp_path, d
     finding = refused.value.data["finding"]
     assert finding["code"] == "media.clock_past_end"
     assert finding["line"] == line_of("added-last", SCENES).line
+    assert finding["fix"] == CODES["media.clock_past_end"].fix
+    assert 'run(then="hold")' in finding["fix"]
     assert finding["detail"]["media_time"] == 2.5
     assert not picture.exists()

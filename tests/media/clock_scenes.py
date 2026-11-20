@@ -24,6 +24,7 @@ from arachne import (
     Scene,
     Sprite,
     Still,
+    Transform,
     VideoMobject,
     config,
     linear,
@@ -287,13 +288,13 @@ class RanOutAddedLast(Scene):
 
 
 class StandingMedia(Scene):
-    """Media that stand still: a clip held on a frame, a sprite shown on a
+    """Media that stand still: a clip held on a frame, a sprite held on a
     drawing, a still; moved and faded.
     """
 
     def construct(self):
         clip = VideoMobject("fixture:numbered-clip").hold(frame=3).shift(UP)
-        sprite = Sprite("fixture:stepper").show(2).shift(DOWN)
+        sprite = Sprite("fixture:stepper").hold(frame=2).shift(DOWN)
         still = Still("fixture:swatch").shift(RIGHT * 3)
         self.add(sprite, still)
         self.play(FadeIn(clip), run_time=0.5)
@@ -329,3 +330,34 @@ class ReadsItsTime(Scene):
         clip.loop(at=Fraction(3, 2), rate=2)
         self.wait(0.5)
         self.read.append(clip.media_time)
+
+
+class CopiesOfARunningClip(Scene):
+    """A running clip copied half a second in, the copy added beside it; and
+    the copy a transform of it makes as it begins, added too.
+    """
+
+    def construct(self):
+        clip = VideoMobject("fixture:numbered-clip").shift(UP * 2)
+        self.add(clip)
+        clip.run()
+        self.wait(0.5)
+        twin = clip.copy().shift(DOWN * 2)
+        self.add(twin)
+        move = Transform(clip, clip.copy().shift(LEFT))
+        self.play(move, run_time=0.5)
+        started = move.starting_mobject.shift(DOWN * 4)
+        self.add(started)
+        self.wait(0.5)
+
+
+class RunsOnPastAnOffTickEnd(Scene):
+    """A clip run for its duration and half a tick more: the play ends
+    between two ticks.
+    """
+
+    def construct(self):
+        clip = VideoMobject("fixture:numbered-clip")
+        self.add(clip)
+        clip.run()
+        self.wait(Fraction(2) + Fraction(1, 120))

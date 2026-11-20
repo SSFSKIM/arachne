@@ -395,6 +395,28 @@ class _Clocked(MediaObject):
             clock.hold_media(recorder.scene, self)
         return self
 
+    def __deepcopy__(self, clone_from_id: dict[int, Any]) -> Self:
+        """A copy, standing on the frame this object shows, at the media time
+        its clock reads (the start of that frame where the clock has moved
+        on, or reads outside the clip). No driver sets a copy, so its own
+        clock stands still until one of the four calls runs it.
+        """
+        copied = super().__deepcopy__(clone_from_id)
+        from ...timeline.recorder import running
+
+        recorder = running()
+        media = None
+        if recorder is not None:
+            now = clock.program_time(self._program, recorder.scene.time, self.duration)
+            shown = clock.frame_at(now, self.frame_rate, self.frame_count)
+            if clock.in_range(now, self.duration) and shown == self._frame:
+                media = now
+        if media is None:
+            media = Fraction(self._frame) / self.frame_rate
+        copied._program = (Segment(Fraction(0), media, Fraction(0)),)
+        copied._ran_out = None
+        return copied
+
     def _follow_clock(self, now: Fraction) -> None:
         """Show the frame the clock program names at the scene instant
         ``now``, and note whether the program reads outside the clip there.
@@ -425,14 +447,6 @@ class Sprite(_Clocked):
 
     asset_kind = "sprite"
     capability = "media.sprite"
-
-    # It takes the name of CE's ``Mobject.show(camera)``, a desktop preview
-    # that an engine drawing in sessions and renders has no use for.
-    def show(self, frame: int) -> Self:  # type: ignore[override]
-        """Stand on the drawing ``frame`` from the scene's present instant:
-        ``hold(frame=frame)``.
-        """
-        return self.hold(frame=frame)
 
 
 #: The class that shows each media kind.
