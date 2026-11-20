@@ -10,6 +10,9 @@
 //! The solver is pinned with its determinism feature, and the arithmetic it can reach is
 //! audited (README.md, "Determinism"); `examples/probe` is the audit's program. Worlds of point
 //! masses (no shape, no joint) are integrated by the crate itself ([`Integrator`]).
+//!
+//! Beside its rows a world records what it found ([`World::findings`]): a body whose state went
+//! non-finite or above the world's speed limits, and two bodies that passed through each other.
 
 // solver.rs is compiled twice on purpose, as two::solver and three::solver.
 #![allow(clippy::duplicate_mod)]
@@ -24,6 +27,6 @@ mod world;
 #[cfg(feature = "python")]
 mod python;
 
-pub use encode::{CONTENT_LAYOUT, DECLARATION_LAYOUT, Identity};
+pub use encode::{ANGULAR_SPEED_LIMIT, CONTENT_LAYOUT, DECLARATION_LAYOUT, Identity, SPEED_LIMIT};
 pub use spec::{Body, Error, Force, Joint, JointKind, Shape, ShapeKind};
-pub use world::{Integrator, World};
+pub use world::{Integrator, Options, World, finding};

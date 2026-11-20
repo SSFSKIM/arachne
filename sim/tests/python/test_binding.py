@@ -129,7 +129,39 @@ def test_identity_units_and_versions():
     project = tomllib.loads((CRATE / "pyproject.toml").read_text())["project"]
     assert version == cargo == project["version"]
     assert importlib.metadata.version("arachne-sim") == cargo
-    assert arachne_sim.DECLARATION_LAYOUT == arachne_sim.CONTENT_LAYOUT == 1
+    assert (arachne_sim.DECLARATION_LAYOUT, arachne_sim.CONTENT_LAYOUT) == (2, 1)
+
+
+def test_a_world_s_limits_and_what_it_found():
+    """A world's speed limits are below the solver's caps and default to the crate's; what it
+    finds is read as rows of ``row, kind, a, b``.
+    """
+    assert arachne_sim.SPEED_LIMIT < arachne_sim.SPEED_CAP == 400.0
+    assert arachne_sim.ANGULAR_SPEED_LIMIT < arachne_sim.ANGULAR_SPEED_CAP
+    w = World(2)
+    assert (w.speed_limit, w.angular_speed_limit) == (
+        arachne_sim.SPEED_LIMIT,
+        arachne_sim.ANGULAR_SPEED_LIMIT,
+    )
+    assert w.continuous_collision
+    with pytest.raises(TypeError, match="float32"):
+        World(2, speed_limit=5.0)
+    with pytest.raises(ValueError, match="below the solver's own cap"):
+        World(2, speed_limit=np.float32(400))
+    w = World(
+        2,
+        integrator="point_masses",
+        speed_limit=np.float32(1),
+        continuous_collision=False,
+    )
+    assert (w.speed_limit, w.continuous_collision) == (1.0, False)
+    w.add_body(velocity=vec(3.0, 0.0), mass=np.float32(1))
+    w.advance_to(5)
+    found = w.findings()
+    assert found.dtype == np.uint32
+    assert not found.flags.writeable
+    assert found.tolist() == [[0, arachne_sim.SPEED, 0, 0]]
+    assert World(2).findings().shape == (0, 4)
 
 
 def test_other_threads_run_while_a_world_advances():

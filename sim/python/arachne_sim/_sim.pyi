@@ -5,13 +5,28 @@ from typing import Any
 
 DECLARATION_LAYOUT: int
 CONTENT_LAYOUT: int
+SPEED_LIMIT: float
+ANGULAR_SPEED_LIMIT: float
+SPEED_CAP: float
+ANGULAR_SPEED_CAP: float
+NON_FINITE: int
+SPEED: int
+ANGULAR_SPEED: int
+TUNNELLED: int
 
 # A float32 number or numbers: a numpy.float32, or any object exposing a float32 buffer.
 Floats = Any
 
 class World:
     def __init__(
-        self, dimension: int, *, integrator: str = "solver", open: bool = False
+        self,
+        dimension: int,
+        *,
+        integrator: str = "solver",
+        open: bool = False,
+        speed_limit: Floats | None = None,
+        angular_speed_limit: Floats | None = None,
+        continuous_collision: bool = True,
     ) -> None: ...
     @property
     def dimension(self) -> int: ...
@@ -19,6 +34,12 @@ class World:
     def integrator(self) -> str: ...
     @property
     def open(self) -> bool: ...
+    @property
+    def speed_limit(self) -> float: ...
+    @property
+    def angular_speed_limit(self) -> float: ...
+    @property
+    def continuous_collision(self) -> bool: ...
     @property
     def bodies(self) -> int: ...
     @property
@@ -99,6 +120,7 @@ class World:
         self, start: int = 0, stop: int | None = None
     ) -> tuple[bytes, tuple[int, int, int]]: ...
     def _contacts(self) -> tuple[bytes, int]: ...
+    def _findings(self) -> tuple[bytes, int]: ...
     def units(self) -> tuple[str, str]: ...
     def declaration_bytes(self) -> bytes: ...
     def trace_bytes(self) -> bytes: ...

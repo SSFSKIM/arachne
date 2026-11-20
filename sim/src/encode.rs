@@ -4,10 +4,15 @@
 
 use crate::spec::{Body, Force, Joint, JointKind, Shape, ShapeKind};
 
-/// The version of the declaration bytes' layout.
-pub const DECLARATION_LAYOUT: u32 = 1;
+/// The version of the declaration bytes' layout. 2: the settings end with the speed limits.
+pub const DECLARATION_LAYOUT: u32 = 2;
 /// The version of the content's canonical layout (the record's `LAYOUT_VERSION`).
 pub const CONTENT_LAYOUT: u32 = 1;
+/// A world's speed limit unless it declares one, units per second: half the solver's cap.
+pub const SPEED_LIMIT: f32 = 200.0;
+/// A world's angular speed limit unless it declares one, radians per second: below the solver's
+/// cap of 45 degrees a step (about 47.1 at 60 ticks a second).
+pub const ANGULAR_SPEED_LIMIT: f32 = 40.0;
 /// The one quiet NaN a non-finite value is stored as in the trace.
 const NAN_BITS: u32 = 0x7fc0_0000;
 
@@ -113,6 +118,13 @@ pub(crate) struct Settings {
     pub motor_model: u8,
     /// The point-mass integrator's substeps per tick.
     pub point_substeps: u32,
+    /// The speed, units per second, above which a body is unstable (the finding
+    /// `finding::SPEED`): strictly below the solver's own cap (`speed_cap`), so the finding is
+    /// raised before the solver clamps a speed.
+    pub speed_limit: f32,
+    /// The angular speed, radians per second, above which a body is unstable
+    /// (`finding::ANGULAR_SPEED`): strictly below the solver's own cap (`angular_speed_cap`).
+    pub angular_speed_limit: f32,
 }
 
 impl Settings {
@@ -140,7 +152,22 @@ impl Settings {
             fast_rotation: false,
             motor_model: 1,
             point_substeps: 8,
+            speed_limit: SPEED_LIMIT,
+            angular_speed_limit: ANGULAR_SPEED_LIMIT,
         }
+    }
+
+    /// The solver's own cap on a body's speed, units per second: it scales a faster velocity
+    /// down to it at every substep.
+    pub fn speed_cap(&self) -> f32 {
+        self.max_linear_velocity * self.length_unit
+    }
+
+    /// The solver's own cap on a body's angular speed, radians per second: a turn of 45 degrees
+    /// a step (unless a body allows fast rotation, which no body here does), as the solver
+    /// computes it.
+    pub fn angular_speed_cap(&self) -> f32 {
+        core::f32::consts::FRAC_PI_4 * (1.0 / self.dt)
     }
 
     pub fn write(&self, w: &mut Writer) {
@@ -165,6 +192,8 @@ impl Settings {
         w.bool(self.fast_rotation);
         w.u8(self.motor_model);
         w.u32(self.point_substeps);
+        w.f32(self.speed_limit);
+        w.f32(self.angular_speed_limit);
     }
 }
 

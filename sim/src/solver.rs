@@ -1,11 +1,13 @@
 //! A world stepped by the solver, in either dimension: this file is compiled twice, as
 //! `two::solver` and `three::solver`, each with its dimension's types and helpers in scope
 //! (`super`). The crate's own work per tick is the force laws, evaluated from the bodies' state
-//! before the step and applied as forces held through it.
+//! before the step and applied as forces held through it, and the step's checks: which bodies
+//! the solver stopped for a non-finite state, and which passed through each other.
 
 use super::*;
 use crate::encode::Settings;
 use crate::spec::{Body, Force, Joint, JointKind, Shape, ShapeKind};
+use crate::world::Recorded;
 
 pub(crate) struct Solver {
     world: PhysicsWorld,
@@ -21,6 +23,27 @@ pub(crate) struct Solver {
     forces: Vec<Force>,
     /// The substeps a jointed component takes beyond the world's (Settings::jointed_substeps).
     jointed_extra: usize,
+    /// The pairs of shapes (by number, the smaller first, sorted) touching at the last row.
+    touching: Vec<(u32, u32)>,
+    /// Each body's pose as the step being taken began, until its row is recorded.
+    before: Option<Vec<Pose>>,
+    /// Each shape's reach: the radius of a sphere about its body's centre of mass that holds
+    /// the shape however the body turns. Computed at the first step, once every shape is on.
+    reach: Vec<f32>,
+}
+
+/// A body's motion over a step, as the step's checks sweep it: its centre of mass from `from`
+/// to `to` along a line, and its turn `turn` about it (an angle in 2D, a rotation vector in 3D)
+/// at a constant rate.
+struct Motion {
+    local: Vector,
+    from: Vector,
+    to: Vector,
+    turn: AngVector,
+    /// The turn's angle.
+    angle: f32,
+    /// Whether the solver still moves the body (not stopped for a non-finite state).
+    enabled: bool,
 }
 
 impl Solver {
@@ -40,6 +63,9 @@ impl Solver {
             jointed_extra: settings
                 .jointed_substeps
                 .saturating_sub(settings.solver_iterations) as usize,
+            touching: Vec::new(),
+            before: None,
+            reach: Vec::new(),
         }
     }
 
@@ -186,6 +212,12 @@ impl Solver {
     /// One tick: the force laws from the state before it, `applied` (an open world's forces and
     /// torques, `dim` and `angular` numbers per body), then the solver's step.
     pub fn step(&mut self, applied: Option<(&[f32], &[f32])>) {
+        self.before = Some(
+            self.bodies
+                .iter()
+                .map(|&h| *self.world.bodies[h].position())
+                .collect(),
+        );
         let bodies = &mut self.world.bodies;
         for &h in &self.bodies {
             bodies[h].reset_forces(false);
@@ -261,23 +293,210 @@ impl Solver {
         self.world.step();
     }
 
-    /// Each body's pose and velocity now, and the pairs of bodies (by number, the smaller first,
-    /// sorted) that touch now (`touching`).
-    pub fn record(&self, pose: &mut Vec<f32>, velocity: &mut Vec<f32>) -> Vec<(u32, u32)> {
+    /// Each body's pose and velocity now; the pairs of bodies (by number, the smaller first,
+    /// sorted) that touch now (`touching`); and, after a step, the bodies the solver stopped in
+    /// it for a non-finite state and the pairs that passed through each other in it
+    /// (`tunnelled`).
+    pub fn record(&mut self, pose: &mut Vec<f32>, velocity: &mut Vec<f32>) -> Recorded {
         for &h in &self.bodies {
             let body = &self.world.bodies[h];
             write_pose(body, pose);
             write_velocity(body, velocity);
         }
-        self.touching()
+        let shapes = self.touching();
+        let mut recorded = Recorded::default();
+        if let Some(before) = self.before.take() {
+            recorded.quarantined = self.quarantined();
+            recorded.tunnelled = self.tunnelled(&before, &shapes);
+        }
+        recorded.touching = shapes
+            .iter()
+            .map(|&(i, k)| {
+                let (a, b) = (self.shapes[i as usize].1, self.shapes[k as usize].1);
+                (a.min(b), a.max(b))
+            })
+            .collect();
+        recorded.touching.sort_unstable();
+        recorded.touching.dedup();
+        self.touching = shapes;
+        recorded
     }
 
-    /// The pairs of bodies two of whose shapes are, at their poses now, at a distance at most the
-    /// allowed linear error (touching or overlapping; Settings::allowed_linear_error), found by
-    /// the solver's geometric query rather than read from its contact pairs: those include pairs
-    /// within the prediction distance, and pairs whose points were computed before the step's
-    /// motion. Pairs the solver never lets collide are left out: two fixed bodies, and two
-    /// bodies a joint keeps from colliding.
+    /// The bodies (by number, sorted) the solver stopped in the last step for a non-finite
+    /// state: its own, or one of its shapes'.
+    fn quarantined(&self) -> Vec<u32> {
+        let quarantine = self.world.quarantine();
+        let mut found: Vec<u32> = quarantine
+            .bodies()
+            .iter()
+            .filter_map(|h| self.bodies.iter().position(|b| b == h))
+            .map(|i| i as u32)
+            .chain(quarantine.colliders().iter().filter_map(|h| {
+                self.shapes
+                    .iter()
+                    .find(|(shape, _)| shape == h)
+                    .map(|&(_, body)| body)
+            }))
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// The pairs of bodies (by number, the smaller first, sorted) two of whose shapes passed
+    /// through each other in the last step: shapes the solver lets collide, that touched at
+    /// neither end of the step (`now`, and the last row's), with no contact between them in the
+    /// solver's step, and that met when swept through the step's motion (`Motion`).
+    ///
+    /// Only candidates are swept, and each test that rules a pair out is one no pair that meets
+    /// can fail: a point of a shape is never farther from where it began than its body's
+    /// centre moved plus its turn's angle times the shape's reach. So two shapes meet only if
+    /// their boxes at the start, each grown by that much, overlap; if the gap between their
+    /// spheres at the start is under the relative travel of the centres plus each turn's angle
+    /// times the reach; and if the distance between the shapes at the start is under the same.
+    fn tunnelled(&mut self, before: &[Pose], now: &[(u32, u32)]) -> Vec<(u32, u32)> {
+        self.measure_reach();
+        let motions: Vec<Motion> = self
+            .bodies
+            .iter()
+            .zip(before)
+            .map(|(&h, from)| {
+                let body = &self.world.bodies[h];
+                let local = body.local_center_of_mass();
+                let to = *body.position();
+                let turn = turn(from.rotation, to.rotation);
+                Motion {
+                    local,
+                    from: from.transform_point(local),
+                    to: to.transform_point(local),
+                    turn,
+                    angle: angle_of(turn),
+                    enabled: body.is_enabled(),
+                }
+            })
+            .collect();
+        // Each shape: its pose at the start, its box there grown by how far any of its points
+        // may move in the step, and how far that is.
+        let swept: Vec<(Pose, Aabb, f32)> = self
+            .shapes
+            .iter()
+            .enumerate()
+            .map(|(s, &(handle, body))| {
+                let m = &motions[body as usize];
+                let pose = before[body as usize] * self.local_pose(handle);
+                let moves = (m.to - m.from).length() + m.angle * self.reach[s];
+                let aabb = self.world.colliders[handle]
+                    .shape()
+                    .compute_aabb(&pose)
+                    .loosened(moves);
+                (pose, aabb, moves)
+            })
+            .collect();
+        let mut found = Vec::new();
+        for (i, &(handle1, a)) in self.shapes.iter().enumerate() {
+            for (k, &(handle2, b)) in self.shapes.iter().enumerate().skip(i + 1) {
+                let (ma, mb) = (&motions[a as usize], &motions[b as usize]);
+                let pair = (a.min(b), a.max(b));
+                if a == b
+                    || (self.fixed[a as usize] && self.fixed[b as usize])
+                    || !ma.enabled
+                    || !mb.enabled
+                    || !swept[i].1.intersects(&swept[k].1)
+                    || self.apart.contains(&pair)
+                {
+                    continue;
+                }
+                let travel = ((ma.to - ma.from) - (mb.to - mb.from)).length();
+                let turning = ma.angle * self.reach[i] + mb.angle * self.reach[k];
+                if travel == 0.0 && turning == 0.0 {
+                    continue;
+                }
+                let gap = (mb.from - ma.from).length() - self.reach[i] - self.reach[k];
+                let shapes = (i as u32, k as u32);
+                if gap >= travel + turning
+                    || self.touching.binary_search(&shapes).is_ok()
+                    || now.binary_search(&shapes).is_ok()
+                {
+                    continue;
+                }
+                let (shape1, shape2) = (
+                    self.world.colliders[handle1].shape(),
+                    self.world.colliders[handle2].shape(),
+                );
+                let apart = query::distance(&swept[i].0, shape1, &swept[k].0, shape2);
+                if matches!(apart, Ok(d) if d.distance >= travel + turning) {
+                    continue;
+                }
+                let contact = self
+                    .world
+                    .narrow_phase
+                    .contact_pair(handle1, handle2)
+                    .is_some_and(|p| p.has_any_active_contact());
+                if contact {
+                    continue;
+                }
+                let motion = |s: usize, m: &Motion| {
+                    let start = swept[s].0;
+                    let local = self.local_pose(self.shapes[s].0);
+                    query::NonlinearRigidMotion::new(
+                        start,
+                        local.inverse_transform_point(m.local),
+                        m.to - m.from,
+                        m.turn,
+                    )
+                };
+                let met = query::cast_shapes_nonlinear(
+                    &motion(i, ma),
+                    shape1,
+                    &motion(k, mb),
+                    shape2,
+                    0.0,
+                    1.0,
+                    true,
+                );
+                if matches!(met, Ok(Some(_))) {
+                    found.push(pair);
+                }
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// A shape's pose in its body's frame.
+    fn local_pose(&self, handle: ColliderHandle) -> Pose {
+        *self.world.colliders[handle]
+            .position_wrt_parent()
+            .expect("a shape is on a body")
+    }
+
+    /// Each shape's reach (`reach`), once every shape is on its body.
+    fn measure_reach(&mut self) {
+        if self.reach.len() == self.shapes.len() {
+            return;
+        }
+        self.reach = self
+            .shapes
+            .iter()
+            .map(|&(handle, body)| {
+                let sphere = self.world.colliders[handle]
+                    .shape()
+                    .compute_local_bounding_sphere();
+                let centre = self.local_pose(handle).transform_point(sphere.center);
+                let com = self.world.bodies[self.bodies[body as usize]].local_center_of_mass();
+                (centre - com).length() + sphere.radius
+            })
+            .collect();
+    }
+
+    /// The pairs of shapes (by number, the smaller first, sorted) that are, at their poses now,
+    /// at a distance at most the allowed linear error (touching or overlapping;
+    /// Settings::allowed_linear_error), found by the solver's geometric query rather than read
+    /// from its contact pairs: those include pairs within the prediction distance, and pairs
+    /// whose points were computed before the step's motion. Pairs the solver never lets collide
+    /// are left out: two shapes of one body, two of fixed bodies, and two of bodies a joint keeps
+    /// from colliding. Two bodies touch when a pair of their shapes does.
     fn touching(&self) -> Vec<(u32, u32)> {
         let reach = self.world.integration_parameters.allowed_linear_error();
         let placed: Vec<(Pose, Aabb, u32)> = self
@@ -309,7 +528,7 @@ impl Solver {
                 // Zero when they overlap.
                 let distance = query::distance(pose1, shape1, pose2, shape2);
                 if matches!(distance, Ok(d) if d.distance <= reach) {
-                    pairs.push(pair);
+                    pairs.push((i as u32, k as u32));
                 }
             }
         }

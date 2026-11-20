@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use crate::spec::{Body, Error, Force, Joint, JointKind, Shape, ShapeKind};
-use crate::world::{Integrator, World};
+use crate::world::{Integrator, Options, World, finding};
 
 fn value_error(err: Error) -> PyErr {
     PyValueError::new_err(err.0)
@@ -123,9 +123,23 @@ impl PyWorld {
     /// A world in ``dimension`` (2 or 3) dimensions. ``integrator`` is ``"solver"`` (contacts,
     /// joints, rotation) or ``"point_masses"`` (no shape and no joint; velocity Verlet). An
     /// ``open`` world also feels forces its caller gives at each tick, through ``step``.
+    /// ``speed_limit`` (units per second) and ``angular_speed_limit`` (radians per second) are
+    /// the speeds above which a body is unstable, each positive and below the solver's cap
+    /// (``SPEED_CAP``, ``ANGULAR_SPEED_CAP``; by default ``SPEED_LIMIT`` and
+    /// ``ANGULAR_SPEED_LIMIT``). ``continuous_collision`` sweeps fast bodies against fixed ones.
     #[new]
-    #[pyo3(signature = (dimension, *, integrator="solver", open=false))]
-    fn new(dimension: usize, integrator: &str, open: bool) -> PyResult<Self> {
+    #[pyo3(signature = (
+        dimension, *, integrator="solver", open=false, speed_limit=None,
+        angular_speed_limit=None, continuous_collision=true
+    ))]
+    fn new(
+        dimension: usize,
+        integrator: &str,
+        open: bool,
+        speed_limit: Option<&Bound<'_, PyAny>>,
+        angular_speed_limit: Option<&Bound<'_, PyAny>>,
+        continuous_collision: bool,
+    ) -> PyResult<Self> {
         let integrator = match integrator {
             "solver" => Integrator::Solver,
             "point_masses" => Integrator::PointMasses,
@@ -135,7 +149,17 @@ impl PyWorld {
                 )));
             }
         };
-        let world = World::new(dimension, integrator, open).map_err(value_error)?;
+        let options = Options {
+            speed_limit: speed_limit
+                .map(|x| float(x, "A world's speed limit"))
+                .transpose()?,
+            angular_speed_limit: angular_speed_limit
+                .map(|x| float(x, "A world's angular speed limit"))
+                .transpose()?,
+            continuous_collision,
+        };
+        let world =
+            World::with_options(dimension, integrator, open, options).map_err(value_error)?;
         Ok(PyWorld {
             inner: Mutex::new(world),
             dim: dimension,
@@ -158,6 +182,24 @@ impl PyWorld {
     #[getter]
     fn open(&self) -> PyResult<bool> {
         Ok(self.world()?.is_open())
+    }
+
+    /// The speed, units per second, above which a body is unstable.
+    #[getter]
+    fn speed_limit(&self) -> PyResult<f32> {
+        Ok(self.world()?.speed_limit())
+    }
+
+    /// The angular speed, radians per second, above which a body is unstable.
+    #[getter]
+    fn angular_speed_limit(&self) -> PyResult<f32> {
+        Ok(self.world()?.angular_speed_limit())
+    }
+
+    /// Whether the solver sweeps fast bodies against fixed ones.
+    #[getter]
+    fn continuous_collision(&self) -> PyResult<bool> {
+        Ok(self.world()?.continuous_collision())
     }
 
     /// The number of bodies.
@@ -509,6 +551,18 @@ impl PyWorld {
         Ok((PyBytes::new(py, &data), events.len()))
     }
 
+    /// What was found, as little-endian uint32 bytes (``row, kind, a, b``), and its count.
+    fn _findings<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyBytes>, usize)> {
+        let world = self.world()?;
+        let found = world.findings();
+        let data: Vec<u8> = found
+            .iter()
+            .flatten()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        Ok((PyBytes::new(py, &data), found.len()))
+    }
+
     /// The units of the ``pose`` and ``velocity`` channels, one per number of a body's row.
     fn units(&self) -> PyResult<(&'static str, &'static str)> {
         Ok(self.world()?.units())
@@ -553,5 +607,14 @@ fn _sim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWorld>()?;
     m.add("DECLARATION_LAYOUT", crate::DECLARATION_LAYOUT)?;
     m.add("CONTENT_LAYOUT", crate::CONTENT_LAYOUT)?;
+    m.add("SPEED_LIMIT", crate::SPEED_LIMIT)?;
+    m.add("ANGULAR_SPEED_LIMIT", crate::ANGULAR_SPEED_LIMIT)?;
+    let settings = crate::encode::Settings::of(2);
+    m.add("SPEED_CAP", settings.speed_cap())?;
+    m.add("ANGULAR_SPEED_CAP", settings.angular_speed_cap())?;
+    m.add("NON_FINITE", finding::NON_FINITE)?;
+    m.add("SPEED", finding::SPEED)?;
+    m.add("ANGULAR_SPEED", finding::ANGULAR_SPEED)?;
+    m.add("TUNNELLED", finding::TUNNELLED)?;
     Ok(())
 }

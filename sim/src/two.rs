@@ -78,3 +78,14 @@ fn write_velocity(body: &RigidBody, out: &mut Vec<f32>) {
     let v = body.linvel();
     out.extend_from_slice(&[v.x, v.y, body.angvel()]);
 }
+
+/// The turn from `from` to `to`: its angle, in (-pi, pi] (from the pure-Rust libm).
+fn turn(from: Rotation, to: Rotation) -> AngVector {
+    let r = to * from.inverse();
+    libm::atan2f(r.im, r.re)
+}
+
+/// A turn's angle.
+fn angle_of(turn: AngVector) -> f32 {
+    turn.abs()
+}
