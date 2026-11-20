@@ -88,7 +88,7 @@ fn separation(
 }
 
 /// What the two shapes at their poses are (`Gap`), within `allowance`.
-fn gap(p1: &Pose, s1: &dyn Geometry, p2: &Pose, s2: &dyn Geometry, allowance: f32) -> Gap {
+fn gap_between(p1: &Pose, s1: &dyn Geometry, p2: &Pose, s2: &dyn Geometry, allowance: f32) -> Gap {
     if !p1.is_finite() || !p2.is_finite() {
         return Gap::Unknown;
     }
@@ -178,7 +178,7 @@ impl Swept {
 
 impl Sweep<'_> {
     /// What the two shapes did over the step, by conservative advancement: at each instant
-    /// their gap is measured (`gap`), and the next instant is as far on as the certified
+    /// their gap is measured (`gap_between`), and the next instant is as far on as the certified
     /// separation, less half the allowance, lets them close at `rate`, so between two instants
     /// they stay half the allowance apart. Once within the allowance, the rest of the step is
     /// stepped through by the allowance's worth of closing at a time, to see them penetrate.
@@ -242,7 +242,7 @@ impl Sweep<'_> {
             self.motions.0.position_at_time(t),
             self.motions.1.position_at_time(t),
         );
-        gap(&p1, self.shapes.0, &p2, self.shapes.1, self.allowance)
+        gap_between(&p1, self.shapes.0, &p2, self.shapes.1, self.allowance)
     }
 }
 
@@ -642,7 +642,8 @@ impl Solver {
                     self.world.colliders[handle2].shape(),
                 );
                 // Only a certified separation at the start rules a pair out here.
-                if let Gap::Apart(bound) = gap(&swept[i].0, shape1, &swept[k].0, shape2, allowance)
+                if let Gap::Apart(bound) =
+                    gap_between(&swept[i].0, shape1, &swept[k].0, shape2, allowance)
                     && rules_out(bound, rate + allowance)
                 {
                     continue;
@@ -889,7 +890,7 @@ mod tests {
             let (p1, p2, slab) = slabs(gap, angle);
             // The second's lowest corner is gap - sin(angle) above the first's top.
             let distance = gap - libm::sinf(angle);
-            match super::gap(&p1, &slab, &p2, &slab, 0.005) {
+            match gap_between(&p1, &slab, &p2, &slab, 0.005) {
                 Gap::Apart(bound) => {
                     assert!(bound <= distance, "{bound} > {distance}");
                     assert!(bound >= distance - 0.005, "{bound} << {distance}");
