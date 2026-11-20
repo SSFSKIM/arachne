@@ -508,3 +508,35 @@ def test_admission_decodes_each_still_once_for_its_masks(monkeypatch):
     files = {f"pieces/{name}.png" for name in ("body", "flap", "on", "off")}
     # Once for the masks of every pose, and twice for frames_exact.
     assert len(decoded) == 3 * len(files)
+
+
+def test_a_frame_kept_by_a_media_object_is_given_only_for_its_own_digest():
+    """An entry a media object's frame read kept, asked for as a member's
+    picture: given for the digest it was checked against, refused for any
+    other at the asking line.
+    """
+    from arachne.mobject.media.frames import FrameCache
+
+    swatch = load_asset("fixture:swatch")
+    (spec,) = swatch.manifest.media.frames
+    cache = FrameCache()
+    kept = cache.frame(swatch, 0)
+    args = (swatch.digest, swatch.directory, swatch.name, spec.file)
+    assert cache.member(*args, spec.digest, 4) is kept
+    other = "sha256:" + "1" * 64
+    error = refused("media.inexact", lambda: cache.member(*args, other, 5))
+    assert error.line == 5
+    assert (error.detail["expected"], error.detail["found"]) == (other, spec.digest)
+
+
+def test_a_refused_request_leaves_the_kept_entry_as_it_was():
+    from arachne.mobject.media.frames import FrameCache
+
+    asset = load_asset("fixture:hinged-flap")
+    part = asset.manifest.parts[0]
+    args = (asset.digest, asset.directory, asset.name, part.file)
+    cache = FrameCache()
+    kept = cache.member(*args, part.digest)
+    refused("media.inexact", lambda: cache.member(*args, "sha256:" + "2" * 64))
+    assert cache.member(*args, part.digest) is kept
+    assert len(cache) == 1
