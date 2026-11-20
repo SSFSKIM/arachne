@@ -7,8 +7,9 @@ on screen stays smooth.
 60, so that each boundary ``k / r`` is one of the scene's 60 Hz ticks),
 optionally with **line boil** (:class:`Boil`): its outlines redrawn with a
 small wobble that changes on a grid of its own. The declaration is an
-immutable :class:`Timing` value held by the declared mobject, so the record
-holds it; :func:`timing_of` reads it.
+immutable :class:`Timing` value; the declared mobject holds its
+:attr:`~Timing.mark`, a tuple of its numbers, so the record holds it and a
+content key reads it; :func:`timing_of` reads it back.
 
 How it holds
 ------------
@@ -264,14 +265,24 @@ class Timing:
         """The drawing's step at the instant ``t``."""
         return math.floor(t * self.drawings_per_second)
 
-    # A copy of a declared mobject carries the very mark it was declared
-    # with, so its scene's clock knows the mark for one of its own.
+    @property
+    def mark(self) -> tuple[int | float, ...]:
+        """What a declared mobject holds of it, plain numbers:
+        ``(drawings_per_second,)``, or with boil ``(drawings_per_second,
+        rate, amplitude, seed)``.
+        """
+        boil = self.boil
+        if boil is None:
+            return (self.drawings_per_second,)
+        return (self.drawings_per_second, boil.rate, boil.amplitude, boil.seed)
 
-    def __copy__(self) -> Timing:
-        return self
 
-    def __deepcopy__(self, memo: dict[int, Any]) -> Timing:
-        return self
+def _timing(mark: Any) -> Timing | None:
+    """The timing whose :attr:`~Timing.mark` ``mark`` is, or ``None``."""
+    if not isinstance(mark, tuple) or len(mark) not in (1, 4):
+        return None
+    drawings, *boil = mark
+    return Timing(drawings, Boil(*boil) if boil else None)
 
 
 def timing_of(mobject: Mobject) -> Timing | None:
@@ -279,8 +290,7 @@ def timing_of(mobject: Mobject) -> Timing | None:
     ``None``. The mark is the declared mobject's own, not its members'; on a
     state the record installed, it is the timing declared then.
     """
-    found = mobject.__dict__.get(MARK)
-    return found if isinstance(found, Timing) else None
+    return _timing(mobject.__dict__.get(MARK))
 
 
 # Scene drivers
@@ -870,9 +880,10 @@ class TimingClock:
         #: The scene drivers it runs, in the order the scene registered them.
         self.drivers: list[SceneDriver] = []
         self._animations: Any = None
-        #: Every mark declared here: a mobject carrying one of them is a
-        #: copy of a mobject declared in this scene.
-        self._marks: list[Timing] = []
+        #: Every mark declared here, by the tuple itself: a mobject carrying
+        #: one of them is a copy of a mobject declared in this scene (a deep
+        #: copy of a tuple of numbers is the tuple).
+        self._marks: list[tuple[int | float, ...]] = []
         #: The members it gave the restorer at its last instant, by id.
         self._armed: dict[int, Mobject] = {}
         #: The members the play's animations may suspend, by id.
@@ -978,9 +989,9 @@ class TimingClock:
         """
         self.check(scene, root)
         now = scene.time
-        root.__dict__[MARK] = timing
-        if not any(timing is mark for mark in self._marks):
-            self._marks.append(timing)
+        mark = timing.mark
+        root.__dict__[MARK] = mark
+        self._marks.append(mark)
         illustration = self.illustration_of(root)
         if illustration is not None:
             illustration.restore()
@@ -1071,10 +1082,11 @@ class TimingClock:
         """
         declared: dict[int, Illustration] | None = None
         for member in family:
-            timing = member.__dict__.get(MARK)
+            mark = member.__dict__.get(MARK)
+            timing = _timing(mark)
             if (
-                not isinstance(timing, Timing)
-                or not any(timing is mark for mark in self._marks)
+                timing is None
+                or not any(mark is ours for ours in self._marks)
                 or self.illustration_of(member) is not None
             ):
                 continue

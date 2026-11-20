@@ -299,7 +299,10 @@ def test_the_record_holds_the_mark(opened, fps):
     box = box_of(session)
     capture = session.record.capture_at(Fraction(1))[1]
     state = session.record.node_state(box, capture)
-    assert state.get("_timing") == Timing(RATE, Boil(rate=6, amplitude=2.0, seed=3))
+    # Plain numbers, which a content key reads.
+    assert state.get("_timing") == (RATE, 6, 2.0, 3)
+    assert Timing(RATE, Boil(rate=6, amplitude=2.0, seed=3)).mark == (RATE, 6, 2.0, 3)
+    assert Timing(RATE).mark == (RATE,)
     assert timing_of(box) == Timing(RATE, BOIL)
     assert timing_of(box.part("lid")) is None
     # On a capture installed, the mark is the one declared then.
