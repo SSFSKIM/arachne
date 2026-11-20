@@ -11,6 +11,14 @@ version = "0.1.0"
 description = "Arachne's simulation crate: rigid-body worlds stepped on a fixed clock"
 requires-python = ">=3.12"
 dependencies = ["numpy>=2.1"]
+# The vendored solver crates' upstream licenses, compiled into the extension (vendor/VENDORED.md);
+# they ship under the wheel's .dist-info/licenses/ (ci/binding.sh checks each is there).
+license-files = [
+    "vendor/rapier/LICENSE",
+    "vendor/parry/LICENSE",
+    "vendor/glamx/LICENSE-APACHE",
+    "vendor/glamx/LICENSE-MIT",
+]
 classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

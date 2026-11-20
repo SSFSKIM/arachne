@@ -12,6 +12,14 @@ uv build --wheel --out-dir "$work/wheels" .
 wheel=$(ls "$work"/wheels/arachne_sim-*.whl)
 echo "wheel: $(basename "$wheel")"
 python3 -m zipfile -e "$wheel" "$work/unpacked"
+# The vendored crates' licenses ship in the wheel (pyproject.toml, license-files).
+for license in rapier/LICENSE parry/LICENSE glamx/LICENSE-APACHE glamx/LICENSE-MIT; do
+  if ! ls "$work"/unpacked/arachne_sim-*.dist-info/licenses/vendor/"$license" >/dev/null 2>&1; then
+    echo "binding: the wheel lacks vendor/$license under its .dist-info/licenses/"
+    exit 1
+  fi
+done
+echo "binding: the wheel carries the four vendored licenses"
 extension=$(ls "$work"/unpacked/arachne_sim/_sim*.so)
 python3 ci/imports.py "$extension"
 python3 ../core/ci/tree_check.py links "$extension"

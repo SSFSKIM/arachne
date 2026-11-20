@@ -8,7 +8,9 @@ than fetched: `../Cargo.toml` patches each crate to its directory below, and `ci
 deps` fails if one resolves from anywhere else or the lock file names a git source.
 
 Only what the build compiles is kept: each crate's sources and manifest, and each upstream
-license. Examples, benches, tests, testbeds, assets, documentation and CI files are left out.
+license. Examples, benches, tests, testbeds, assets, documentation and CI files are left out, and
+so are the source files that only a `#[cfg(test)]` module declaration names (upstream's unit
+tests, which a dependency's build never compiles).
 
 | Directory | Upstream | Base release | Commit | Carries |
 | --- | --- | --- | --- | --- |
@@ -22,10 +24,22 @@ What is changed from upstream, all in manifests and none in a source file:
   members are the two crates kept; `default-members`, `exclude`, the `[patch]` and `[profile]`
   sections, comments, and the workspace dependencies no kept crate inherits are dropped.
 - Every crate's manifest: `[dev-dependencies]`, `[[example]]` and `readme` are dropped (none of
-  their files is kept).
+  their files is kept), and a two-line notice at its head says it was modified.
 
-The sources are byte for byte upstream's at the commit: `git diff --no-index` of `src/` against a
-checkout of the commit shows nothing.
+The upstream licenses (`rapier/LICENSE`, `parry/LICENSE`, `glamx/LICENSE-APACHE`,
+`glamx/LICENSE-MIT`) ship in the simulation wheel too, under its `.dist-info/licenses/vendor/`
+(`../pyproject.toml`, `license-files`; `ci/binding.sh` checks they are there).
+
+The sources kept are byte for byte upstream's at the commit: `git diff --no-index` of `src/`
+against a checkout of the commit shows nothing but the removal of these unit-test files:
+
+- `parry/src/partitioning/bvh/bvh_tests.rs`
+- `rapier/src/pipeline/physics_pipeline/test.rs` and `test_staged.rs`
+- `rapier/src/dynamics/solver/soft_fem/system/tests.rs`
+- `rapier/src/dynamics/solver/soft_constraint/soft_element_constraint/test.rs`
+- `rapier/src/dynamics/joint/multibody_joint/multibody_regression_tests.rs`
+- `rapier/src/dynamics/soft_body/tearing/tests.rs`
+- `rapier/src/geometry/narrow_phase/test.rs`
 
 **Exit condition.** When a release of each crate carries its fix, the pin moves to that release
 (crates.io, by exact version, as `Cargo.toml` pins the rest) and the copy here is deleted, after

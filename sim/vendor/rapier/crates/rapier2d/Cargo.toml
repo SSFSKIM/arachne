@@ -1,3 +1,6 @@
+# Modified by the Arachne authors: this manifest is trimmed from upstream's at the commit
+# sim/vendor/VENDORED.md names, to what Arachne's build compiles (that file lists the changes).
+
 [package]
 name = "rapier2d"
 version.workspace = true
