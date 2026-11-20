@@ -47,6 +47,7 @@ __all__ = ["Stack", "Unsupported"]
 
 import contextlib
 import copy
+import functools
 import math
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
@@ -459,7 +460,22 @@ def _camera_of_size(camera: Camera, size: tuple[int, int]) -> Camera:
     """A camera like ``camera``, over the same view of the scene, drawing
     frames of ``size`` (width, height) pixels: what draws a window's objects
     at the window's own size.
+
+    A camera that also draws zoomed displays (a ``MultiCamera`` with
+    display cameras, as a ``ZoomedScene``'s is) is refused: drawing through
+    a copy of it would resize and repaint its display cameras at the
+    window's size.
     """
+    from arachne.camera.multi_camera import MultiCamera
+
+    if isinstance(camera, MultiCamera) and camera.image_mobjects_from_cameras:
+        raise Unsupported(
+            "window",
+            "a window at its own size in a scene whose camera draws zoomed"
+            " displays: its objects are drawn by a camera of the window's size,"
+            " which would resize the zoom's cameras; show the zoom outside the"
+            " window",
+        )
     width, height = size
     inner = copy.copy(camera)
     inner.pixel_width, inner.pixel_height = width, height
@@ -472,10 +488,21 @@ def _camera_of_size(camera: Camera, size: tuple[int, int]) -> Camera:
     inner.pixel_array_to_cairo_context = {}
     inner.pixel_array_to_mapping_centre = {}
     inner.background_colored_vmobject_displayer = None
+    inner.adjusted_thickness = functools.partial(_thickness_at_own_size, inner)
     inner.pixel_array = np.zeros(
         (height, width, camera.n_channels), dtype=camera.pixel_array_dtype
     )
     return inner
+
+
+def _thickness_at_own_size(camera: Camera, thickness: float) -> float:
+    """A point's thickness as ``Camera.adjusted_thickness`` gives it, with
+    ``camera``'s own size where that reads the configured one: a scene
+    configured at the window's size, drawn alone, thickens its points by a
+    factor of 1, and so does the window's camera.
+    """
+    own = camera.pixel_height + camera.pixel_width
+    return 1 + (thickness - 1) * (own / own)
 
 
 def _bound_to(method: Any, owner: Any, other: Any) -> Any:

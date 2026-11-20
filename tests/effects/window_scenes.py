@@ -19,9 +19,11 @@ from arachne import (
     Circle,
     Group,
     ImageMobject,
+    PointCloudDot,
     Rectangle,
     Scene,
     Window,
+    ZoomedScene,
     linear,
     set_blur,
     set_depth,
@@ -62,6 +64,7 @@ NAMES = {
     "Focused": ("backdrop", "edge", "mover"),
     "Nested": ("backdrop", "inner", "mover"),
     "MixedMask": ("backdrop", "plane", "mover"),
+    "Points": ("backdrop", "points", "mover"),
 }
 
 
@@ -104,6 +107,10 @@ def content(case: str, without: tuple[str, ...] = ()) -> dict:
             image.scale_to_fit_height(2).move_to([-1.5, -1.5, 0])
             mask = Group(Circle(radius=2, fill_opacity=1).move_to([-6, 0, 0]), image)
             set_mask(made["plane"], mask)
+    elif case == "Points":
+        made["points"] = PointCloudDot(
+            center=[3, 1, 0], radius=1, stroke_width=4, color="#F0D020"
+        )
     elif case == "Nested":
         inner = Window(
             _plane(12, 6.75, "#E08020"),
@@ -286,4 +293,16 @@ class BlurTooWideForWindow(Scene):
         set_blur(blurred, 6)
         window = Window(_plane(12, 6.75, BACKDROP), blurred, width=2, height=1.125)
         self.add(window)
+        self.wait(0.2)
+
+
+class ZoomedWithWindow(ZoomedScene):
+    """A window at its own size in a scene whose camera draws a zoomed
+    display.
+    """
+
+    def construct(self):
+        window = Window(_plane(12, 6.75, BACKDROP), width=6, height=3.375)
+        self.add(window.move_to([0, 0.0625, 0]))
+        self.activate_zooming(animate=False)
         self.wait(0.2)

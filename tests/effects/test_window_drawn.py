@@ -170,12 +170,16 @@ class _Case:
         }
 
     def verdict(self):
+        """The comparator's verdict; the maps it read are kept in ``maps``,
+        the reference's and the window's.
+        """
         reference, window = self.frames()
+        self.maps = (self.reference_maps(), self.window_maps())
         return compare(
             ArrayFrames(reference, FPS),
             ArrayFrames(window, FPS),
             mode="same",
-            maps=HandedMaps(self.reference_maps(), self.window_maps()),
+            maps=HandedMaps(*self.maps),
             changed=lambda i, j: changed_between(
                 self.reference, INSTANTS[i], INSTANTS[j]
             ),
@@ -197,6 +201,9 @@ CASES = [
     ("Masked", "Half", True),
     ("Focused", "Half", True),
     ("Nested", "Half", True),
+    # A point cloud: the window's camera thickens points as a camera
+    # configured at the window's size does.
+    ("Points", "Half", False),
 ]
 
 
@@ -229,6 +236,14 @@ def test_a_scene_shown_in_a_window_matches_it_drawn_alone_at_the_window_s_size(
     assert verdict.findings == ()
     assert verdict.counts["presence_untested"] == 0
     assert verdict.counts["flicker_unjudged"] == 0
+    # Presence is shown, not only agreed on: every object is examined and
+    # draws on both sides at every sampled frame.
+    for side in shown.maps:
+        for i in verdict.sampled:
+            for name, ident in shown.ids.items():
+                footprint = side[i].objects[ident]
+                assert footprint.examined, (name, INSTANTS[i])
+                assert not footprint.empty, (name, INSTANTS[i])
 
 
 def test_a_window_lacking_one_small_object_is_blocked_for_its_presence(opened, door):
@@ -349,3 +364,29 @@ def test_a_blur_too_wide_for_its_window_reaches_the_server_with_the_gpu_build_s_
         " window larger)"
     ) in message
     assert not (tmp_path / "f.png").exists()
+
+
+def test_a_window_at_its_own_size_under_a_zoom_is_refused_and_leaves_the_zoom(
+    opened, door
+):
+    from arachne.compose.stack import Unsupported
+
+    session = opened("ZoomedWithWindow")
+    cameras = [
+        each.camera
+        for each in session.scene.renderer.camera.image_mobjects_from_cameras
+    ]
+    assert cameras
+    # The zoom's cameras, at the size the frame's camera gives them.
+    before = [
+        (each.pixel_width, each.pixel_height, each.pixel_array.shape)
+        for each in cameras
+    ]
+    with pytest.raises(Unsupported, match="show the zoom outside the window"):
+        session.frame(Fraction(1, 10))
+    after = [
+        (each.pixel_width, each.pixel_height, each.pixel_array.shape)
+        for each in cameras
+    ]
+    assert after == before
+    assert door.draws == 0

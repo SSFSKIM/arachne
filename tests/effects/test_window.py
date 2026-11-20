@@ -14,12 +14,14 @@ from arachne import (
     Circle,
     ImageMobject,
     MovingCamera,
+    PointCloudDot,
     Square,
     Window,
     clear_effects,
     routing,
     set_blur,
     set_mask,
+    tempconfig,
 )
 from arachne.camera.camera import Camera
 from arachne.compose.layer import layer_of
@@ -102,10 +104,15 @@ def test_a_window_s_camera_draws_what_a_camera_of_its_size_draws(kind):
     image = ImageMobject(np.full((4, 4, 4), 200, dtype=np.uint8)).shift(
         2 * np.array([1, 0, 0])
     )
-    objects = [Square(fill_opacity=1), Circle(radius=0.5), image]
+    points = PointCloudDot(center=[-3, 1, 0], radius=1, stroke_width=4)
+    objects = [Square(fill_opacity=1), Circle(radius=0.5), image, points]
     for camera in (inner, alone):
         camera.pixel_array[...] = 0
-        camera.capture_mobjects(objects)
+    # The window's camera draws under the frame's configuration; the one it
+    # is compared with, as a scene drawn alone at its size, under its own.
+    inner.capture_mobjects(objects)
+    with tempconfig({"pixel_width": 48, "pixel_height": 27}):
+        alone.capture_mobjects(objects)
     assert inner.pixel_array.shape == (27, 48, 4)
     assert inner.pixel_array.any()
     assert np.array_equal(inner.pixel_array, alone.pixel_array)
