@@ -6,7 +6,7 @@ use std::fmt;
 
 use wgpu::util::DeviceExt;
 
-use crate::device::{self, AdapterSummary, Door, NoGpu, Pin};
+use crate::device::{self, AdapterSummary, Door, ForkedProcess, NoGpu, Opened, Pin};
 use crate::frame::Frame;
 use crate::keys::{Key, image_key, painted_from_straight, painted_key};
 use crate::object_map::{Footprint, from_coverage};
@@ -55,6 +55,8 @@ pub enum OpenError {
     /// The frame size does not fit the device: no side may be 0 or above the device's texture
     /// limit, and a frame must fit its read-back buffer.
     InvalidSize(String),
+    /// This process was forked after its parent first used this build: nothing was opened.
+    ForkedProcess(ForkedProcess),
 }
 
 impl fmt::Display for OpenError {
@@ -62,6 +64,7 @@ impl fmt::Display for OpenError {
         match self {
             OpenError::NoGpu(no_gpu) => no_gpu.fmt(f),
             OpenError::InvalidSize(what) => f.write_str(what),
+            OpenError::ForkedProcess(forked) => forked.fmt(f),
         }
     }
 }
@@ -71,6 +74,12 @@ impl std::error::Error for OpenError {}
 impl From<NoGpu> for OpenError {
     fn from(no_gpu: NoGpu) -> Self {
         OpenError::NoGpu(no_gpu)
+    }
+}
+
+impl From<ForkedProcess> for OpenError {
+    fn from(forked: ForkedProcess) -> Self {
+        OpenError::ForkedProcess(forked)
     }
 }
 
@@ -204,7 +213,16 @@ impl Compositor {
                 "a frame of {width} x {height} has no pixels"
             )));
         }
-        let opened = device::open(door)?;
+        Self::on(device::open(door)?, width, height, door == Door::Software)
+    }
+
+    /// A compositor drawing on `opened`, a device of the door `software` names.
+    pub(crate) fn on(
+        opened: Opened,
+        width: u32,
+        height: u32,
+        software: bool,
+    ) -> Result<Self, OpenError> {
         // Both limits are checked before any resource exists.
         let (padded_row, readback_size) = frame_size(width, height, &opened.limits)?;
         let max_dimension = opened.limits.max_texture_dimension_2d;
@@ -226,7 +244,7 @@ impl Compositor {
             device,
             queue: opened.queue,
             info: opened.info,
-            software: door == Door::Software,
+            software,
             width,
             height,
             max_dimension,

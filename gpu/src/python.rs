@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use crate::compositor::{Compositor, DrawError, OpenError};
-use crate::device::{AdapterSummary, NoGpu, Pin};
+use crate::device::{AdapterSummary, ForkedProcess, NoGpu, Pin};
 use crate::frame::{Blur, Focus, Frame, Layer, SoftMask, Source};
 use crate::keys::{self, Key};
 use crate::object_map::Footprint;
@@ -38,10 +38,15 @@ fn no_gpu(py: Python<'_>, err: NoGpu) -> PyErr {
     }
 }
 
+fn forked_process(py: Python<'_>, err: ForkedProcess) -> PyErr {
+    python_error(py, "ForkedProcessError", (err.to_string(),))
+}
+
 fn open_error(py: Python<'_>, err: OpenError) -> PyErr {
     match err {
         OpenError::NoGpu(err) => no_gpu(py, err),
         OpenError::InvalidSize(what) => PyValueError::new_err(what),
+        OpenError::ForkedProcess(err) => forked_process(py, err),
     }
 }
 
@@ -385,7 +390,9 @@ fn software_compositor(py: Python<'_>, width: u32, height: u32) -> PyResult<PyCo
 /// Every adapter this machine offers on Vulkan, of any device type.
 #[pyfunction]
 fn adapters(py: Python<'_>) -> PyResult<Vec<Bound<'_, PyDict>>> {
-    let found = py.detach(crate::device::adapters);
+    let found = py
+        .detach(crate::device::adapters)
+        .map_err(|e| forked_process(py, e))?;
     found.iter().map(|a| adapter_dict(py, a)).collect()
 }
 

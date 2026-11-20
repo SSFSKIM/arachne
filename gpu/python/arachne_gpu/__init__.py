@@ -19,12 +19,14 @@ pixels it covers before any effect, and how far its effects spread it.
 ``Compositor(width, height)`` draws only on a GPU (a discrete, integrated or virtual adapter on
 Vulkan) and raises :class:`NoGpu` otherwise. A software adapter is for tests, and the one door to
 it is ``arachne_gpu.testing``. ``Compositor.pin`` names the device that draws: the adapter, the
-backend, the driver version string and the wgpu version.
+backend, the driver version string and the wgpu version. In a process forked after its parent first
+used this build, opening a compositor or listing ``adapters()`` raises
+:class:`ForkedProcessError`.
 """
 
 from __future__ import annotations
 
-from arachne_gpu._errors import NoGpu, Unsupported
+from arachne_gpu._errors import ForkedProcessError, NoGpu, Unsupported
 from arachne_gpu._frame import (
     Blur,
     Focus,
@@ -44,6 +46,7 @@ __all__ = [
     "Compositor",
     "Focus",
     "Footprint",
+    "ForkedProcessError",
     "Frame",
     "Layer",
     "NoGpu",

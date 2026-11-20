@@ -44,11 +44,17 @@ def test_compositors_on_several_threads_draw_at_once(make_compositor):
     alone = make_compositor(SIDE, SIDE)
     alone.upload_painted(key, picture)
     expected = alone.draw(frame)
-    start = threading.Barrier(threads)
+    # A thread whose open or upload fails breaks the barrier, so the others stop waiting and the
+    # failure is reported; the timeout bounds a thread that never arrives.
+    start = threading.Barrier(threads, timeout=120)
 
     def draw_ten() -> list[bool]:
-        compositor = make_compositor(SIDE, SIDE)
-        compositor.upload_painted(key, picture)
+        try:
+            compositor = make_compositor(SIDE, SIDE)
+            compositor.upload_painted(key, picture)
+        except BaseException:
+            start.abort()
+            raise
         start.wait()
         return [
             np.array_equal(compositor.draw(frame), expected)
@@ -57,5 +63,10 @@ def test_compositors_on_several_threads_draw_at_once(make_compositor):
         ]
 
     with ThreadPoolExecutor(max_workers=threads) as pool:
-        results = list(pool.map(lambda _: draw_ten(), range(threads)))
-    assert results == [[True] * 10] * threads
+        futures = [pool.submit(draw_ten) for _ in range(threads)]
+    errors = [f.exception() for f in futures if f.exception() is not None]
+    if errors:
+        # The setup failure, not the broken barrier it left its peers.
+        first = [e for e in errors if not isinstance(e, threading.BrokenBarrierError)]
+        raise (first or errors)[0]
+    assert [f.result() for f in futures] == [[True] * 10] * threads

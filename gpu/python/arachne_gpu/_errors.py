@@ -15,6 +15,13 @@ class NoGpu(Exception):
         self.seen = seen
 
 
+class ForkedProcessError(RuntimeError):
+    """This process was forked from one that had already used the GPU build: the Vulkan state it
+    inherited is its parent's and is neither used nor released here. Start GPU work in a process
+    made by spawn or exec instead. Nothing was opened.
+    """
+
+
 class Unsupported(Exception):
     """A frame refused whole: it asks for something this build does not draw
     (``render.unsupported``). Nothing is drawn.

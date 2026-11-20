@@ -28,7 +28,7 @@ fn the_ordinary_door_refuses_a_machine_whose_only_adapter_is_software() {
         );
         return;
     }
-    let seen = arachne_gpu::adapters();
+    let seen = arachne_gpu::adapters().unwrap();
     assert!(
         !seen.is_empty() && seen.iter().all(|a| a.device_type == "Cpu"),
         "the child sees {seen:?}"
@@ -64,7 +64,7 @@ fn the_ordinary_door_refuses_a_machine_with_no_vulkan_loader() {
         );
         return;
     }
-    assert_eq!(arachne_gpu::adapters(), vec![]);
+    assert_eq!(arachne_gpu::adapters().unwrap(), vec![]);
     let refused = no_gpu(Compositor::new(64, 64));
     assert!(refused.seen.is_empty());
     assert!(refused.to_string().contains("no Vulkan adapter was found"));
