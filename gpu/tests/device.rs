@@ -113,6 +113,7 @@ fn with_no_launch_mode_the_drawing_tests_fail() {
 fn the_probes_draw_at_the_runs_size_or_at_480_x_270() {
     assert_eq!(size_from(None), Ok((480, 270)));
     assert_eq!(size_from(Some("1920x1080")), Ok((1920, 1080)));
+    assert_eq!(size_from(Some("3840x2160")), Ok((3840, 2160)));
     for wrong in [
         "1920",
         "1920x",
@@ -121,6 +122,8 @@ fn the_probes_draw_at_the_runs_size_or_at_480_x_270() {
         "479x270",
         "480x269",
         "-1x5",
+        "1000x270",
+        "480x1000",
     ] {
         assert!(size_from(Some(wrong)).is_err(), "{wrong}");
     }

@@ -131,7 +131,8 @@ mode from the test run's environment and fails with none set:
   with that it is no software adapter and that its pin is the one given.
 
 The tests that draw frames of a frame's size draw at `ARACHNE_GPU_TEST_SIZE` (`<width>x<height>`,
-at least 480 x 270; 480 x 270 when unset), so the same probes run at CI's size and at
+at least 480 x 270, each side a multiple of 3 for the window placed at a third of the frame;
+480 x 270 when unset; any other value fails the run at its start), so the same probes run at CI's size and at
 `ARACHNE_GPU_TEST_SIZE=1920x1080` on a GPU; their closed-form bounds hold at both. Like the launch
 mode, it is read by test code only. The CI gates (`.github/ci-kit.yml`): `gpu-lint` and `gpu-test`
 when this directory changes; `gpu-binding` (the Python tests against the installed wheel) and
@@ -143,7 +144,12 @@ host that already has its environments can draw more arms, for example the same 
 build and a GPU beside the two without one, and compare them all:
 
     bash gpu/ci/cpu_bytes_arm.sh <python> <arm directory> absent|present    # one arm
-    python3 gpu/ci/cpu_bytes_compare.py <arm directory> <arm directory>...  # every arm equal
+    python3 gpu/ci/cpu_bytes_compare.py [--no-hardware ARM] [--hardware ARM=ADAPTER] \
+        <arm directory> <arm directory>...                                    # every arm equal
+
+An arm finds the build by package discovery, arms the import tripwire in its environment only
+while it draws, and records the adapters the build sees; `--no-hardware` and `--hardware` hold an
+arm with the build to having seen no hardware adapter, or the named one.
 
 ## Measuring a device: the frame set and the read-back benchmark
 
@@ -157,15 +163,15 @@ adapter; the crate's own tests run both on one at 480 x 270.
 - **The frame set** (`frameset`): the reference stack (six pictures of the frame's size: an
   opaque backdrop, two blurred at sigma 8 px, one under a soft mask, a window onto a stack of
   three, one plain) and the heavy stack (24 pictures, four blurred at sigma 24 px), each at
-  1920 x 1080 and 3840 x 2160, and one frame per effect probe at 1920 x 1080. Every picture is
-  drawn by code; the stacks' sigmas and feather are stated at 1080 px high and scale with the
-  frame's height. Each frame is written as `<name>.rgba` (raw RGBA8 rows, top first, painted) with
+  1920 x 1080 and 3840 x 2160 with the same sigmas in pixels, and one frame per branch of each
+  effect probe at 1920 x 1080. Every picture is drawn by code. Each frame is written as `<name>.rgba` (raw RGBA8 rows, top first, painted) with
   `manifest.json`: the set's version, the pin and adapter, and each frame's SHA-256 over its file's
   bytes. `--size WxH` draws every frame at one size; `--digests-only` writes the manifest alone.
 - **The read-back benchmark** (`readback_bench`): for the reference and heavy stacks at each size,
   the mean and 95th percentile time per frame over `--frames` (300) after `--warmup` (30), with
   `draw`'s one-frame copy and with a pipelined copy (frame n copied out while frame n + 1 draws,
-  through a ring of `--ring` (3) buffers); and the time of one frame from a warm compositor after
+  through a ring of `--ring` (3) buffers, timed only while the ring is full, each frame taken out
+  as the next is submitted); and the time of one frame from a warm compositor after
   every picture of the stack is uploaded anew, over `--uploads` (30). Every frame it reads back is
   checked against the stack's first draw (of the pipelined copy's timed frames, the last). Each
   part's start and end, in Unix seconds, are in the report, to read a GPU monitor sampled beside

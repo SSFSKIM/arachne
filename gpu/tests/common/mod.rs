@@ -9,8 +9,9 @@
 //! With no mode set every drawing test fails.
 //!
 //! The probes that draw frames of a frame's size draw at `ARACHNE_GPU_TEST_SIZE`
-//! (`<width>x<height>`, at least 480 x 270), or at 480 x 270 when it is unset: CI's size, and a
-//! GPU host's second size, 1920x1080. Their closed-form bounds hold at any size.
+//! (`<width>x<height>`, at least 480 x 270, each side a multiple of 3, as the window probe placed
+//! at a third of the frame needs), or at 480 x 270 when it is unset: CI's size, and a GPU host's
+//! second size, 1920x1080. Their closed-form bounds hold at any such size.
 
 #![allow(dead_code)]
 
@@ -69,7 +70,8 @@ pub fn mode() -> Mode {
 }
 
 /// The drawing size, from the value of `SIZE`: `<width>x<height>`, no smaller than 480 x 270 on
-/// either side, since the probes' fixed geometry fits that frame.
+/// either side, since the probes' fixed geometry fits that frame, and each side a multiple of 3,
+/// since the window probe places a window of a third of the frame.
 pub fn size_from(value: Option<&str>) -> Result<(u32, u32), String> {
     let Some(value) = value else {
         return Ok(DEFAULT_SIZE);
@@ -78,10 +80,14 @@ pub fn size_from(value: Option<&str>) -> Result<(u32, u32), String> {
         .split_once('x')
         .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
     match parsed {
-        Some((w, h)) if w >= DEFAULT_SIZE.0 && h >= DEFAULT_SIZE.1 => Ok((w, h)),
-        Some(_) => Err(format!(
+        Some((w, h)) if w < DEFAULT_SIZE.0 || h < DEFAULT_SIZE.1 => Err(format!(
             "{SIZE}={value}: the probes draw at 480x270 or larger"
         )),
+        Some((w, h)) if w % 3 != 0 || h % 3 != 0 => Err(format!(
+            "{SIZE}={value}: each side must be a multiple of 3, for the window placed at a third \
+             of the frame"
+        )),
+        Some(size) => Ok(size),
         None => Err(format!("{SIZE}={value}: not <width>x<height>")),
     }
 }

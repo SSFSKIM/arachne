@@ -1,8 +1,9 @@
 """Fixture pictures and closed forms for the GPU build's tests, and the size they draw at.
 
 The tests that draw frames of a frame's size draw at ``ARACHNE_GPU_TEST_SIZE``
-(``<width>x<height>``, at least 480 x 270), or at 480 x 270 when it is unset: CI's size, and a GPU
-host's second size, 1920x1080. Their closed-form bounds hold at any size. Test code is the only
+(``<width>x<height>``, at least 480 x 270, each side a multiple of 3, as the window placed at a third
+of the frame needs), or at 480 x 270 when it is unset: CI's size, and a GPU host's second size,
+1920x1080. Their closed-form bounds hold at any such size. Test code is the only
 reader of it, as of the launch mode.
 """
 
@@ -30,6 +31,11 @@ def drawing_size(environ: Mapping[str, str]) -> tuple[int, int]:
     width, height = int(found[1]), int(found[2])
     if width < DEFAULT_SIZE[0] or height < DEFAULT_SIZE[1]:
         raise RuntimeError(f"{SIZE}={value}: the tests draw at 480x270 or larger")
+    if width % 3 or height % 3:
+        raise RuntimeError(
+            f"{SIZE}={value}: each side must be a multiple of 3, for the window placed at a"
+            " third of the frame"
+        )
     return width, height
 
 

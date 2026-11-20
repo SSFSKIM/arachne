@@ -128,7 +128,16 @@ def sources(*roots: Path) -> list[Path]:
 def test_the_tests_draw_at_the_runs_size_or_at_480_x_270():
     assert drawing_size({}) == (480, 270)
     assert drawing_size({SIZE: "1920x1080"}) == (1920, 1080)
-    for wrong in ("1920", "1920x", "x1080", "1920 x 1080", "479x270", "480x269"):
+    for wrong in (
+        "1920",
+        "1920x",
+        "x1080",
+        "1920 x 1080",
+        "479x270",
+        "480x269",
+        "1000x270",
+        "480x1000",
+    ):
         with pytest.raises(RuntimeError):
             drawing_size({SIZE: wrong})
 

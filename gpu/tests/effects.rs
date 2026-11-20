@@ -322,10 +322,6 @@ fn a_window_at_a_smaller_rectangle_leaves_the_parent_outside_it() {
         .draw(&Frame::new([5, 6, 7, 255], vec![Layer::picture(kp)]))
         .unwrap();
     // A third of the frame's size, so every pixel centre falls in a texel's middle third.
-    assert!(
-        w % 3 == 0 && h % 3 == 0,
-        "this probe draws at a size whose sides are multiples of 3, not {w} x {h}"
-    );
     let (x0, y0) = (100u32, 60u32);
     let (x1, y1) = (x0 + w / 3, y0 + h / 3);
     let corners = rectangle(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));

@@ -183,8 +183,8 @@ mod tests {
             .iter()
             .map(|((width, _), entries)| (*width, entries.len()))
             .collect();
-        assert_eq!(names, [(1920, 14), (3840, 2)]);
-        assert_eq!(plan(Sizes::All(480, 270))[0].1.len(), 14);
+        assert_eq!(names, [(1920, 17), (3840, 2)]);
+        assert_eq!(plan(Sizes::All(480, 270))[0].1.len(), 17);
     }
 
     #[test]

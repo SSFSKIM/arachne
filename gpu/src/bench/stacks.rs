@@ -9,9 +9,8 @@
 //!   24 px.
 //! - One **probe frame** per effect probe of the crate's tests, with the probe's own numbers.
 //!
-//! The reference and heavy stacks' sigmas and feather are stated at 1920 x 1080 and scale with
-//! the frame's height, as a scene's blur declared in scene units does: twice as many pixels at
-//! 3840 x 2160, a quarter at 480 x 270. The probes' numbers are pixels at any size.
+//! Every sigma and feather is in pixels, the same at every size: the 3840 x 2160 stacks blur at
+//! 8 and 24 px as the 1920 x 1080 ones do.
 
 use crate::{Compositor, DrawError, Frame, Key, Layer, NEAREST, painted_key};
 
@@ -26,14 +25,17 @@ pub const REFERENCE_SIZES: [(u32, u32); 2] = [(1920, 1080), (3840, 2160)];
 pub const PROBE_SIZE: (u32, u32) = (1920, 1080);
 
 /// The probe frames, by name, in the set's order.
-pub const PROBES: [&str; 12] = [
+pub const PROBES: [&str; 15] = [
     "blur-step-sigma-2",
     "blur-step-sigma-6",
     "blur-step-sigma-12",
     "blur-shapes-sigma-6",
+    "focus-at",
+    "focus-at-with-blur",
     "focus-off",
     "focus-and-blur",
     "mask-columns",
+    "mask-columns-inverted",
     "mask-rows",
     "mask-disc",
     "window-full",
@@ -90,7 +92,6 @@ impl Stack {
 /// draws new pictures into the same layers (the benchmark's new uploads).
 pub fn reference(width: u32, height: u32, variant: u64) -> Stack {
     let (w, h) = (f64::from(width), f64::from(height));
-    let scale = h / 1080.0;
     let seed = |i: u64| variant * 1000 + i;
     let backdrop = Texture::painted(width, height, backdrop(width, height, seed(1)));
     let pictures: Vec<Texture> = (2..6)
@@ -116,11 +117,11 @@ pub fn reference(width: u32, height: u32, variant: u64) -> Stack {
     );
     let layers = vec![
         Layer::picture(backdrop.key),
-        Layer::picture(pictures[0].key).with_blur(8.0 * scale),
+        Layer::picture(pictures[0].key).with_blur(8.0),
         Layer::picture(pictures[1].key),
         Layer::window(inner_frame, window, NEAREST),
-        Layer::picture(pictures[2].key).with_mask(mask.key, 16.0 * scale, false),
-        Layer::picture(pictures[3].key).with_blur(8.0 * scale),
+        Layer::picture(pictures[2].key).with_mask(mask.key, 16.0, false),
+        Layer::picture(pictures[3].key).with_blur(8.0),
     ];
     let mut textures = vec![backdrop];
     textures.extend(pictures);
@@ -137,7 +138,6 @@ pub fn reference(width: u32, height: u32, variant: u64) -> Stack {
 
 /// The heavy stack at `width` x `height`; `variant` as for [`reference`].
 pub fn heavy(width: u32, height: u32, variant: u64) -> Stack {
-    let scale = f64::from(height) / 1080.0;
     let seed = |i: u64| variant * 1000 + 100 + i;
     let mut textures = vec![Texture::painted(
         width,
@@ -152,7 +152,7 @@ pub fn heavy(width: u32, height: u32, variant: u64) -> Stack {
         .map(|(i, t)| {
             let layer = Layer::picture(t.key);
             if i % 6 == 5 {
-                layer.with_blur(24.0 * scale)
+                layer.with_blur(24.0)
             } else {
                 layer
             }
@@ -196,6 +196,20 @@ pub fn probe(name: &str, width: u32, height: u32) -> Stack {
                 vec![Layer::picture(below), Layer::picture(shapes).with_blur(6.0)],
             )
         }
+        "focus-at" => {
+            // A layer at the focus depth is not defocused: its bytes come back.
+            let shapes = add(shapes(width, height, 8), width, height);
+            Frame::new(clear, vec![Layer::picture(shapes).with_depth(3.0)]).with_focus(3.0, 1.5)
+        }
+        "focus-at-with-blur" => {
+            // At the focus depth, its own blur of 3 still applies.
+            let step = add(step(width, height, width / 2), width, height);
+            Frame::new(
+                clear,
+                vec![Layer::picture(step).with_depth(3.0).with_blur(3.0)],
+            )
+            .with_focus(3.0, 1.5)
+        }
         "focus-off" => {
             // 1.5 * |7 - 3| = 6.
             let step = add(step(width, height, width / 2), width, height);
@@ -210,10 +224,10 @@ pub fn probe(name: &str, width: u32, height: u32) -> Stack {
             )
             .with_focus(3.0, 2.0)
         }
-        "mask-columns" | "mask-rows" => {
+        "mask-columns" | "mask-columns-inverted" | "mask-rows" => {
             let black = add(flat(width, height, [0, 0, 0, 255]), width, height);
             let white = add(flat(width, height, [255; 4]), width, height);
-            let mask = if name == "mask-columns" {
+            let mask = if name != "mask-rows" {
                 let column = width * 5 / 12;
                 mask_picture(width, height, |x, _| x < column)
             } else {
@@ -225,7 +239,7 @@ pub fn probe(name: &str, width: u32, height: u32) -> Stack {
                 clear,
                 vec![
                     Layer::picture(black),
-                    Layer::picture(white).with_mask(mask, 10.0, false),
+                    Layer::picture(white).with_mask(mask, 10.0, name == "mask-columns-inverted"),
                 ],
             )
         }
@@ -487,7 +501,7 @@ mod tests {
             .iter()
             .filter_map(|l| l.blur.map(|b| b.sigma_px))
             .collect();
-        assert_eq!(blurs, [0.8, 0.8]);
+        assert_eq!(blurs, [8.0, 8.0]);
         assert_eq!(layers.iter().filter(|l| l.mask.is_some()).count(), 1);
         let windows: Vec<&Frame> = layers
             .iter()
@@ -499,7 +513,7 @@ mod tests {
         assert_eq!(windows.len(), 1);
         assert_eq!(windows[0].layers.len(), 3);
 
-        // At 2160 px high, twice the pixels of 1080: sigma 48.
+        // Pixels at every size: sigma 24 at 3840 x 2160 as at 1920 x 1080.
         let heavy = heavy(64, 2160, 0);
         assert_eq!(heavy.frame.layers.len(), 24);
         let blurs: Vec<f64> = heavy
@@ -508,7 +522,7 @@ mod tests {
             .iter()
             .filter_map(|l| l.blur.map(|b| b.sigma_px))
             .collect();
-        assert_eq!(blurs, [48.0; 4]);
+        assert_eq!(blurs, [24.0; 4]);
     }
 
     #[test]

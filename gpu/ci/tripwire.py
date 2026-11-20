@@ -4,7 +4,8 @@
 site directory: every Python process of that environment loads it (the command line, a session
 server, a forked worker), and it appends one JSON line (the process id, its command line) to
 ``<log>`` whenever the process tries to import ``arachne_gpu``, whether or not the import succeeds.
-Installed again, the hook writes to the new log.
+Installed again, the hook writes to the new log; ``python3 tripwire.py uninstall <site-packages>``
+takes it out.
 
 ``python3 tripwire.py marker`` prints the comment a deliberate import carries in its command line,
 by which the log tells it from any other.
@@ -49,6 +50,14 @@ _sys.meta_path.insert(0, _Tripwire)
 '''
 
 
+HOOK_FILES = ("_arachne_gpu_tripwire.pth", "_arachne_gpu_tripwire.py")
+
+
+def uninstall(site: Path) -> None:
+    for name in HOOK_FILES:
+        (site / name).unlink(missing_ok=True)
+
+
 def install(site: Path, log: Path) -> None:
     (site / "_arachne_gpu_tripwire.py").write_text(HOOK.format(log=str(log)))
     (site / "_arachne_gpu_tripwire.pth").write_text("import _arachne_gpu_tripwire\n")
@@ -60,5 +69,7 @@ if __name__ == "__main__":
         print(MARKER)
     elif len(sys.argv) == 4 and sys.argv[1] == "install":
         install(Path(sys.argv[2]), Path(sys.argv[3]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "uninstall":
+        uninstall(Path(sys.argv[2]))
     else:
         sys.exit(__doc__)

@@ -143,7 +143,8 @@ pub struct StackTiming {
     pub height: u32,
     /// Each frame drawn and copied out before the next is drawn (`Compositor::draw`).
     pub one_frame: Summary,
-    /// The interval between frames taken out of the pipelined copy, in its steady state.
+    /// The interval between frames taken out of the pipelined copy with its ring full, each taken
+    /// out as the next is submitted: its steady state.
     pub pipelined: Summary,
     /// Every picture of the stack uploaded anew to a warm compositor (the texture writes are
     /// queued here and reach the device with the frame's submission).
@@ -174,8 +175,9 @@ fn differs(name: &str, how: &str) -> Error {
 }
 
 /// Times one stack on `compositor`: `build(0)` is the stack, and `build(n)` for n from 1 its new
-/// pictures. Every frame drawn is checked against the first draw, except the pipelined copy's
-/// timed frames, of which only the last is (a comparison there would be timed).
+/// pictures. Every frame drawn is checked against the first draw, outside the timed window, except
+/// the pipelined copy's timed frames, of which only the last is (a comparison there would be
+/// timed).
 pub fn time_stack(
     compositor: &mut Compositor,
     build: &dyn Fn(u64) -> Stack,
@@ -209,32 +211,45 @@ pub fn time_stack(
         ended: now(),
     });
 
+    // The ring is filled and warmed, and each warm-up frame compared, before the timed window;
+    // in it, every frame taken out comes with the next one submitted behind it, so the ring stays
+    // full. The last timed frame is compared, and the ring drained and compared, after it.
     let started = now();
-    let total = options.warmup + options.frames;
     let mut intervals = Vec::with_capacity(options.frames);
-    let mut taken = 0;
-    let mut last = Instant::now();
-    let mut take = |rgba: Vec<u8>| -> Result<(), Error> {
-        let at = Instant::now();
-        if taken >= options.warmup {
-            intervals.push(at - last);
-        }
-        if (taken < options.warmup || taken + 1 == total) && rgba != expected {
-            return Err(differs(&name, "the pipelined copy"));
-        }
-        last = at;
-        taken += 1;
-        Ok(())
-    };
     {
         let mut pipeline = Pipeline::new(compositor, options.ring);
-        for _ in 0..total {
-            if let Some(rgba) = pipeline.push(&stack.frame)? {
-                take(rgba)?;
+        for _ in 0..options.ring {
+            if pipeline.push(&stack.frame)?.is_some() {
+                unreachable!("a ring gives nothing back before it is full");
             }
         }
+        /// One frame through a full ring: the oldest taken out, the next submitted.
+        fn full(pipeline: &mut Pipeline<'_>, frame: &Frame) -> Result<Vec<u8>, Error> {
+            Ok(pipeline
+                .push(frame)?
+                .expect("a full ring gives one frame back for each pushed"))
+        }
+        for _ in 0..options.warmup {
+            if full(&mut pipeline, &stack.frame)? != expected {
+                return Err(differs(&name, "the pipelined copy"));
+            }
+        }
+        let mut last_frame = None;
+        let mut last = Instant::now();
+        for _ in 0..options.frames {
+            let rgba = full(&mut pipeline, &stack.frame)?;
+            let at = Instant::now();
+            intervals.push(at - last);
+            last = at;
+            last_frame = Some(rgba);
+        }
+        if last_frame.is_some_and(|rgba| rgba != expected) {
+            return Err(differs(&name, "the pipelined copy"));
+        }
         while let Some(rgba) = pipeline.pop()? {
-            take(rgba)?;
+            if rgba != expected {
+                return Err(differs(&name, "the pipelined copy"));
+            }
         }
     }
     let pipelined = Summary::of(&intervals);
