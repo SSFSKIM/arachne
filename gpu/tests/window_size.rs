@@ -547,7 +547,7 @@ fn marker_centre(drawn: &[u8]) -> (f64, f64) {
 
 #[test]
 fn a_windows_interior_marker_moves_a_quarter_pixel_a_frame_with_its_window() {
-    let (w, _) = size();
+    let (w, h) = size();
     let (iw, ih) = (64u32, 48u32);
     let mut c = compositor(w, h);
     // An opaque blue field with a 3 x 3 red marker inside it: only the marker has red, so its
