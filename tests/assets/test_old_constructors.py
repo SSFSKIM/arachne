@@ -2,7 +2,10 @@
 opened by path draw exactly as before, whether or not a ``manifest.json``
 sits beside them, and whether or not a scene that used an asset ran before
 them in the same process; that scene poses its rig, alone and while it
-moves, with a callout on one of its anchors and a readout counting.
+moves, with a callout on one of its anchors and a readout counting. Nor
+does a scene with an effect between them change them: here, with no GPU,
+it answers its states and refuses its frames
+(``tests/effects/test_drawn.py`` draws it on a device).
 """
 
 from __future__ import annotations
@@ -63,6 +66,20 @@ class WithAsset(Scene):
         self.wait(0.25)
 """
 
+WITH_EFFECT = """\
+from arachne import *
+
+
+class WithEffect(Scene):
+    def construct(self):
+        square = Square(fill_opacity=1)
+        set_blur(square, 0.1)
+        self.add(square)
+        self.play(ChangeBlur(square, 0.3), run_time=0.5)
+        set_mask(square, Circle(fill_opacity=1), feather=0.1)
+        self.wait(0.25)
+"""
+
 #: Opens each old scene, then a scene that used an asset, then each old
 #: scene again, in one process; prints each opening's routes and frames.
 PROGRAM = """\
@@ -87,10 +104,26 @@ def opened(file, scene):
         session.close()
 
 
+def refused(file, scene):
+    session = Session.open(f"{directory}/{file}", scene, config=config)
+    try:
+        states = [len(session.state_at(t).nodes) for t in (0, 0.25, 0.5, 0.7)]
+        try:
+            session.frame(0.25)
+        except Exception as error:
+            frame = getattr(error, "code", type(error).__name__)
+        else:
+            frame = None
+        return {"route": session.route, "states": states, "frame": frame}
+    finally:
+        session.close()
+
+
 fresh = {scene: opened("old.py", scene) for scene in ("OldSvg", "OldImage")}
 asset = opened("with_asset.py", "WithAsset")
+effect = refused("with_effect.py", "WithEffect")
 after = {scene: opened("old.py", scene) for scene in ("OldSvg", "OldImage")}
-print(json.dumps({"fresh": fresh, "asset": asset, "after": after}))
+print(json.dumps({"fresh": fresh, "asset": asset, "effect": effect, "after": after}))
 """
 
 
@@ -113,6 +146,7 @@ def _scenes(directory: Path) -> Path:
     shutil.copy(RESOURCES / "tree_img_640x351.png", directory / "tree.png")
     (directory / "old.py").write_text(textwrap.dedent(OLD))
     (directory / "with_asset.py").write_text(textwrap.dedent(WITH_ASSET))
+    (directory / "with_effect.py").write_text(textwrap.dedent(WITH_EFFECT))
     return directory
 
 
@@ -133,5 +167,8 @@ def test_an_svg_and_an_image_by_path_draw_the_same_with_or_without_a_manifest(
     for openings in (bare, with_manifest):
         assert openings["fresh"] == openings["after"]
         assert all(len(set(o["frames"])) > 1 for o in openings["fresh"].values())
+        assert openings["effect"]["route"] == "gpu"
+        assert all(openings["effect"]["states"])
+        assert openings["effect"]["frame"] == "render.gpu_required"
     assert bare["fresh"] == with_manifest["fresh"]
     assert bare["asset"] == with_manifest["asset"]
