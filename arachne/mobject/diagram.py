@@ -126,7 +126,8 @@ class Diagram(VGroup):
         ``route`` is ``"elbow"`` (right angles, rounded corners) or
         ``"straight"``. ``label`` puts a text on a pill (a plate the
         background's colour) at the connector's middle, which the
-        connector keeps as ``label``.
+        connector keeps as ``label``; a :class:`Flow` put on the connector
+        moves it beside the line.
 
         An elbow runs ``stub`` straight out of its start before it turns,
         and ``end_stub`` (``stub`` when ``None``) into its end, each cut to
@@ -162,6 +163,7 @@ class Diagram(VGroup):
             edge = _StraightConnector(a, b, tip=tip, color=color, **kwargs)
         self.add(edge)
         self.edges = (*self.edges, edge)
+        _MADE_BY[edge] = weakref.ref(self)
         if label is not None:
             text = Text(
                 label,
@@ -297,8 +299,18 @@ class Flow(VGroup):
     whatever animates the edge, the diagram the flow is in or the flow
     itself, until :meth:`stop`. It reads the edge's own points (a
     connector's wire, not its head) as they are. Style keywords go to the
-    tokens. A connector's label (:meth:`Diagram.connect`) is drawn above the
-    tokens, which pass under its pill.
+    tokens.
+
+    A connector's label (:meth:`Diagram.connect`) moves beside the line as
+    the flow is made, so the tokens never pass under it: at the line's
+    middle, along the line's normal there, by half the pill's extent along
+    that normal, half a token's and :data:`LABEL_GAP`, on the side with
+    more room (the larger clearance from the diagram's other pieces and
+    connectors, its own line included), above (or, beside an upright line,
+    right) when the two are level. Its place follows from the line and the
+    diagram as they are then, so a second flow leaves it where it is.
+    Make the flow before the diagram shows, or the label moves as it is
+    made. The label is also drawn above the tokens.
     """
 
     def __init__(
@@ -326,6 +338,7 @@ class Flow(VGroup):
         self.stopped = False
         self.add(*(Dot(radius=radius, color=color) for _ in range(tokens)))
         apply_style(self.submobjects, style)
+        _label_beside(edge, self.submobjects)
         _lift_label(edge, self.submobjects)
         self.show_at(0.0)
         self.add_updater(_start_flow)
@@ -367,6 +380,106 @@ class Flow(VGroup):
         # the flow by then.
         _run_in_scene(self)
         return super().suspend_updating(recursive)
+
+
+#: The clear space, in scene units, between a flow's tokens and the label
+#: of the connector they run along, set beside it.
+LABEL_GAP = 0.06
+#: Samples along each curve when a label's room is measured.
+_ROOM_SAMPLES = 9
+#: The diagram that made each connector, held beside both, weakly: a
+#: flow's label takes the side with more room among the diagram's pieces.
+_MADE_BY: weakref.WeakKeyDictionary[VMobject, weakref.ref[Diagram]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _label_beside(edge: VMobject, tokens: Sequence[VMobject]) -> None:
+    """Move ``edge``'s label, if it has one, beside the line, clear of
+    ``tokens`` wherever they run on a straight stretch (:class:`Flow`).
+    """
+    label = getattr(edge, "label", None)
+    if label is None:
+        return
+    path = ArcLength(edge.points)
+    middle = path.length / 2
+    at = path.point(middle)
+    reach = min(middle, 1e-3)
+    tangent = path.point(middle + reach) - path.point(middle - reach)
+    normal = np.array([-tangent[1], tangent[0], 0.0]) / np.linalg.norm(tangent[:2])
+
+    def support(mob: Mobject) -> float:
+        return float(abs(normal[0]) * mob.width + abs(normal[1]) * mob.height) / 2
+
+    offset = support(label) + max(support(t) for t in tokens) + LABEL_GAP
+    # Above first, or right of an upright line.
+    first = normal if (round(normal[1], 9), normal[0]) > (0.0, 0.0) else -normal
+    lines, boxes = _obstacles(edge, label)
+    half = np.array([label.width, label.height]) / 2
+
+    def room(side: np.ndarray) -> float:
+        centre = (at + side * offset)[:2]
+        return _clearance(centre - half, centre + half, lines, boxes)
+
+    side = -first if room(-first) > room(first) + 1e-9 else first
+    label.move_to(at + side * offset)
+
+
+def _obstacles(
+    edge: VMobject, label: Mobject
+) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray]]]:
+    """What a label beside ``edge`` keeps clear of: points along every
+    connector of ``edge``'s diagram (or ``edge`` alone, outside one), and
+    the box of every other piece of it but ``label`` and flows.
+    """
+    held = _MADE_BY.get(edge)
+    diagram = held() if held is not None else None
+    if diagram is None:
+        return _drawn_points(edge), []
+    connectors = [e for e in diagram.edges if any(e is m for m in diagram.submobjects)]
+    if not any(e is edge for e in connectors):
+        connectors.append(edge)
+    lines = np.concatenate([_drawn_points(e) for e in connectors])
+    boxes = [
+        (piece.get_critical_point(DL)[:2], piece.get_critical_point(UR)[:2])
+        for piece in diagram.submobjects
+        if piece is not label
+        and not any(piece is e for e in connectors)
+        and not isinstance(piece, Flow)
+        and any(len(m.points) for m in piece.get_family())
+    ]
+    return lines, boxes
+
+
+def _drawn_points(mob: Mobject) -> np.ndarray:
+    """Points along every curve ``mob``'s family draws, in the plane."""
+    t = np.linspace(0.0, 1.0, _ROOM_SAMPLES)[:, None]
+    basis = np.hstack([(1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t**2, t**3])
+    found = []
+    for member in mob.family_members_with_points():
+        points = np.asarray(member.points)
+        curves = points[: len(points) // 4 * 4].reshape(-1, 4, 3)
+        found.append(np.einsum("tk,ckd->ctd", basis, curves).reshape(-1, 3)[:, :2])
+    return np.concatenate(found) if found else np.zeros((0, 2))
+
+
+def _clearance(
+    low: np.ndarray,
+    high: np.ndarray,
+    points: np.ndarray,
+    boxes: Sequence[tuple[np.ndarray, np.ndarray]],
+) -> float:
+    """How far the box ``low``-``high`` stands from the nearest of
+    ``points`` and ``boxes``, less than 0 by how deep it goes into one.
+    """
+    lows = np.array([*points, *(b[0] for b in boxes)]).reshape(-1, 2)
+    highs = np.array([*points, *(b[1] for b in boxes)]).reshape(-1, 2)
+    if not len(lows):
+        return math.inf
+    gap = np.maximum(lows - high, low - highs)
+    inside = np.all(gap < 0, axis=1)
+    apart = np.linalg.norm(np.maximum(gap, 0.0), axis=1)
+    return float(np.min(np.where(inside, gap.max(axis=1), apart)))
 
 
 def _lift_label(edge: VMobject, tokens: Sequence[VMobject]) -> None:
