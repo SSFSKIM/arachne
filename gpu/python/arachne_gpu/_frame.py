@@ -33,16 +33,23 @@ class Quad:
 class Window:
     """Another stack, ``frame``, composed as a frame of its own of ``size`` (width, height) pixels,
     or of the size of the frame holding it when ``size`` is None, then placed at four corners as
-    a :class:`Quad` is. Its pictures and masks are of its size (others raise
-    :class:`~arachne_gpu.SizeMismatch`), and its effects run at its size, so they stay inside
-    it. Windows nest at most four deep, each with its own size.
+    a :class:`Quad` is. Its pictures and masks are of its size, and its effects run at its
+    size, so they stay inside it. Windows nest at most four deep, each with its own size. Inside
+    a sized window, a picture or mask of another size raises
+    :class:`~arachne_gpu.SizeMismatch`; with no size, every refusal is the one it was before
+    windows had sizes.
 
-    ``resampling`` is PIL's value: nearest (0) copies texels; bilinear (2) weights the four
-    texels round each pixel's centre in fixed point, with transparent texels past the window's
-    edge, so the edge is antialiased and a window moved by a fraction of a pixel moves by that
+    ``resampling`` is PIL's value: nearest (0) copies texels; a sized window may be placed by
+    bilinear (2), which weights the four texels round each pixel's centre in fixed point, times
+    the pixel's coverage of the true outline, so the edge is antialiased, nothing lands in a
+    pixel the outline does not touch, and a window moved by a fraction of a pixel moves by that
     fraction. At whole-pixel corners spanning exactly ``size``, both copy the frame texel for
-    texel. A window off the pixel grid is given the size of its rectangle rounded to whole pixels
-    (at least 1) and placed at its true corners, bilinear.
+    texel.
+
+    Sizing a window shown at an axis-aligned rectangle is one rule: per axis, ``size`` is the
+    true rectangle's size rounded to the nearest whole pixel, ties half up, at least 1; the true
+    corners pass unchanged; resampling is nearest when the rectangle is integral and 1:1 with
+    ``size``, bilinear otherwise. Other quads keep the unsized window.
     """
 
     frame: Frame

@@ -110,6 +110,8 @@ struct LayerUniform {
     bit: u32,
     resampling: u32,
     padding: u32,
+    /// A bilinear window's outline: top, bottom, left and right lines (`placement::edges`).
+    edges: [[f32; 4]; 4],
 }
 
 // A layer pass's kinds.
@@ -134,6 +136,7 @@ impl LayerUniform {
             bit: 0,
             resampling: 0,
             padding: 0,
+            edges: [[0.0; 4]; 4],
         }
     }
 
@@ -613,10 +616,12 @@ impl Compositor {
                 rows,
                 size,
                 resampling,
+                edges,
             } => {
                 let composed = self.encode_stack(encoder, stack, level + 1, *size);
                 let mut uniform = LayerUniform::new(QUAD, *rows, *size);
                 uniform.resampling = u32::from(*resampling == BILINEAR);
+                uniform.edges = *edges;
                 Some((composed, uniform))
             }
         }

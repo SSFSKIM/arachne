@@ -80,3 +80,19 @@ def test_a_picture_not_of_its_windows_size_raises_size_mismatch(make_compositor)
     np.testing.assert_array_equal(
         compositor.draw(Frame(CLEAR, [Layer(unsized)])), alone
     )
+
+
+def test_outside_a_sized_window_a_size_refusal_is_the_plain_value_error(
+    make_compositor,
+):
+    compositor = make_compositor(W, H)
+    small = upload(compositor, painted_picture(96, 54, 22))
+    unsized = Window(
+        Frame(CLEAR, [Layer(Picture(small))]), rectangle(0, 0, W, H), NEAREST
+    )
+    with pytest.raises(ValueError) as refused:
+        compositor.draw(Frame(CLEAR, [Layer(unsized)]))
+    assert type(refused.value) is ValueError
+    assert str(refused.value) == (
+        f"layer 0: in its window, layer 0: a picture of 96 x 54 in a frame of {W} x {H}"
+    )

@@ -25,8 +25,12 @@ struct Layer {
     // alpha (32 bits a pixel, bit b in channel b / 8); 2: placed alone, over nothing.
     mode: u32,
     bit: u32,
-    // A quad's resampling: 0 nearest; 1 bilinear, in fixed point, transparent past the edge.
+    // A quad's resampling: 0 nearest; 1 bilinear, in fixed point, scaled by the pixel's coverage
+    // of the outline.
     resampling: u32,
+    // For bilinear: the outline's top, bottom, left and right lines, (nx, ny, c) with
+    // nx * x + ny * y + c the signed distance in pixels, positive inside.
+    edges: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> layer: Layer;
@@ -40,29 +44,44 @@ fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
 }
 
-// The source's texel at `at`, or transparent past its edge.
-fn texel_or_clear(at: vec2<i32>) -> vec4<u32> {
-    if any(at < vec2<i32>(0)) || any(at >= vec2<i32>(layer.size)) {
-        return vec4<u32>(0u);
-    }
-    return textureLoad(source, at, 0);
+// The source's texel at `at`, the nearest edge texel past its edge.
+fn texel_clamped(at: vec2<i32>) -> vec4<u32> {
+    return textureLoad(source, clamp(at, vec2<i32>(0), vec2<i32>(layer.size) - vec2<i32>(1)), 0);
 }
 
-// The source at texel coordinates `texel`, bilinear: the four texels round it (texel centres at
-// i + 0.5), weighted by its offset from them in 8 fractional bits a side, so 16 in all, with
-// transparent texels past the edge; rounded half up to 8 bits. At a texel's centre the offset is
-// 0 and the texel comes back exactly. Every sum fits in 32 bits: at most 255 << 16.
-fn bilinear(texel: vec2<f32>) -> vec4<u32> {
+// How much of the pixel [-0.5, 0.5] about its centre lies between two opposite lines, from the
+// centre's signed distances to them: exact for parallel lines.
+fn between(a: f32, b: f32) -> f32 {
+    return clamp(min(a, 0.5) + min(b, 0.5), 0.0, 1.0);
+}
+
+// How much of the pixel centred at `p` the outline covers, in 8 fractional bits (0 to 256): the
+// product of its cover across the top and bottom lines and across the left and right ones. For an
+// axis-aligned rectangle this is the pixel's area inside it, exactly; a pixel whose cell does not
+// touch it gets 0, and a pixel wholly inside gets 256.
+fn coverage(p: vec3<f32>) -> u32 {
+    let across = between(dot(layer.edges[0].xyz, p), dot(layer.edges[1].xyz, p));
+    let along = between(dot(layer.edges[2].xyz, p), dot(layer.edges[3].xyz, p));
+    return u32(floor(across * along * 256.0 + 0.5));
+}
+
+// The source at texel coordinates `texel`, bilinear, scaled by `cover` (0 to 256): the four
+// texels round it (texel centres at i + 0.5, the edge texel continued past the edge), weighted by
+// its offset from them in 8 fractional bits a side, times the cover, rounded half up to 8 bits
+// once. At a texel's centre the offset is 0, and wholly inside the cover is 256, so the texel
+// comes back exactly. Every sum fits in 32 bits: at most (255 << 16) * 256 + (1 << 23).
+fn bilinear(texel: vec2<f32>, cover: u32) -> vec4<u32> {
     let at = texel - vec2<f32>(0.5);
     let base = floor(at);
     let f = vec2<u32>(floor((at - base) * 256.0 + vec2<f32>(0.5)));
     let i = vec2<i32>(base);
     let wx = f.x;
     let wy = f.y;
-    let top = texel_or_clear(i) * (256u - wx) + texel_or_clear(i + vec2<i32>(1, 0)) * wx;
-    let bottom = texel_or_clear(i + vec2<i32>(0, 1)) * (256u - wx)
-        + texel_or_clear(i + vec2<i32>(1, 1)) * wx;
-    return (top * (256u - wy) + bottom * wy + vec4<u32>(32768u)) >> vec4<u32>(16u);
+    let top = texel_clamped(i) * (256u - wx) + texel_clamped(i + vec2<i32>(1, 0)) * wx;
+    let bottom = texel_clamped(i + vec2<i32>(0, 1)) * (256u - wx)
+        + texel_clamped(i + vec2<i32>(1, 1)) * wx;
+    let sum = top * (256u - wy) + bottom * wy;
+    return (sum * cover + vec4<u32>(1u << 23u)) >> vec4<u32>(24u);
 }
 
 // round(a * b / 255) for 8-bit a and b, exactly: pixman's MUL_UN8.
@@ -93,10 +112,13 @@ fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                     let at = min(vec2<u32>(floor(texel)), layer.size - vec2<u32>(1u));
                     s = textureLoad(source, vec2<i32>(at), 0);
                 }
-            } else if all(texel > vec2<f32>(-0.5)) && all(texel < size + vec2<f32>(0.5)) {
-                // Within half a texel of the edge: past it, every weight is on a transparent
-                // texel.
-                s = bilinear(texel);
+            } else {
+                // Bounded by the pixel's own coverage of the outline, in pixels: nothing lands in
+                // a pixel the outline does not touch, whatever the texel's size.
+                let cover = coverage(p);
+                if cover > 0u {
+                    s = bilinear(texel, cover);
+                }
             }
         }
     }

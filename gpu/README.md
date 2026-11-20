@@ -65,23 +65,31 @@ stacked as above.
   Each level is its own frame: a window's pictures and masks are of its size, its blur and
   feather run on textures of its size (so nothing of them reaches past its rectangle, and a blur
   may reach no farther than its longer side), and quads inside it are placed in its pixels.
-  Windows nest at most four deep, each with its own size. A picture or a mask of another size
-  than the frame it is in, the outermost frame or a window, refuses the frame whole with
+  Windows nest at most four deep, each with its own size. Inside a sized window, at any depth, a
+  picture or a mask of another size than the frame it is in refuses the frame whole with
   `SizeMismatch` (a `ValueError`; `DrawError::SizeMismatch` in Rust), for example:
   `layer 1: in its window, layer 0: a picture of 480 x 270 in a frame of 160 x 90: a frame's
   pictures and masks are of its size, and a window's frame is of the window's size`.
+  Everywhere else (the outermost frame, a window of no stated size outside any sized one) every
+  refusal is the one it was before windows had sizes, in type and in text.
 
-  A window is resampled by nearest (PIL's 0), its texels copied, or by bilinear (PIL's 2): each
-  pixel takes the four texels round its centre, weighted by its offset from them in 8 fractional
-  bits a side, with transparent texels past the window's edge, and is rounded half up to 8 bits
-  once. So a bilinear window's edge is antialiased over the pixels its rectangle reaches, and a
+  A window is resampled by nearest (PIL's 0), its texels copied. A sized window may instead be
+  resampled by bilinear (PIL's 2): each pixel takes the four texels round its centre (the edge
+  texel continued past the edge), weighted by its offset from them in 8 fractional bits a side,
+  times the pixel's coverage of the window's true outline in 8 fractional bits, rounded half up to
+  8 bits once. The coverage is measured in pixels, across the outline's opposite sides: for an
+  axis-aligned rectangle it is the pixel's area inside it, so nothing lands in a pixel the
+  rectangle does not touch, however wide its texels, and each edge pixel carries its coverage. A
   window moved by a fraction of a pixel moves by that fraction rather than by whole pixels. At
   whole-pixel corners spanning exactly `size`, either resampling copies the window's frame texel
-  for texel: it is that frame drawn alone at its size, byte for byte. A quad keeps nearest only.
-  For a window shown off the pixel grid (moving or growing), the caller composes it at the size of
-  its true rectangle rounded to whole pixels, at least 1, and places it at the true fractional
-  corners, bilinear: its content then moves with its carrier with no step larger than the
-  carrier's own.
+  for texel: it is that frame drawn alone at its size, byte for byte. A quad, and a window of no
+  stated size, keep nearest only.
+
+  **Sizing a window**, one rule for a window shown at an axis-aligned rectangle: per axis, `size`
+  is the true rectangle's size rounded to the nearest whole pixel, ties half up, at least 1; the
+  true corners pass unchanged; resampling is nearest when the rectangle is integral and 1:1 with
+  `size`, and bilinear otherwise. Its content then moves with its carrier with no step larger
+  than the carrier's own. A quad of any other shape keeps the unsized window.
 
 **Arithmetic.** Three parts, and what each promises across adapters:
 
@@ -106,9 +114,14 @@ depth at the focus with no blur of its own) is stacked as a plain layer, its byt
 A frame is refused whole for an effect out of range: a negative or non-finite sigma, feather or
 aperture, a non-finite depth, a window size with a side of 0 or past the device's limit
 (`ValueError`); a picture or mask of another size than its frame (`SizeMismatch`, a
-`ValueError`); a blur or feather that reaches past its frame's longer side, windows nested deeper
-than four, or a resampling other than nearest for a quad and nearest or bilinear for a window
-(`Unsupported`).
+`ValueError`, inside a sized window; a plain `ValueError` elsewhere); a blur or feather that
+reaches past its frame's longer side, windows nested deeper than four, or a resampling other than
+nearest for a quad and a window of no stated size, and nearest or bilinear for a sized one
+(`Unsupported`). Inside a sized window the reach refusal names the largest blur or feather the
+window's size allows and the fix, for example `a blur of sigma 3 px reaches 9 px, past the
+window's longer side of 8 px; at this size the largest sigma is 2.66 px (reduce the blur or show
+the window larger)`. This is a bound on the work a frame of that size does, not on the kernel:
+the sigma is never clamped, and the texture is never padded to make room.
 
 **Working textures.** A frame is stacked in two working textures of its size, and a layer's
 effect works in four more; each window level and size has its own. A draw keeps exactly the

@@ -56,6 +56,31 @@ pub(crate) fn place(corners: &[[f64; 2]; 4], width: u32, height: u32) -> Placeme
     }
 }
 
+/// The four lines of the outline at `corners` (CE's order), in pixels: top, bottom, left, right,
+/// each `[nx, ny, c, 0]` with `nx * x + ny * y + c` the signed distance in pixels from the line,
+/// positive on the outline's side. A bilinear window's coverage of a pixel is read from them.
+pub(crate) fn edges(corners: &[[f64; 2]; 4]) -> [[f32; 4]; 4] {
+    let [ul, ur, ll, lr] = *corners;
+    let centre = [
+        (ul[0] + ur[0] + ll[0] + lr[0]) / 4.0,
+        (ul[1] + ur[1] + ll[1] + lr[1]) / 4.0,
+    ];
+    [(ul, ur), (lr, ll), (ll, ul), (ur, lr)].map(|(p, q)| {
+        let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+        let length = dx.hypot(dy);
+        if length == 0.0 {
+            // A degenerate side of a placeable outline does not occur; cover nothing by it.
+            return [0.0, 0.0, -1.0, 0.0];
+        }
+        let (mut nx, mut ny) = (-dy / length, dx / length);
+        if nx * (centre[0] - p[0]) + ny * (centre[1] - p[1]) < 0.0 {
+            (nx, ny) = (-nx, -ny);
+        }
+        let c = -(nx * p[0] + ny * p[1]);
+        [nx as f32, ny as f32, c as f32, 0.0]
+    })
+}
+
 /// The projective map of the unit square onto the quad, inverted and scaled to texels; `None` when
 /// the map does not exist or cannot be inverted.
 fn texel_mapping(corners: &[[f64; 2]; 4], width: u32, height: u32) -> Option<[[f32; 4]; 3]> {
@@ -222,5 +247,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_rectangles_edges_are_its_sides_measured_inward() {
+        let lines = edges(&[[10.05, 20.0], [11.54, 20.0], [10.05, 21.0], [11.54, 21.0]]);
+        let distance = |line: [f32; 4], x: f32, y: f32| line[0] * x + line[1] * y + line[2];
+        // Top, bottom, left, right, from the point (10.5, 20.5).
+        let found = lines.map(|line| distance(line, 10.5, 20.5));
+        for (found, expected) in found.iter().zip([0.5, 0.5, 0.45, 1.04]) {
+            assert!((found - expected).abs() < 1e-5, "{found:?}");
+        }
+        // A whole-pixel rectangle's lines are exact.
+        let lines = edges(&[[3.0, 4.0], [9.0, 4.0], [3.0, 7.0], [9.0, 7.0]]);
+        assert_eq!(
+            lines,
+            [
+                [0.0, 1.0, -4.0, 0.0],
+                [0.0, -1.0, 7.0, 0.0],
+                [1.0, 0.0, -3.0, 0.0],
+                [-1.0, 0.0, 9.0, 0.0],
+            ]
+        );
     }
 }

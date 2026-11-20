@@ -326,22 +326,26 @@ fn a_picture_or_a_mask_not_of_its_windows_size_refuses_the_frame_whole() {
         ),
         other => panic!("{other:?}"),
     }
-    // A mask of the outer frame's size in a window of its own size; and with no size given, the
-    // window is the frame's size, which the middle's picture is not.
+    // A mask of the outer frame's size in a window of its own size.
     let masked = Frame::new(
         CLEAR,
         vec![Layer::picture(middle_sized).with_mask(frame_sized, 2.0, false)],
     );
+    let window = Layer::sized_window(masked, corners, NEAREST, [mw, mh]);
+    assert!(matches!(
+        c.draw(&Frame::new(CLEAR, vec![window])),
+        Err(DrawError::SizeMismatch(_))
+    ));
+    // With no size given, the window is the frame's size, which the middle's picture is not, and
+    // the refusal is the one it was before windows had sizes.
     let unsized_window = Frame::new(CLEAR, vec![Layer::picture(middle_sized)]);
-    for window in [
-        Layer::sized_window(masked, corners, NEAREST, [mw, mh]),
-        Layer::window(unsized_window, corners, BILINEAR),
-    ] {
-        assert!(matches!(
-            c.draw(&Frame::new(CLEAR, vec![window])),
-            Err(DrawError::SizeMismatch(_))
-        ));
-    }
+    let window = Layer::window(unsized_window, corners, NEAREST);
+    assert_eq!(
+        c.draw(&Frame::new(CLEAR, vec![window])),
+        Err(DrawError::Invalid(format!(
+            "layer 0: in its window, layer 0: a picture of {mw} x {mh} in a frame of {w} x {h}"
+        )))
+    );
     // A refused frame draws nothing and keeps the working textures it found.
     assert_eq!(working_textures(&c), counted);
     let again = c
@@ -463,4 +467,126 @@ fn a_window_moved_by_a_quarter_pixel_a_frame_moves_its_content_a_quarter_pixel_a
         steps.iter().any(|d| (d - 1.0).abs() <= QUARTER_TOLERANCE),
         "{steps:?}"
     );
+}
+
+/// The size a caller gives a window shown at an axis-aligned rectangle: per axis, its true size
+/// rounded to the nearest whole pixel, ties half up, at least 1.
+fn shown_size(x0: f64, y0: f64, x1: f64, y1: f64) -> [u32; 2] {
+    let side = |length: f64| ((length + 0.5).floor() as u32).max(1);
+    [side(x1 - x0), side(y1 - y0)]
+}
+
+/// How much of pixel `x`'s cell `[x, x + 1)` lies in `[a, b)`.
+fn overlap(x: u32, a: f64, b: f64) -> f64 {
+    let x = f64::from(x);
+    ((x + 1.0).min(b) - x.max(a)).max(0.0)
+}
+
+#[test]
+fn a_bilinear_window_paints_only_the_cells_its_true_rectangle_touches_and_each_by_its_coverage() {
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    // An opaque window's alpha is the coverage it paints. Each rectangle's width rounds down
+    // (1.49 to 1; 63.4 to 63), so its texels are wider than its pixels.
+    for (x0, y0, x1, y1) in [(10.05, 20.0, 11.54, 21.0), (100.3, 60.6, 163.7, 108.2)] {
+        let [iw, ih] = shown_size(x0, y0, x1, y1);
+        let picture = upload(&mut c, iw, ih, &opaque(painted_picture(iw, ih, 101)));
+        let inner = Frame::new(CLEAR, vec![Layer::picture(picture)]);
+        let window = Layer::sized_window(inner, rectangle(x0, y0, x1, y1), BILINEAR, [iw, ih]);
+        let drawn = c.draw(&Frame::new(CLEAR, vec![window])).unwrap();
+        let mut worst: f64 = 0.0;
+        for y in 0..h {
+            for x in 0..w {
+                let covered = overlap(x, x0, x1) * overlap(y, y0, y1);
+                let found = pixel(&drawn, w, x, y);
+                if covered == 0.0 {
+                    assert_eq!(found, [0; 4], "({x}, {y}) is outside the cells it touches");
+                } else {
+                    let off = (f64::from(found[3]) - 255.0 * covered).abs();
+                    worst = worst.max(off);
+                    assert!(
+                        off <= 1.0,
+                        "({x}, {y}): alpha {} for cover {covered}",
+                        found[3]
+                    );
+                }
+            }
+        }
+        eprintln!(
+            "edge [{x0}, {x1}) x [{y0}, {y1}) at {iw} x {ih}: alpha within {worst:.3} of 255 x \
+             coverage; nothing outside"
+        );
+        let edge = |x: u32, y: u32| pixel(&drawn, w, x, y)[3];
+        if iw == 1 {
+            eprintln!(
+                "  pixel (9, 20) {}, (10, 20) {}, (11, 20) {}, (12, 20) {}",
+                edge(9, 20),
+                edge(10, 20),
+                edge(11, 20),
+                edge(12, 20)
+            );
+        }
+        c.release(&picture);
+    }
+}
+
+/// The colour-weighted centre of an interior marker: the red of `drawn`, which only the marker
+/// carries, weighting each pixel's centre.
+fn marker_centre(drawn: &[u8]) -> (f64, f64) {
+    let (w, _) = size();
+    let (mut sx, mut sy, mut total) = (0.0, 0.0, 0.0);
+    for (i, p) in drawn.as_chunks::<4>().0.iter().enumerate() {
+        let red = f64::from(p[0]);
+        let (x, y) = ((i as u32 % w) as f64 + 0.5, (i as u32 / w) as f64 + 0.5);
+        sx += red * x;
+        sy += red * y;
+        total += red;
+    }
+    (sx / total, sy / total)
+}
+
+#[test]
+fn a_windows_interior_marker_moves_a_quarter_pixel_a_frame_with_its_window() {
+    let (w, _) = size();
+    let (iw, ih) = (64u32, 48u32);
+    let mut c = compositor(w, h);
+    // An opaque blue field with a 3 x 3 red marker inside it: only the marker has red, so its
+    // centre is read apart from the window's edge, whose alpha it does not weigh.
+    let field: Vec<u8> = (0..iw * ih)
+        .flat_map(|i| {
+            let (x, y) = (i % iw, i / iw);
+            if (30..33).contains(&x) && (20..23).contains(&y) {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 255, 255]
+            }
+        })
+        .collect();
+    let picture = upload(&mut c, iw, ih, &field);
+    let inner = Frame::new(CLEAR, vec![Layer::picture(picture)]);
+    let centres: Vec<(f64, f64)> = (0..9)
+        .map(|k| {
+            let at = 0.25 * f64::from(k);
+            let (x0, y0) = (100.0 + at, 60.0 + at);
+            let corners = rectangle(x0, y0, x0 + f64::from(iw), y0 + f64::from(ih));
+            let window = Layer::sized_window(inner.clone(), corners, BILINEAR, [iw, ih]);
+            marker_centre(&c.draw(&Frame::new(CLEAR, vec![window])).unwrap())
+        })
+        .collect();
+    // At whole-pixel corners the marker's centre is its own: (100 + 31.5, 60 + 21.5).
+    let (mx, my) = centres[0];
+    assert!(
+        (mx - 131.5).abs() < 1e-9 && (my - 81.5).abs() < 1e-9,
+        "{:?}",
+        centres[0]
+    );
+    for (k, pair) in centres.windows(2).enumerate() {
+        let (dx, dy) = (pair[1].0 - pair[0].0, pair[1].1 - pair[0].1);
+        eprintln!("marker frame {k} to {}: moved ({dx:.5}, {dy:.5}) px", k + 1);
+        assert!(
+            (dx - 0.25).abs() <= QUARTER_TOLERANCE && (dy - 0.25).abs() <= QUARTER_TOLERANCE,
+            "frame {k} to {}: the marker moved ({dx}, {dy}) px",
+            k + 1
+        );
+    }
 }
