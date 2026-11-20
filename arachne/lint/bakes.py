@@ -9,10 +9,10 @@ creating line, each with its boxes in the frame on screen at that instant
 (null when nothing of it is drawn there), and with the line of the play
 that computed the tick: the one whose span ``(start, end]`` holds it, or,
 for a world's declared state as it entered, the one running then. Only the
-findings in the lint's time range are read, and a frame is asked for only
-within what the caller's lint replays anyway: its time range when given,
-else, when it names its instants (``at``), no later than the latest of
-them. A finding beyond is still reported, its boxes null. They join the
+findings in the lint's time range are read; when the lint names its
+instants (``at``), a frame is asked for only no later than the latest
+instant it reads, and none when it reads none. A finding beyond is still
+reported, its boxes null. They join the
 lint's findings as the session's divergences do: whatever the rules, never
 ending the process.
 """
@@ -82,13 +82,13 @@ def request_bake_frames(
     frames: Frames,
     record: Record,
     t_range: Sequence[float] | None = None,
-    until: Fraction | None = None,
+    named: Sequence[Fraction] | None = None,
 ) -> tuple[Pending, ...]:
     """The findings ``record``'s bakes hold at instants in ``t_range``
     (inclusive; every one without it), each with the frame on screen at its
-    instant, which is asked of ``frames`` for the boxes of its bodies when
-    the instant is no later than ``until`` (the latest a lint naming its
-    instants reads; any without it).
+    instant, which is asked of ``frames`` for the boxes of its bodies. When
+    the lint reads only the instants it was ``named``, a frame is asked for
+    only no later than the latest of them, and none when they are none.
     """
     bakes = record.bakes
     if bakes is None:
@@ -103,10 +103,15 @@ def request_bake_frames(
     ]
     if not found:
         return ()
-    pending = tuple(
-        Pending(each, t, _on_screen(record, t) if until is None or t <= until else None)
-        for each, t in found
-    )
+    until = None if named is None else max(named, default=None)
+
+    def read_at(t: Fraction) -> Fraction | None:
+        frame = _on_screen(record, t)
+        if named is None:
+            return frame
+        return frame if until is not None and frame <= until else None
+
+    pending = tuple(Pending(each, t, read_at(t)) for each, t in found)
     read = [each for each in pending if each.frame is not None]
     if read:
         ids = frozenset(id_ for each in read for id_ in each.found.ids)
@@ -253,16 +258,22 @@ def _message(found: BakeFinding, things: Sequence[FindingObject]) -> str:
     at = f"at tick {detail.get('tick')}"
     if found.code == "sim.tunnelled":
         a, b = (thing.id for thing in things)
-        if detail.get("overlapped"):
+        step = f"in the step to tick {detail.get('tick')}"
+        evidence = detail.get("evidence")
+        if evidence == "overlap":
             return (
-                f"{a} and {b} passed through each other in the step to tick"
-                f" {detail.get('tick')}, with no contact between them"
+                f"{a} and {b} passed through each other {step}, with no contact"
+                " between them"
+            )
+        if evidence == "near":
+            return (
+                f"{a} and {b} came within the allowed linear error of each other"
+                f" {step}, with no contact between them, which could not be told"
+                " from a crossing"
             )
         return (
-            f"{a} and {b} possibly passed through each other in the step to tick"
-            f" {detail.get('tick')}: they came within the allowed linear error of"
-            " each other, which could not be told from a crossing, with no contact"
-            " between them"
+            f"{a} and {b} possibly passed through each other {step}, with no contact"
+            " between them: a crossing could not be ruled out"
         )
     body = things[0].id
     signal = detail.get("signal")
@@ -272,9 +283,10 @@ def _message(found: BakeFinding, things: Sequence[FindingObject]) -> str:
     unit = "u/s" if signal == "speed" else "rad/s"
     value, limit = detail.get("value"), detail.get("limit")
     if detail.get("capped"):
-        rose = "reached at least the solver's cap" + (
-            "" if value is None else f" of {value:.6g} {unit}"
-        )
+        rose = "reached at least" + ("" if value is None else f" {value:.6g} {unit}")
+        cap = detail.get("cap")
+        if cap is not None:
+            rose += f" (the solver's cap is {cap:.6g} {unit})"
     else:
         rose = "rose" if value is None else f"rose to {value:.6g} {unit}"
     return (

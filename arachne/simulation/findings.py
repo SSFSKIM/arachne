@@ -9,25 +9,27 @@ step. A stay's occurrence holds those of its rows as
 
 - ``sim.unstable`` about one body, its ``signal`` ``non_finite``, ``speed``
   or ``angular_speed``, with the ``value`` found and the world's ``limit``
-  (none for a non-finite state), and for a speed whether the solver
-  ``capped`` it: scaled it down to its cap in the step, so that the value
-  is a lower bound, the cap, whatever the row shows;
-- ``sim.tunnelled`` about two bodies, and whether the solver's sweep saw
-  them ``overlapped``: when not, they came within the allowed linear error
-  of each other, which could not be told from a crossing (or a number of
-  the sweep could not be told).
+  (none for a non-finite state); for a speed, whether the solver ``capped``
+  it (scaled it down to its ``cap`` in the step), when the value is a lower
+  bound, the larger of the cap and the row's speed;
+- ``sim.tunnelled`` about two bodies, with the sweep's ``evidence``:
+  ``overlap`` (the shapes were seen penetrating each other), ``near`` (a
+  certified distance within the allowed linear error, which could not be
+  told from a crossing) or ``indeterminate`` (a crossing could not be ruled
+  out).
 
-Each carries the scene's ``tick``. A stay that begins where an earlier one left the world shares that row with
-it: the earlier stay holds what was found there.
+Each carries the scene's ``tick``. A stay that begins where an earlier one
+left the world shares that row with it: the earlier stay holds what was
+found there.
 """
 
 from __future__ import annotations
 
-__all__ = ["occurrence_findings"]
+__all__ = ["evidence", "occurrence_findings"]
 
 import math
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 from arachne.timeline.bake import BakeFinding
 
@@ -79,9 +81,32 @@ def occurrence_findings(
             detail.update(signal=signal, value=measured, limit=limit)
             if limit is not None:
                 detail["capped"] = kind in _CAPPED
+                if kind in _CAPPED:
+                    detail["cap"] = _cap(signal)
             bodies: tuple[str, ...] = (ids[a],)
         else:
-            detail["overlapped"] = value == 0.0
+            detail["evidence"] = evidence(value)
             bodies = (ids[a], ids[b])
         out.append(BakeFinding(code, row, bodies, detail))
     return tuple(out)
+
+
+def evidence(closest: float) -> Literal["overlap", "near", "indeterminate"]:
+    """What the solver's sweep saw of two bodies, from its value
+    (:meth:`arachne_sim.World.finding_values`): a negative one is the depth
+    they were seen penetrating each other, ``overlap``; one at or above zero
+    a certified distance within the allowed linear error, ``near``; NaN, a
+    crossing that could not be ruled out, ``indeterminate``.
+    """
+    if math.isnan(closest):
+        return "indeterminate"
+    return "overlap" if closest < 0 else "near"
+
+
+def _cap(signal: str | None) -> float:
+    """The solver's cap on a body's speed (u/s) or angular speed (rad/s)."""
+    import arachne_sim
+
+    return float(
+        arachne_sim.SPEED_CAP if signal == "speed" else arachne_sim.ANGULAR_SPEED_CAP
+    )

@@ -21,7 +21,9 @@ from arachne import World, api_json  # noqa: E402
 from arachne.lint import bakes as bakes_module  # noqa: E402
 from arachne.lint import frames as frames_module  # noqa: E402
 from arachne.lint import lint  # noqa: E402
+from arachne.lint.findings import FindingObject  # noqa: E402
 from arachne.session import Session  # noqa: E402
+from arachne.simulation import findings as findings_module  # noqa: E402
 from arachne.timeline import admission  # noqa: E402
 
 from . import finding_scenes, world_scenes  # noqa: E402
@@ -270,7 +272,7 @@ def test_a_body_through_a_thin_wall_tunnelled_and_its_twin_did_not(opened):
     _, (finding,) = _simulation(session)
     assert finding.code == "sim.tunnelled"
     assert [thing.id for thing in finding.objects] == [wall, disc]
-    assert finding.detail == {"tick": 1, "overlapped": True}
+    assert finding.detail == {"tick": 1, "evidence": "overlap"}
     assert finding.t_start == Fraction(1, 60)
     assert finding.message == (
         f"{wall} and {disc} passed through each other in the step to tick 1, with"
@@ -379,33 +381,41 @@ def test_a_speed_the_solver_capped_reached_at_least_its_cap(opened):
         "value": 400.0,
         "limit": 200.0,
         "capped": True,
+        "cap": 400.0,
     }
     assert finding.message == (
-        f"{body}'s speed reached at least the solver's cap of 400 u/s at tick 1,"
-        " above its world's limit of 200 u/s"
+        f"{body}'s speed reached at least 400 u/s (the solver's cap is 400 u/s) at"
+        " tick 1, above its world's limit of 200 u/s"
     )
 
 
 def test_a_pass_within_the_allowance_is_possibly_a_crossing(opened):
     """Two discs that pass 0.003 apart, within the allowed linear error and
-    short of touching: possibly passed through, not seen overlapping.
+    short of touching: near, which could not be told from a crossing, and not
+    seen penetrating.
     """
     session = opened("PassingClose")
     first, second = _bodies(session)
     _, (finding,) = _simulation(session)
     assert finding.code == "sim.tunnelled"
-    assert finding.detail == {"tick": 1, "overlapped": False}
+    assert finding.detail == {"tick": 1, "evidence": "near"}
     assert finding.message == (
-        f"{first} and {second} possibly passed through each other in the step to"
-        " tick 1: they came within the allowed linear error of each other, which"
-        " could not be told from a crossing, with no contact between them"
+        f"{first} and {second} came within the allowed linear error of each other"
+        " in the step to tick 1, with no contact between them, which could not be"
+        " told from a crossing"
     )
 
 
-def test_a_lint_at_named_instants_reads_no_frame_past_them(opened, monkeypatch):
-    """A lint at 0 alone replays nothing past 0: the speeding point's finding
-    at 31/60 s is reported, its body named by id and line, its boxes null,
-    and no frame is asked for it.
+@pytest.mark.parametrize(
+    "scope",
+    [{"at": [0]}, {"at": [0], "t_range": (0, 1)}, {"at": []}],
+    ids=["at 0", "at 0 over the first second", "at nothing"],
+)
+def test_a_lint_at_named_instants_reads_no_frame_past_them(opened, monkeypatch, scope):
+    """A lint at named instants replays nothing past the latest of them, and
+    nothing at all when it names none, whatever its time range: the speeding
+    point's finding at 31/60 s is reported, its body named by id and line,
+    its boxes null, and no frame is asked for it.
     """
     session = opened("Speeding")
     (body,) = _bodies(session)
@@ -417,7 +427,7 @@ def test_a_lint_at_named_instants_reads_no_frame_past_them(opened, monkeypatch):
         return request(self, owner, times, read, **options)
 
     monkeypatch.setattr(frames_module.Frames, "request", spied)
-    _, (finding,) = _simulation(session, at=[0])
+    _, (finding,) = _simulation(session, **scope)
     assert bakes_module.OWNER not in asked
     assert finding.t_start == Fraction(31, 60)
     (thing,) = finding.objects
@@ -428,6 +438,60 @@ def test_a_lint_at_named_instants_reads_no_frame_past_them(opened, monkeypatch):
         None,
     )
     assert thing.source_line is not None
+
+
+class _Found:
+    """A solver's findings and their values, as a stay reads them."""
+
+    def __init__(self, found, values):
+        self._found = np.array(found, dtype=np.uint32).reshape(-1, 4)
+        self._values = np.array(values, dtype=np.float32)
+
+    def findings(self):
+        return self._found
+
+    def finding_values(self):
+        return self._values
+
+
+@pytest.mark.parametrize(
+    ("value", "evidence", "message"),
+    [
+        (-0.02, "overlap", "a and b passed through each other in the step to tick 4,"),
+        (
+            0.004,
+            "near",
+            "a and b came within the allowed linear error of each other in the step"
+            " to tick 4,",
+        ),
+        (
+            0.0,
+            "near",
+            "a and b came within the allowed linear error of each other in the step"
+            " to tick 4,",
+        ),
+        (
+            float("nan"),
+            "indeterminate",
+            "a and b possibly passed through each other in the step to tick 4, with"
+            " no contact between them: a crossing could not be ruled out",
+        ),
+    ],
+    ids=["penetrating", "near", "touching", "indeterminate"],
+)
+def test_what_the_sweep_saw_is_the_finding_s_evidence_and_message(
+    value, evidence, message
+):
+    """A depth seen penetrating is an overlap; a measured distance within the
+    allowance, touching included, is near; a sweep that could not show the
+    two apart is indeterminate, and says only that.
+    """
+    (found,) = findings_module.occurrence_findings(
+        _Found([[4, 4, 0, 1]], [value]), 0, 10, 0, ["a", "b"], owns_first=True
+    )
+    assert found.detail == {"tick": 4, "evidence": evidence}
+    things = [FindingObject(id_, None, "Circle", None, None, None) for id_ in found.ids]
+    assert bakes_module._message(found, things).startswith(message)
 
 
 # Authoring
