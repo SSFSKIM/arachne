@@ -6,15 +6,20 @@ or writing anything; what needs no drawing answers on every host.
 from __future__ import annotations
 
 from fractions import Fraction
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from arachne.compose import guard
+from arachne.compose.stack import Unsupported as StackUnsupported
+from arachne.lint.keyframes import _refusals_apart
 from arachne.routing import GpuLive, GpuRequired
 from arachne.server import dispatch
 from arachne.server.dispatch import Dispatcher
 from arachne.server.protocol import RpcError
 from arachne.server.store import Store
+from arachne.session import Session
 
 from .conftest import SCENES, SMALL, snapshot
 
@@ -131,25 +136,79 @@ def test_a_clip_of_a_play_holding_nothing_is_refused_before_it_renders(
     assert snapshot(tmp_path) == {}
 
 
-def test_a_session_opened_from_the_store_keeps_its_route(
-    tmp_path, no_gpu, never_rendered
+@pytest.fixture
+def never_executed(monkeypatch):
+    """From now on, a scene executed is a test failure."""
+
+    def start() -> None:
+        def executed(*args, **kwargs):
+            raise AssertionError("the scene was executed")
+
+        monkeypatch.setattr(Session, "open", executed)
+
+    return start
+
+
+@pytest.mark.parametrize(
+    ("scene", "host", "reason"),
+    [
+        ("EffectLast", "no_gpu", "render.gpu_required"),
+        ("EffectLast", "a_gpu", "render.gpu_live"),
+        ("LiveLayer", "a_gpu", "render.gpu_live"),
+    ],
+)
+def test_a_session_opened_from_the_store_is_refused_without_executing(
+    tmp_path, request, never_rendered, never_executed, scene, host, reason
 ):
-    _open("EffectLast").handle("close", {})
-    server = _open("EffectLast")
+    request.getfixturevalue(host)
+    _open(scene).handle("close", {})
+    never_executed()
+    server = _open(scene)
     try:
-        # Opened from the store: nothing executed, and still refused.
+        # Opened from the store, nothing executed, and refused from it.
         assert server.session is None
         assert server.stored.route == "gpu"
-        picture = tmp_path / "frame.png"
-        with pytest.raises(RpcError) as refused:
-            server.handle("frame", {"t": 0.5, "path": str(picture)})
-        assert refused.value.data["reason"] == "render.gpu_required"
-        with pytest.raises(RpcError) as refused:
-            server.handle("render", {"out": str(tmp_path / "scene.mp4")})
-        assert refused.value.data["reason"] == "render.gpu_required"
+        asked = [("clip", {"t0": 0, "t1": 0.5}), ("render", {})]
+        if host == "no_gpu" or scene == "LiveLayer":
+            # A frame too, which this host could not draw either.
+            asked.append(("frame", {"t": 0.5, "path": str(tmp_path / "frame.png")}))
+        for method, params in asked:
+            if method != "frame":
+                params = {**params, "out": str(tmp_path / f"{method}.mp4")}
+            with pytest.raises(RpcError) as refused:
+                server.handle(method, params)
+            assert refused.value.data["reason"] == reason, method
     finally:
         server.handle("close", {})
     assert snapshot(tmp_path) == {}
+
+
+def test_the_refusals_kept_in_the_store_are_the_session_s_own(no_gpu):
+    """The manifest keeps where each capability first appears, and the
+    refusal made from it is the one the session itself makes.
+    """
+    from arachne.compose.session import Route, route_of
+
+    session = Session.open(SCENES, "LiveLayer", config=SMALL)
+    try:
+        route = route_of(session)
+        kept = Route.from_form(route.name, route.form())
+        assert kept == route
+        with pytest.raises(GpuLive) as own:
+            session.frame(HALF)
+    finally:
+        session.close()
+    with pytest.raises(GpuLive) as stored:
+        kept.refuse_here()
+    assert str(stored.value) == str(own.value)
+
+
+def test_a_closed_session_holds_neither_its_record_nor_its_route(session_of):
+    session = session_of("EffectLast")
+    assert session.route == "gpu"
+    session.close()
+    assert "record" not in vars(session)
+    assert session._route is None
 
 
 def test_a_cpu_scene_s_stored_frame_is_still_served_from_the_store(tmp_path):
@@ -165,3 +224,26 @@ def test_a_cpu_scene_s_stored_frame_is_still_served_from_the_store(tmp_path):
     # The second server answered from the store without executing the scene.
     assert from_store
     assert server.session is None
+
+
+def test_a_forward_batch_keeps_a_stack_refusal_apart_and_draws_the_rest(session_of):
+    """One forward run answers a batch of key frames: a frame the stack
+    refuses is kept as its play's refusal, and the next is still drawn.
+    """
+    session = session_of("Plain")
+    drawn_one = np.full((54, 96, 4), 7, dtype=np.uint8)
+
+    def drawn(record, answers, static):
+        (answer,) = answers
+        if answer.play.index == 0:
+            raise StackUnsupported("layer", "a layer within a layer")
+        return [drawn_one]
+
+    session._drawn = drawn
+    batch = [SimpleNamespace(play=SimpleNamespace(index=i)) for i in (0, 1)]
+    with _refusals_apart(session) as refused:
+        found = session._drawn(session.record, batch, None)
+    assert list(refused) == [0]
+    assert refused[0].code == "render.unsupported"
+    assert not found[0].any()
+    assert (found[1] == drawn_one).all()

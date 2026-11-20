@@ -716,6 +716,9 @@ class Drawing:
             return
         _reset_rotation(camera)
         leaves = camera.get_mobjects_to_display(mobjects, **options)
+        if self.stack is not None:
+            # What a layer reads is painted only through it.
+            leaves = self.stack.own(mobjects, leaves)
         if self.leave_out is not None:
             leaves = self.leave_out(mobjects, leaves)
         if self.stack is not None:

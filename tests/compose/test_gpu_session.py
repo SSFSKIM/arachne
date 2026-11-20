@@ -6,6 +6,7 @@ frame is a stack drawn by the compositor, and names the device that drew it.
 from __future__ import annotations
 
 from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -19,10 +20,11 @@ from arachne.frame_ir.xf import image_key
 from arachne.server.dispatch import Dispatcher
 from arachne.server.protocol import REFUSED, RpcError
 from arachne.server.store import Store
-from arachne.timeline.footprint import changed_between, drawables
+from arachne.session import Session
+from arachne.timeline.footprint import changed_between, drawables, object_map
 
 from .compose_scenes import TINT
-from .conftest import PIN, SCENES, SMALL
+from .conftest import PIN, SCENES, SMALL, _Door
 
 HALF = Fraction(1, 2)
 
@@ -275,22 +277,100 @@ def test_the_server_answers_a_layer_inside_another_as_a_refusal(tmp_path, softwa
 
 
 def test_the_store_keeps_no_gpu_frame_and_another_device_draws_it_anew(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, no_gpu_door
 ):
-    def frame(door: _Software) -> dict:
+    params = {"file": str(SCENES), "scene": "EffectLast", "config": SMALL}
+
+    def frame(door, picture: Path) -> dict:
         monkeypatch.setattr(device, "door", door)
         server = Dispatcher(Store())
         try:
-            server.handle(
-                "open", {"file": str(SCENES), "scene": "EffectLast", "config": SMALL}
-            )
-            return server.handle("frame", {"t": 1.5, "path": str(tmp_path / "f.png")})
+            server.handle("open", params)
+            return server.handle("frame", {"t": 1.5, "path": str(picture)})
         finally:
             server.handle("close", {})
 
     first, other = _Software(), _Software(dict(PIN))
-    assert frame(first)["frame"]["renderer"]["pin"] == dict(first.opened[0].pin)
+    found = frame(first, tmp_path / "first.png")
+    assert found["frame"]["renderer"]["pin"] == dict(first.opened[0].pin)
     assert first.draws == 1
-    # Opened from the store now, under another device: drawn again, by it.
-    assert frame(other)["frame"]["renderer"] == {"name": "gpu", "pin": PIN}
+    # Nothing drawn on the GPU was kept: the store answers no frame.
+    server = Dispatcher(Store())
+    try:
+        server.handle("open", params)
+        assert server.session is None
+        assert server.store.answer(server.stored, "frame", {"t": 1.5}) is None
+    finally:
+        server.handle("close", {})
+    # Opened from the store under another device: drawn again, by it.
+    assert frame(other, tmp_path / "other.png")["frame"]["renderer"] == {
+        "name": "gpu",
+        "pin": PIN,
+    }
     assert other.draws == 1
+    # With the device gone, refused from the store, nothing executed or written.
+    monkeypatch.setattr(Session, "open", _never_executed)
+    hidden = tmp_path / "hidden.png"
+    with pytest.raises(RpcError) as refused:
+        frame(no_gpu_door, hidden)
+    assert refused.value.data["reason"] == "render.gpu_required"
+    assert not hidden.exists()
+
+
+def _never_executed(*args, **kwargs):
+    raise AssertionError("the scene was executed")
+
+
+@pytest.fixture
+def no_gpu_door():
+    """A host with no GPU, as a door to install later."""
+    return _Door(None)
+
+
+def test_a_translucent_backdrop_is_stacked_as_its_painted_values(session_of, software):
+    session = session_of(
+        "EffectLast", background_color="#FF8000", background_opacity=0.5
+    )
+    straight = session.scene.renderer.camera.background[0, 0].astype(int)
+    alpha = straight[3]
+    painted = [round(c * alpha / 255) for c in straight[:3]] + [alpha]
+    corner = _pixels(session, HALF)[0, 0]
+    assert 0 < alpha < 255
+    assert np.abs(corner - np.array(painted)).max() <= 1
+
+
+def test_a_mask_of_two_kinds_is_stacked_from_its_runs(session_of, software):
+    session = session_of("MixedMask")
+    found = _pixels(session, Fraction(1, 10))
+    left, middle, right = (_at(session, x, 0) for x in (-2, 0, 2))
+    assert found[left[1], left[0], 0] > 200
+    assert found[right[1], right[0], 0] > 200
+    assert found[middle[1], middle[0], 0] < 50
+
+
+def test_a_window_s_layers_are_defocused_by_the_frame_s_focus(session_of, software):
+    session = session_of("FocusInWindow")
+    early, late = Fraction(1, 4), Fraction(3, 4)
+    late_first = _pixels(session, late)
+    early_then = _pixels(session, early)
+    assert _close(_pixels(session, late), late_first, within=0)
+    assert _blurred_edge(early_then) < _blurred_edge(late_first)
+
+
+def test_a_mask_shown_too_is_painted_only_through_its_layer(session_of, software):
+    shown = session_of("MaskShownToo")
+    alone = session_of("MaskNotShown")
+    t = Fraction(1, 10)
+    assert _close(_pixels(shown, t), _pixels(alone, t), within=0)
+    record = shown.record
+    (square,) = [mob for mob in record.mobjects() if layer_of(mob) is not None]
+    mask = record.origin(layer_of(square).mask).id
+    assert mask not in drawables(shown, t)
+
+
+def test_a_carrier_s_object_map_holds_no_entry_of_what_it_reads(session_of, software):
+    session = session_of("MovingMask")
+    for carrier, dependency in _ids(session):
+        found = object_map(session, Fraction(1, 4), [carrier])
+        assert carrier in found.objects
+        assert dependency not in found.objects

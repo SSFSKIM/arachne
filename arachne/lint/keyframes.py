@@ -309,14 +309,16 @@ def _draw(
 
 
 @contextmanager
-def _refusals_apart(session: Session) -> Iterator[dict[int, Unsupported]]:
+def _refusals_apart(
+    session: Session,
+) -> Iterator[dict[int, Unsupported | StackUnsupported]]:
     """Within the block, the session draws a batch of frames one frame at a
-    time, so that the painter refusing one (:class:`Unsupported`) is kept,
-    by its play's index, and the others are
-    still drawn: one forward run serves the batch, whatever the painter
-    refuses. A refused frame's pixels are left blank.
+    time, so that the painter or a GPU stack refusing one
+    (``render.unsupported``) is kept, by its play's index, and the others
+    are still drawn: one forward run serves the batch, whatever is refused.
+    A refused frame's pixels are left blank.
     """
-    refused: dict[int, Unsupported] = {}
+    refused: dict[int, Unsupported | StackUnsupported] = {}
     held = vars(session).get("_drawn")
     painter = session._drawn
 
@@ -327,7 +329,7 @@ def _refusals_apart(session: Session) -> Iterator[dict[int, Unsupported]]:
         for answer in answers:
             try:
                 (one,) = painter(record, [answer], static)
-            except Unsupported as error:
+            except (Unsupported, StackUnsupported) as error:
                 if answer.play is not None:
                     refused[answer.play.index] = error
                 one = np.zeros_like(record._scene.renderer.camera.pixel_array)

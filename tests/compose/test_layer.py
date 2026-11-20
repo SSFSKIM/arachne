@@ -12,7 +12,7 @@ import pytest
 
 from arachne import Circle, Dot, Square, api_json
 from arachne.compose.layer import LayerSpec, layer_of, set_focus, set_layer
-from arachne.routing import held
+from arachne.routing import declare, held
 from arachne.timeline.execution import summarize
 from arachne.timeline.footprint import ReplayUnsupported, frame_without, object_map
 
@@ -45,6 +45,24 @@ def test_set_layer_declares_its_capabilities_and_withdraws_those_it_drops():
     assert record_module.DEPENDENCIES not in vars(square)
     with pytest.raises(ValueError, match="itself"):
         set_layer(square, LayerSpec(mask=square))
+
+
+def test_a_row_declared_on_its_own_outlives_every_spec():
+    square, mask = Square(), Circle()
+    declare(square, "effect.depth_of_field")
+    set_layer(square, LayerSpec(blur=0.1))
+    set_layer(square, LayerSpec(mask=mask))
+    assert held(square) == {"effect.depth_of_field", "effect.soft_mask"}
+    set_layer(square, None)
+    assert held(square) == {"effect.depth_of_field"}
+
+
+def test_the_seam_is_declared_by_the_package():
+    import arachne.compose as compose
+
+    assert compose.LayerSpec is LayerSpec
+    assert compose.set_layer is set_layer
+    assert compose.set_focus is set_focus
 
 
 def test_an_effect_in_the_last_play_routes_the_scene_and_without_it_nothing(

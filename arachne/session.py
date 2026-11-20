@@ -182,7 +182,7 @@ class Session:
         #: What :meth:`open` was asked, which :meth:`reload` asks again.
         self._opened: dict[str, Any] | None = None
         self._closed = False
-        #: The route of the record held, once asked (:attr:`route`).
+        #: The route of the record held, taken as it is opened (:attr:`route`).
         self._route: Route | None = None
         #: The ``renderer`` block of the frames drawn last on the ``gpu``
         #: route (:attr:`renderer`).
@@ -318,6 +318,7 @@ class Session:
             }
             if not probe:
                 session._source = _source(session, path, scene, effective, stepping)
+                session._take_route()
                 return session
             # Probe the record. On a demotion, record the scene again with the
             # play ticked, a new execution compared with the first, and probe
@@ -392,7 +393,16 @@ class Session:
             found = session._found_in(found, described, whole)
             session.probe = replace(found, settled=settled)
             session._source = _source(session, path, scene, effective, stepping)
+            session._take_route()
             return session
+
+    def _take_route(self) -> None:
+        """Take the route of the complete record the session now holds,
+        which every frame it gives is drawn on (:mod:`arachne.compose`).
+        """
+        from .compose.session import Route
+
+        self._route = Route.of(self.record)
 
     @property
     @_under_its_settings
@@ -778,6 +788,7 @@ class Session:
         sys.modules.pop(self.module.__name__, None)
         del self.scene, self.record, self.module, self._recorder
         self._summary = self._static = None
+        self._route = self._renderer = None
 
 
 def resize(camera: Any, height: int, width: int) -> None:

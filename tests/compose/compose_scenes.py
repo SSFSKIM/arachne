@@ -18,6 +18,7 @@ from arachne import (
     Create,
     Dot,
     FadeIn,
+    Group,
     ImageMobject,
     Rectangle,
     Scene,
@@ -25,7 +26,7 @@ from arachne import (
     ValueTracker,
     VGroup,
 )
-from arachne.compose.layer import LayerSpec, set_layer
+from arachne.compose.layer import LayerSpec, set_focus, set_layer
 from arachne.routing import declare
 
 
@@ -264,3 +265,59 @@ class ReboundLayer(Scene):
         circle = Circle().shift(DOWN)
         set_layer(circle, LayerSpec(blur=0.2))
         self.play(FadeIn(circle))
+
+
+class MixedMask(Scene):
+    """A white square cut out by a mask of two kinds: a circle at the left
+    and an opaque image at the right.
+    """
+
+    def construct(self):
+        square = Square(side_length=7, fill_color=WHITE, fill_opacity=1)
+        pixels = np.full((8, 8, 4), 255, dtype=np.uint8)
+        still = ImageMobject(pixels, scale_to_resolution=32).shift(2 * RIGHT)
+        still.set_resampling_algorithm(0)
+        mask = Group(Circle(radius=1, fill_opacity=1).shift(2 * LEFT), still)
+        set_layer(square, LayerSpec(mask=mask))
+        self.add(square)
+        self.wait(0.2)
+
+
+class FocusInWindow(Scene):
+    """A frame showing a white square at depth 0, through a window, under a
+    focus that moves from it to depth 3 between two waits.
+    """
+
+    def construct(self):
+        inner = Square(side_length=6, fill_color=WHITE, fill_opacity=1)
+        set_layer(inner, LayerSpec(depth=0))
+        frame = Rectangle(width=8, height=4.5, stroke_width=0)
+        set_layer(frame, LayerSpec(window=(inner,)))
+        self.add(frame)
+        set_focus(self.camera, 0, 0.5)
+        self.wait(0.5)
+        set_focus(self.camera, 3, 0.5)
+        self.wait(0.5)
+
+
+class MaskShownToo(Scene):
+    """:class:`MovingMask`'s square and mask, the mask also added to the
+    scene: it is still painted only through the square.
+    """
+
+    shown = True
+
+    def construct(self):
+        square = Square(side_length=6, fill_color=WHITE, fill_opacity=1)
+        mask = Circle(radius=1, color=RED, fill_opacity=1).shift(2 * LEFT)
+        set_layer(square, LayerSpec(mask=mask))
+        self.add(square)
+        if self.shown:
+            self.add(mask)
+        self.wait(0.2)
+
+
+class MaskNotShown(MaskShownToo):
+    """:class:`MaskShownToo` without the mask added."""
+
+    shown = False

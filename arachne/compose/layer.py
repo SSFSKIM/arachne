@@ -109,16 +109,11 @@ class LayerSpec:
         return tuple(found)
 
 
-#: Every capability a spec can hold, which :func:`set_layer` withdraws when
-#: the object's spec no longer holds it.
-_SPEC_ROWS = ("effect.blur", "effect.soft_mask", "effect.window", "layer.depth")
-
-
 def set_layer(mobject: Mobject, spec: LayerSpec | None) -> None:
     """Make ``mobject`` a layer of its own drawn as ``spec`` says, or, with
     ``None``, no longer one: the spec recorded on it, its capabilities
-    declared (and those it no longer holds withdrawn), and the objects it
-    reads made its capture dependencies.
+    declared (and those the spec it replaces held, and it does not,
+    withdrawn), and the objects it reads made its capture dependencies.
     """
     own = vars(mobject)
     before = own.get(SPEC)
@@ -135,7 +130,9 @@ def set_layer(mobject: Mobject, spec: LayerSpec | None) -> None:
             own.pop(DEPENDENCIES, None)
     held = set(spec.capabilities) if spec is not None else set()
     if before is not None:
-        gone = [row for row in _SPEC_ROWS if row not in held]
+        # Only what the spec it replaces declared: a row the object declared
+        # on its own stays.
+        gone = [row for row in before.capabilities if row not in held]
         if gone:
             routing.withdraw(mobject, *gone)
     if held:

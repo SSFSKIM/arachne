@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from .. import api_json
+from ..compose.session import Route, route_of
 from ..compose.stack import Unsupported as StackUnsupported
 from ..constants import QUALITIES
 from ..errors import SceneError, explain, message_of
@@ -387,6 +388,15 @@ class Dispatcher:
             return None
         return self._opened[0], self._opened[1], dict(self._config)
 
+    def route(self) -> Route:
+        """The route of the session held: its own, or as its stored
+        manifest keeps it, without executing it.
+        """
+        if self.session is not None:
+            return route_of(self.session)
+        assert self.stored is not None
+        return Route.from_form(self.stored.route, self.stored.gpu)
+
     def live(self) -> Session:
         """The session, executed: a session opened from the store is
         executed now, as the generation it is.
@@ -545,14 +555,9 @@ class Dispatcher:
         before anything of it runs (:func:`.compose.session.refuse_render`).
         """
         assert self._opened is not None
-        if self.session is not None or (
-            self.stored is not None and self.stored.route != "cpu"
-        ):
-            # A scene on the gpu route is refused before anything of it runs,
-            # from the session's own complete record.
-            from ..compose.session import refuse_render
-
-            refuse_render(self.live())
+        # A scene on the gpu route is refused before anything of it runs: from
+        # the route the session took, or the one its stored manifest keeps.
+        self.route().refuse_render()
         file, scene, _ = self._opened
         # What the scene's code found for the lint refuses every render of
         # it, the plays before the finding too: read from its whole record,
@@ -909,6 +914,10 @@ def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
     # The answer is the same picture wherever it is written.
     asked = {name: value for name, value in params.given.items() if name != "path"}
     store, stored = server.store, server.stored
+    if server.session is None and stored is not None and stored.route != "cpu":
+        # What this host can't draw is refused from the manifest, before the
+        # scene executes.
+        server.route().refuse_here()
     if (
         server.session is None
         and store is not None
