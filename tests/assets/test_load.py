@@ -22,6 +22,7 @@ import arachne
 from arachne import VMobject, load_asset, tempconfig
 from arachne.assets import Asset, Rig
 from arachne.assets.manifest import digest, thawed
+from arachne.assets.pose import CARRIER_WIDTH
 from arachne.assets.reader import FIXTURES
 from arachne.timeline.frozen import engine_class
 
@@ -82,10 +83,15 @@ def test_every_part_is_a_vector_object_at_its_canvas_place(name):
         for s in document["slots"]
     ]
     drawn = [name for name, *_, order in sorted(entries, key=lambda e: e[3])]
-    assert [member.name for member in rig.submobjects] == drawn
+    # The carrier comes first: where the rig is placed, not a part.
+    assert [member.name for member in rig.submobjects] == ["carrier", *drawn]
+    slots = {s["name"]: s["default"] for s in document["slots"]}
     for part_name, file, element, _ in entries:
         part = rig.part(part_name)
         assert isinstance(part, VMobject)
+        if part_name in slots:
+            # A slot holds a group per drawing; the default one is drawn.
+            part = next(d for d in part.submobjects if d.name == slots[part_name])
         shapes = part.submobjects
         paths = _paths(FIXTURES / name, file, element)
         assert len(shapes) == len(paths)
@@ -332,7 +338,8 @@ def test_the_digest_of_a_fixed_asset_is_pinned(tmp_path):
 def test_an_asset_may_be_a_line_with_one_extent_zero(tmp_path):
     rig = Rig(_rod(tmp_path))
     assert rig.width == pytest.approx(1.0)
-    assert rig.height == 0
+    # Its carrier, which says where it is placed, spans 10**-4 units.
+    assert rig.height == pytest.approx(0, abs=CARRIER_WIDTH)
 
 
 def test_a_parameter_with_no_unit_is_a_plain_number(tmp_path):
