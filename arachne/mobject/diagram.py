@@ -12,9 +12,11 @@ joins, and a camera move into one piece.
   read, and what the frame's edge would cut fades out before it is cut.
 
 A flow declares its speed as ``diagram.flow_speed``, in scene units a
-second (:mod:`arachne.quantities`), read from what a capture holds: its
-declared speed while it runs, 0 once it is stopped, with a tolerance of 1 %
-of it, within which its tokens' measured speed holds.
+second (:mod:`arachne.quantities`), read from what a capture holds: the
+declared advance of its tokens along the edge, by arc length, while it runs,
+and 0 once it is stopped. It is not each token's visible velocity, which
+also carries the edge's own motion when the edge moves or deforms. Its
+tolerance, 1 % of it, is a claim about that declared advance.
 
 A diagram's labels are measured against each other, against the frame's
 edge and for their height by the lint rule
@@ -363,12 +365,16 @@ class Flow(VGroup):
 
 quantities.register("diagram.", owner="arachne.mobject.diagram", units=("u/s",))
 
-#: A flow's declared speed holds within this share of it, measured.
+#: The share of a flow's declared speed within which its tokens' advance
+#: along the edge, by arc length, holds.
 FLOW_TOLERANCE = 0.01
 
 
 @quantities.provider(Flow)
 def _declared(held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
+    """``diagram.flow_speed``: the tokens' declared advance along the edge,
+    in u/s, not their visible velocity on a moving edge.
+    """
     speed = 0.0 if held["stopped"] else held["speed"]
     return (
         Quantity(
