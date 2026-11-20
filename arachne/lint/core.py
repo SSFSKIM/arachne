@@ -10,7 +10,9 @@ instant of a record kept on another grid than the render's, whose frame
 hooks and dt updaters ran at other instants than the render's. Every
 mobject at each instant is read for its declared quantities, and one that
 cannot be read is a ``sim.quantity_unreadable`` finding
-(:mod:`.quantities`). The session's divergences become ``replay.diverged``
+(:mod:`.quantities`). What the record's bakes found (a simulation gone
+unstable, two bodies that passed through each other) becomes a finding at
+its tick (:mod:`.bakes`). The session's divergences become ``replay.diverged``
 findings (a probe's a note, an execution's an error), and a stale session a
 ``source.changed`` note. The caller's time range and exemptions then leave
 findings out, look-alikes fold, and the result is data: nothing the lint
@@ -37,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from arachne.timeline.clock import exact
 
+from .bakes import bake_findings, request_bake_frames
 from .bridge import Checks, terms_at
 from .exempt import Exemptions
 from .findings import Finding, fold, in_range
@@ -172,6 +175,7 @@ def lint(
     frames = Frames(session, lint_instants=instants)
     _request_parts(frames, instants)
     request_quantities(frames, instants)
+    baked = request_bake_frames(frames, record)
     # The scene's own checks (:mod:`.bridge`), whatever the rules.
     checks = Checks(rules)
     checks.request_frames(frames)
@@ -185,6 +189,7 @@ def lint(
     found = [finding for rule in rules for finding in rule(context)]
     found.extend(checks(context))
     found.extend(unreadable_findings(frames, instants, parts))
+    found.extend(bake_findings(frames, record, baked))
     # After the parts: a forward run that read them may have found one.
     found.extend(_diverged(session))
     if session.stale:

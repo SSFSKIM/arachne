@@ -77,6 +77,7 @@ from arachne.timeline.bake import (
 )
 from arachne.timeline.clock import TICK_RATE
 
+from . import measures
 from .declaration import (
     BodyItem,
     Declaration,
@@ -87,6 +88,7 @@ from .declaration import (
     given_vector,
     stored,
 )
+from .findings import occurrence_findings
 
 if TYPE_CHECKING:
     from fractions import Fraction
@@ -317,6 +319,8 @@ class Stay:
         stay = cls(world, recorder, record, run, math.floor(at * TICK_RATE))
         stay.ordinal = bakes_of(record).begin(stay)
         world._bake = BakeRef(stay.ordinal)
+        for number, mobject in enumerate(world._body_mobjects):
+            measures.bind(mobject, stay.ordinal, number)
         return stay
 
     def now_tick(self) -> int:
@@ -470,6 +474,15 @@ class Stay:
             ),
         )
 
+    def events(self, name: str) -> np.ndarray | None:
+        """The stay's event table ``name`` while it is open, of the rows
+        computed through its last tick: ``contact``, else ``None``.
+        """
+        if name != "contact":
+            return None
+        count = min(self.last_tick, self.computed_tick) - self.first_tick + 1
+        return _window_contacts(self.crate.contacts(), self.base, self.base + count)
+
     def settle(self) -> None:
         """Seal the stay if the scene's script has ended."""
         if self.recorder not in _recorder._RUNNING:
@@ -509,10 +522,11 @@ class Stay:
             {"contact": EventTable(events)},
         )
         bindings = []
-        for number, mobject in enumerate(self.world._body_mobjects):
-            body = self.record.origin(mobject).id
+        ids = [self.record.origin(mobject).id for mobject in self.world._body_mobjects]
+        for number, body in enumerate(ids):
             bindings.append(Binding(body, "pose", number))
             bindings.append(Binding(body, "velocity", number))
+        found = occurrence_findings(crate, start, stop, self.first_tick, ids)
         declared = hashlib.blake2b(digest_size=16)
         for part in (
             crate.declaration_bytes()
@@ -532,6 +546,7 @@ class Stay:
             closed=not crate.open,
             declaration=declared.digest(),
             bindings=tuple(bindings),
+            findings=found,
         )
 
 
@@ -563,6 +578,9 @@ def build(declaration: Declaration) -> Any:
         declaration.dimension,
         integrator=declaration.routed(),
         open=declaration.open,
+        speed_limit=_limit(declaration.speed_limit),
+        angular_speed_limit=_limit(declaration.angular_speed_limit),
+        continuous_collision=declaration.continuous_collision,
     )
     bodies, joints, forces = (
         iter(declaration.bodies),
@@ -641,6 +659,11 @@ def add_force(crate: Any, force: ForceItem) -> None:
         crate.add_quadratic_drag(*force.bodies, numbers["coefficient"])
     else:
         crate.add_constant(*force.bodies, **numbers)
+
+
+def _limit(value: float | None) -> np.float32 | None:
+    """A declared limit as the solver takes it; ``None`` for its default."""
+    return None if value is None else np.float32(value)
 
 
 def _numbers(values: tuple[float, ...]) -> Any:

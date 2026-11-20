@@ -431,6 +431,36 @@ _TABLE = (
         "Build the motion without the feature the finding names.",
         ("feature",),
     ),
+    Code(
+        "sim.unstable",
+        "error",
+        "SimulationUnstable",
+        "a simulated body left what the simulation computes: its state went"
+        " non-finite (the solver stopped it where it last was), or its speed or"
+        " angular speed rose above its world's declared limit, which sits below"
+        " the solver's own cap, so a picture past it would be clamped motion;"
+        " found at the tick it happened, in the record's bake",
+        "Find what drives the body too hard (a force that grows without bound,"
+        " two attracting bodies that meet, a joint or spring too stiff or too"
+        " soft for the tick) and calm it; or, for motion that is meant to be"
+        " that fast, raise the world's speed_limit or angular_speed_limit up to"
+        " the solver's cap.",
+        ("tick", "signal", "value", "limit"),
+    ),
+    Code(
+        "sim.tunnelled",
+        "error",
+        "SimulationTunnelled",
+        "two simulated bodies that should collide passed through each other in"
+        " one 60 Hz tick: touching at neither end of the step, with no contact"
+        " in the solver's step, their shapes swept through the step's motion"
+        " met; found at the tick after the crossing, in the record's bake",
+        "The tick is fixed, so let no body cross more than its own thickness in"
+        " a step: thicken the thinner body, slow the faster one, or stiffen or"
+        " soften the joint that flings it; and keep the world's"
+        " continuous_collision on, which stops a fast body at a fixed one.",
+        ("tick",),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

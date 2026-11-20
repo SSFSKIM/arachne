@@ -27,7 +27,8 @@ sealed occurrence's row, or ``None`` outside its stay.
 
 What computes a stay may also answer for it before it is sealed: its
 ``row(tick)``, when it has one, answers :meth:`Bakes.row` for the rows it has
-computed (a lint's forward run reads them while the script runs), and its
+computed (a lint's forward run reads them while the script runs), its
+``events(name)`` answers :meth:`Bakes.events` for them alike, and its
 ``settle()``, when it has one, is called before every read of the bakes, so
 a stay still open when the script has ended seals itself then. What a
 producer keeps from one stay to the next (:attr:`Bakes.held`) is owned by
@@ -561,6 +562,21 @@ class Bakes:
                 }
             ),
         )
+
+    def events(self, ordinal: int, name: str) -> np.ndarray | None:
+        """The occurrence ``ordinal``'s event table ``name`` (``[n, columns]``,
+        its first column a row of the stay), read-only, or ``None`` when it
+        has none; for a stay not sealed, the table of the rows what computes
+        it has computed (``None`` when it answers none).
+        """
+        self._settle()
+        occurrence = self._occurrences.get(ordinal)
+        if occurrence is None:
+            live = self._live.get(ordinal)
+            reading = getattr(live, "events", None)
+            return None if reading is None else reading(name)
+        table = self._contents[occurrence.content].events.get(name)
+        return None if table is None else table.rows
 
     def at(self, ordinal: int, t: Fraction) -> Row | None:
         """The row shown at the instant ``t``: its last tick at or before."""

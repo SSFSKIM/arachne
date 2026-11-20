@@ -44,6 +44,8 @@ PUBLISHED = [
     ("media.clock_past_end", "error", "MediaClockPastEnd"),
     ("sim.force_input", "error", "ForceInput"),
     ("sim.withheld", "error", "FeatureWithheld"),
+    ("sim.unstable", "error", "SimulationUnstable"),
+    ("sim.tunnelled", "error", "SimulationTunnelled"),
 ]
 
 
