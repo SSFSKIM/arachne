@@ -266,6 +266,21 @@ def test_a_body_left_drawn_at_an_older_row_than_its_stay_s_last_is_unreadable(
         assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
 
 
+def test_a_body_shifted_just_before_its_world_left_is_unreadable_past_it(opened):
+    """Shifted by the scene's code after its last placement, as its world
+    leaves, the point no longer shows the stay's last row: past the stay it
+    reads nothing.
+    """
+    session = opened("ShiftedThenLeft")
+    (body,) = _bodies(session)
+    state = session.state_at(Fraction(3, 4))
+    tick = math.floor(state.as_of * 60)
+    assert tick > 30
+    for quantity in state.quantities[body]:
+        assert quantity.value is None
+        assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
+
+
 def test_a_body_shown_after_its_world_left_is_unreadable(opened):
     session = opened("ShownAfterItsWorld")
     (body,) = _bodies(session)

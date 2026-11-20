@@ -491,6 +491,26 @@ def test_a_stale_readout_is_reported_to_its_world_s_last_frame_not_after(opened)
     assert after == []
 
 
+def test_a_world_kept_only_as_a_dependency_is_not_in_the_scene(opened):
+    """Past its removal the world is reached only through another mobject's
+    capture dependency, not the scene's mobjects: the readout held past it
+    is not stale; before it, it is.
+    """
+    session = opened("HeldPastItsWorldKeptByAnother")
+    before = [
+        f
+        for f in lint(session, rules=(), at=[Fraction(2, 5)]).findings
+        if f.code == "sim.readout_stale"
+    ]
+    assert [f.detail["tick"] for f in before] == [12]
+    after = [
+        f
+        for f in lint(session, rules=(), at=[Fraction(3, 5), Fraction(11, 15)]).findings
+        if f.code == "sim.readout_stale"
+    ]
+    assert after == []
+
+
 def test_a_readout_added_over_a_moving_body_is_not_stale(opened):
     assert _stale(opened("AddedOverAFall")) == []
 

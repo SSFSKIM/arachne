@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from arachne import (
     DOWN,
+    DR,
     RIGHT,
     UL,
     UP,
@@ -21,6 +22,7 @@ from arachne import (
     World,
     anchor,
 )
+from arachne.timeline.record import DEPENDENCIES
 
 #: Each readout of :class:`FallingRead` by its format: what it reads, its
 #: part and its scale.
@@ -148,6 +150,28 @@ class HeldOverAFallThenLeft(Scene):
         reading.suspend_updating()
         self.add(reading)
         self.wait(0.49)
+        self.remove(world)
+        self.wait(0.3)
+
+
+class HeldPastItsWorldKeptByAnother(Scene):
+    """A readout held by hand while a point falls, then its world removed at
+    1/2 s while another mobject keeps the world as a capture dependency (as
+    an effect keeps its mask or window), with a wait after.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.2)
+        reading = world.readout(ball, "velocity", part="y")
+        reading.suspend_updating()
+        self.add(reading)
+        self.wait(0.3)
+        keeper = Square(side_length=0.5).to_corner(DR)
+        vars(keeper)[DEPENDENCIES] = (world,)
+        self.add(keeper)
         self.remove(world)
         self.wait(0.3)
 

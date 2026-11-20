@@ -247,6 +247,30 @@ class DotWithAChildBackAfterItsWorld(GroupBackAfterItsWorld):
         self.wait(0.5)
 
 
+class ShiftedThenLeft(Scene):
+    """A falling point's mobject shifted by the scene's code just before its
+    world is removed at 1/2 s, with no world update between, then left on
+    screen over a wait a scene updater reading ``dt`` ticks.
+    """
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2, radius=0.15)
+        world.body(dot, shape=None, mass=1.0, velocity=RIGHT * 3)
+        self.add(world)
+        self.wait(0.5)
+        dot.shift(RIGHT)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
 class ShownAfterItsWorld(Scene):
     """A falling point's mobject shown on its own after its world left the
     scene, and moved there: no bake holds its quantities then.
