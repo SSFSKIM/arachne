@@ -784,7 +784,7 @@ def picture_place(
     corners, a picture under half a pixel high, or one every pixel of which
     is transparent at the path's opacity (``member.pixels()``).
     """
-    corners = member.corners()  # type: ignore[attr-defined]
+    corners = member.corners()
     if corners is None:
         return None
     if not _quad_painted(camera, view, member, corners):
