@@ -95,6 +95,7 @@ from .scene.section import *
 from .scene.three_d_scene import *
 from .scene.vector_space_scene import *
 from .scene.zoomed_scene import *
+from .simulation import *
 from .utils import color, rate_functions, unit
 from .utils.bezier import *
 from .utils.color import *
