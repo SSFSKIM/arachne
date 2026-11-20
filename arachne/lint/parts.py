@@ -697,8 +697,9 @@ class _Reader:
         """``mob`` as drawn, held by ``chain`` (outermost first), or
         ``None`` when it draws nothing.
         """
-        kind = draw_kind(mob)
-        assert kind is not None
+        drawn_as = draw_kind(mob)
+        assert drawn_as is not None
+        kind = read_as(mob, drawn_as)
         points = np.asarray(mob.points, dtype=float)
         if not len(points):
             return None
@@ -710,10 +711,13 @@ class _Reader:
             lays = viewing.lays(node, lambda: _lays(mob, kind, points))
         if kind == "points" and lays.stroke <= 0:
             return None
-        if viewing is None or node is None or kind == "image":
-            placed = self._place(mob)
+        # Placed by the route it is drawn through: a path whose fill is a
+        # picture by a path's, its place kept as a path's is.
+        picture = kind != drawn_as
+        if viewing is None or node is None or drawn_as == "image":
+            placed = self._place(mob, picture)
         else:
-            placed = viewing.placed(node, lambda: self._place(mob))
+            placed = viewing.placed(node, lambda: self._place(mob, picture))
         if placed is None:
             return None
         # Stroke widths as drawn: Cairo's units per width, on the home frame.
@@ -749,9 +753,10 @@ class _Reader:
             depth=placed.depth,
         )
 
-    def _place(self, mob: Mobject) -> Placed | None:
+    def _place(self, mob: Mobject, picture: bool = False) -> Placed | None:
         """Where the camera puts ``mob``, or ``None`` when its draw paints
-        nothing.
+        nothing. A ``picture`` (a path whose fill is a picture) paints its
+        points' box, as an image does, not its outline's ink.
         """
         found = member_place(self.camera, self.view, mob)
         if found is None:
@@ -760,7 +765,8 @@ class _Reader:
         screen = _screen(self.view, pixels)
         # Read-only on every read, kept or not: kept reads share it.
         screen.setflags(write=False)
-        return Placed(ink=ink, screen=screen, box=_box(screen), depth=depth)
+        box = _box(screen)
+        return Placed(ink=box if picture else ink, screen=screen, box=box, depth=depth)
 
     def unit(self, mob: Mobject, chain: tuple[Mobject, ...]) -> Unit | None:
         """What a sweep measures ``mob`` (held by ``chain``) as part of:
@@ -895,6 +901,18 @@ class _Reader:
             )
             self._holders[id(mob)] = found
         return found
+
+
+def read_as(mob: Mobject, drawn_as: str) -> str:
+    """How the lint reads ``mob``, which the camera draws as ``drawn_as``
+    (:func:`~arachne.camera.projection.draw_kind`): as drawn, but a path
+    whose fill is a picture (its class's ``fill_is_picture``, as a raster
+    member of a rig has it) is read as an image, as a still is: in no unit,
+    laying its picture over its box, its paint unread.
+    """
+    if drawn_as == "path" and getattr(mob, "fill_is_picture", False):
+        return "image"
+    return drawn_as
 
 
 def _lays(mob: Mobject, kind: str, points: np.ndarray) -> Lays:

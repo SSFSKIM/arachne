@@ -4,7 +4,9 @@ of its own, and an anchor on it is right before the instant's settle;
 ``view_through`` checks what it is given at every call; a manifest that
 would draw a still wrong is refused at the server by member and reason;
 and a scene with a raster member is on the ``gpu`` route, refused its
-frames on a host with no GPU, while the vector rigs stay CPU frames.
+frames on a host with no GPU, while the vector rigs stay CPU frames. The
+lint reads a raster member as it reads the same still: a text over its
+clear part is in contact with nothing, and every part is read alike.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import pytest
 from arachne import Rig
 from arachne.server.dispatch import Dispatcher
 from arachne.server.protocol import REFUSED, SCENE_ERROR, RpcError
+from arachne.session import Session
 
 from .conftest import SMALL, copied, edited
 from .raster_scenes import PAN, depth_of, layer_pictures
@@ -284,3 +287,154 @@ def test_the_parallax_is_d_over_d_plus_depth_of_the_camera_s_move():
     assert np.allclose(parallax(0, 8, np.ones(3), np.zeros(3)), 0)
     assert math.isclose(parallax(-4, 8, np.array([1.0, 0, 0]), np.zeros(3))[0], -1.0)
     assert Rig("fixture:layered-ground")._parallax("far").tolist() == [0, 0, 0]
+
+
+LINTED = """\
+import numpy as np
+
+from arachne import *
+
+
+def image(file, corners):
+    picture = ImageMobject(file)
+    picture.points = np.array(corners)
+    return picture
+
+
+class Raster(Scene):
+    def construct(self):
+        label = Text("over", font_size=20).move_to([0, 1.0, 0])
+        art = Rig({asset!r}).shift({shift!r})
+        self.add({order})
+        self.wait(0.5)
+
+
+class Images(Scene):
+    def construct(self):
+        label = Text("over", font_size=20).move_to([0, 1.0, 0])
+        art = Group(*[image(f, c) for f, c in {pictures!r}]).shift({shift!r})
+        self.add({order})
+        self.wait(0.5)
+"""
+
+
+def _clear_on_top(tmp_path: Path) -> Path:
+    """The layered set with its far layer clear over its upper part: the
+    canvas rows 0 to 60, the scene's y from 1.6 down to 0.4.
+    """
+    from PIL import Image
+
+    from arachne.mobject.media.frames import frame_digest
+    from tests.assets.helpers import admitted
+
+    asset = copied(tmp_path, "layered-ground", "clear-on-top")
+    pixels = np.zeros((20, 48, 4), dtype=np.uint8)
+    pixels[12:] = (110, 130, 190, 255)
+    Image.fromarray(pixels).save(asset / "layers" / "far.png", format="PNG")
+    edited(asset, lambda d: d["parts"][0].update(digest=frame_digest(pixels)))
+    return admitted(asset)
+
+
+def _linted(tmp_path: Path, asset: Path, scene: str, order: str, shift) -> Session:
+    """A session of ``scene`` of :data:`LINTED` on ``asset``."""
+    from .raster_scenes import files_of
+
+    pictures = [
+        (str(asset / files_of(asset)[name]), corners.tolist())
+        for name, corners in layer_pictures().items()
+    ]
+    file = tmp_path / f"linted_{scene}.py"
+    file.write_text(
+        textwrap.dedent(
+            LINTED.format(
+                asset=str(asset), pictures=pictures, order=order, shift=list(shift)
+            )
+        )
+    )
+    return Session.open(file, scene, config=SMALL)
+
+
+def _codes(session: Session) -> set[str]:
+    """The codes the sweep finds in ``session``."""
+    from arachne.lint import lint
+    from arachne.lint.rules import sweep
+
+    return {finding.code for finding in lint(session, rules=(sweep,)).findings}
+
+
+def _read(session: Session, *, memo: bool) -> list[tuple]:
+    """What the lint reads of each drawn thing but the label at 0.25 s: its
+    kind, and each leaf as drawn, laid and measured, boxes to 1e-6 pixels.
+    """
+    from arachne.lint.parts import PartsCache
+    from arachne.timeline.routes import _resolve
+
+    record, t = session.record, Fraction(1, 4)
+    resolved = _resolve(record, t)
+    parts = PartsCache(memo=memo).build(
+        record, t, resolved.play, resolved.capture, answer="recorded", target=(96, 54)
+    )
+
+    def box(found) -> tuple:
+        return tuple(round(float(v), 6) for v in found)
+
+    return [
+        (
+            part.kind,
+            box(part.screen_box),
+            box(part.ink_box),
+            [
+                (
+                    leaf.draw,
+                    leaf.unit is None,
+                    box(leaf.screen_box),
+                    box(leaf.ink_box),
+                    leaf.fill_opacity,
+                    leaf.stroke_opacity,
+                    leaf.stroke_width,
+                    leaf.first_fill_opacity,
+                    leaf.depth,
+                )
+                for leaf in part.leaves
+            ],
+        )
+        for part in parts.parts
+        if part.kind != "text"
+    ]
+
+
+#: The families of the codes a text near or under something draws: drawn
+#: over (``occlusion``), in contact, overlapping or too near (``gap``).
+CLEARANCE = ("occlusion", "contact", "overlap", "gap")
+
+
+@pytest.mark.parametrize("order", ["label, art", "art, label"], ids=["under", "over"])
+def test_text_over_a_clear_area_of_a_still_or_a_raster_member_is_not_in_contact(
+    tmp_path, order
+):
+    asset = _clear_on_top(tmp_path)
+    for scene in ("Raster", "Images"):
+        session = _linted(tmp_path, asset, scene, order, (0, 0, 0))
+        try:
+            codes = _codes(session)
+        finally:
+            session.close()
+        assert not {c for c in codes if c.split(".")[0] in CLEARANCE}, (scene, codes)
+
+
+@pytest.mark.parametrize("shift", [(0, 0, 0), (6.5, 0, 0), (0, 3.5, 0)])
+def test_the_lint_reads_a_raster_member_as_it_reads_the_same_still(tmp_path, shift):
+    asset = _clear_on_top(tmp_path)
+    read, codes = {}, {}
+    for scene in ("Raster", "Images"):
+        session = _linted(tmp_path, asset, scene, "art, label", shift)
+        try:
+            read[scene] = [_read(session, memo=memo) for memo in (False, True)]
+            codes[scene] = _codes(session)
+        finally:
+            session.close()
+    fresh, kept = read["Raster"]
+    assert fresh == kept
+    assert [kind for kind, *_ in fresh] == ["image"] * 3
+    assert fresh == read["Images"][0]
+    assert codes["Raster"] == codes["Images"]

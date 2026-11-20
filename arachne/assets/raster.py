@@ -16,6 +16,8 @@ state there: its corners, and its fill opacity, which is the picture's
 opacity. So a picture never lags its quad: an animation that moves or fades
 the rig moves and fades it at every instant. The quad's colours and its
 stroke are never drawn, so a colour given to the rig recolours no still.
+The quad says so (``fill_is_picture``), and the lint reads it as it reads a
+still: an image over its box, in no unit a sweep measures.
 
 What the quad holds that decides the picture is plain: the asset's digest,
 the member's file and its frame digest, as strings. The picture's pixels
@@ -61,6 +63,14 @@ class RasterPart(VMobject):
     is the frame digest its manifest lists for the file. Its fill opacity
     is the picture's opacity.
     """
+
+    #: The path's fill is a picture: it is never painted, and the picture
+    #: (:meth:`picture`) is painted in its place, an image at the corners
+    #: :meth:`corners` gives, as opaque as the path's fill. A reader of what
+    #: is drawn (the lint) reads such a path as an image, as a still, and
+    #: reads nothing of its paint but its fill opacity. Absent on every other
+    #: mobject: ``getattr(mob, "fill_is_picture", False)``.
+    fill_is_picture: ClassVar[bool] = True
 
     #: What a content key leaves out: where this host keeps the asset, and
     #: the asset's name, which a refusal reads.
