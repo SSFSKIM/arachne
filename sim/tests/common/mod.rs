@@ -81,6 +81,31 @@ pub fn ticks(seconds: f64) -> usize {
     (seconds * 60.0).round() as usize
 }
 
+/// Rows in `seconds` of simulation: its first row and one per tick (601 for 10 s).
+pub fn rows(seconds: f64) -> usize {
+    ticks(seconds) + 1
+}
+
+/// Fails unless `values` has one sample per row, `rows` of them, each finite: a measurement
+/// over a trace is never taken over part of it, nor over a sample that is not a number.
+pub fn complete(what: &str, values: &[f64], rows: usize) {
+    assert_eq!(
+        values.len(),
+        rows,
+        "{what}: {} rows, not the {rows} of its run",
+        values.len()
+    );
+    if let Some(i) = values.iter().position(|x| !x.is_finite()) {
+        panic!("{what}: a non-finite sample at row {i}: {}", values[i]);
+    }
+}
+
+/// The largest of `values`, after `complete`.
+pub fn largest(what: &str, values: &[f64], rows: usize) -> f64 {
+    complete(what, values, rows);
+    values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+}
+
 /// Body `b`'s pose at every row, as f64.
 pub fn poses(w: &World, b: u32) -> Vec<Vec<f64>> {
     rows_of(w.pose(0, w.rows()), w.bodies(), w.pose_width(), b)
@@ -115,6 +140,7 @@ pub fn crossings(series: &[f64]) -> Vec<f64> {
 
 /// The mean period: twice the mean time between the first and last crossing of zero.
 pub fn period(series: &[f64]) -> f64 {
+    complete("a periodic series", series, series.len());
     let c = crossings(series);
     assert!(c.len() >= 3, "fewer than three crossings: {c:?}");
     2.0 * (c[c.len() - 1] - c[0]) / (c.len() - 1) as f64
@@ -131,19 +157,24 @@ pub fn elliptic_k(k: f64) -> f64 {
     std::f64::consts::PI / (2.0 * a)
 }
 
-/// The largest `|E(t) - E(0)| / scale` over every row.
-pub fn energy_drift(energies: &[f64], scale: f64) -> f64 {
-    assert!(scale > 0.0, "an energy scale is positive");
-    energies
+/// The largest `|E(t) - E(0)| / scale` over every row, of `rows` (`complete`).
+pub fn energy_drift(energies: &[f64], scale: f64, rows: usize) -> f64 {
+    assert!(
+        scale > 0.0 && scale.is_finite(),
+        "an energy scale is positive"
+    );
+    complete("an energy trace", energies, rows);
+    let drift: Vec<f64> = energies
         .iter()
         .map(|e| (e - energies[0]).abs() / scale)
-        .fold(0.0, f64::max)
+        .collect();
+    largest("an energy drift", &drift, rows)
 }
 
-/// The energy line: the drift stays under 1% of the case's scale at every row. Prints the
-/// case's line, then fails if the line is not met.
-pub fn assert_energy(case: &str, convention: &str, energies: &[f64], scale: f64) {
-    let drift = energy_drift(energies, scale);
+/// The energy line: the drift stays under 1% of the case's scale at every one of the run's
+/// `rows`. Prints the case's line, then fails if the line is not met.
+pub fn assert_energy(case: &str, convention: &str, energies: &[f64], scale: f64, rows: usize) {
+    let drift = energy_drift(energies, scale, rows);
     report(
         &format!("{case} energy"),
         &format!("E(t) = E(0), {convention}, scale S = {scale:.6}"),

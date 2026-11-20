@@ -5,8 +5,8 @@ gives the same bytes however it is advanced, and lets other threads run while it
 from __future__ import annotations
 
 import importlib.metadata
+import sys
 import threading
-import time
 import tomllib
 from pathlib import Path
 
@@ -133,28 +133,43 @@ def test_identity_units_and_versions():
 
 
 def test_other_threads_run_while_a_world_advances():
-    # Three hundred point masses attracting each other: seconds of work with no contact.
+    """With the interpreter switching threads only when one blocks or releases its lock, the
+    main thread runs between the worker entering ``advance_to`` and the worker's next line only if
+    ``advance_to`` released the lock. That holds as long as the worker is still advancing when
+    the main thread wakes, which the advance's length (a tenth of a second or so) provides.
+    """
     w = World(3, integrator="point_masses")
-    for i in range(300):
-        x = float(i % 10)
-        y = float(i // 10 % 10)
-        z = float(i // 100)
-        w.add_body(position=vec(x, y, z), mass=np.float32(1))
-    w.add_attraction(list(range(300)), np.float32(0.001))
-    span: list[float] = []
+    for i in range(100):
+        w.add_body(position=vec(float(i % 10), float(i // 10), 0.0), mass=np.float32(1))
+    w.add_attraction(list(range(100)), np.float32(0.001))
+    entering = threading.Event()
+    returned = threading.Event()
+    failed: list[BaseException] = []
 
     def advance() -> None:
-        span.append(time.perf_counter())
-        w.advance_to(300)
-        span.append(time.perf_counter())
+        entering.set()
+        try:
+            w.advance_to(600)
+        except BaseException as error:
+            failed.append(error)
+        returned.set()
 
-    worker = threading.Thread(target=advance)
-    ran: list[float] = []
-    worker.start()
-    while worker.is_alive():
-        ran.append(time.perf_counter())
-    worker.join()
-    start, end = span
-    assert end - start > 0.2, "too little work to tell"
-    during = [t for t in ran if start + 0.05 < t < end - 0.05]
-    assert len(during) > 100
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1000.0)
+    try:
+        worker = threading.Thread(target=advance)
+        worker.start()
+        # Blocks, releasing the lock; it takes the lock back only once the worker releases it,
+        # which the worker does first inside advance_to if at all.
+        assert entering.wait(timeout=60), "the worker never started"
+        ran_during = not returned.is_set()
+        assert returned.wait(timeout=120), (
+            "advance_to did not return within two minutes"
+        )
+        worker.join(timeout=60)
+    finally:
+        sys.setswitchinterval(interval)
+    if failed:
+        raise failed[0]
+    assert ran_during, "the main thread ran only after advance_to returned"
+    assert w.rows == 601

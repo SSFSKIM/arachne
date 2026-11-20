@@ -632,6 +632,21 @@ fn what_a_world_cannot_compute_it_refuses_by_name() {
         }),
         "3D only",
     );
+    for axis in [vec![0.0, 0.0], vec![1e-30, 0.0]] {
+        refused(
+            w.add_joint(Joint {
+                kind: JointKind::Slide,
+                body1: b,
+                body2: other,
+                anchor1: vec![0.0; 2],
+                anchor2: vec![0.0; 2],
+                axis,
+                limits: None,
+                contacts: false,
+            }),
+            "axis is a direction",
+        );
+    }
     refused(
         w.add_force(Force::LinearDrag {
             body: 7,
@@ -720,4 +735,236 @@ fn what_a_world_cannot_compute_it_refuses_by_name() {
         World::new(4, Integrator::Solver, false),
         "2 or 3 dimensions",
     );
+}
+
+/// Two bodies held by a spring of `rest` length, `b` released at `from` (`a` fixed at the
+/// origin); returns the world after 2 s and `b`.
+fn spring_pair(integrator: Integrator, rest: f32, from: [f64; 2]) -> (World, u32) {
+    let mut w = World::new(2, integrator, false).expect("a world");
+    let a = body(&mut w, true, &[0.0, 0.0], &[0.0, 0.0], 0.0);
+    let b = body(&mut w, false, &from, &[0.0, 0.0], 1.0);
+    w.add_force(Force::Spring {
+        body_a: a,
+        anchor_a: vec![0.0; 2],
+        body_b: b,
+        anchor_b: vec![0.0; 2],
+        stiffness: 10.0,
+        damping: 0.5,
+        rest,
+    })
+    .expect("the spring");
+    w.advance_to(120).expect("2 s");
+    (w, b)
+}
+
+#[test]
+fn a_spring_whose_anchors_coincide_holds_them_at_rest() {
+    for integrator in [Integrator::Solver, Integrator::PointMasses] {
+        // The line between the anchors is undefined, and the force is zero for the tick (at rest
+        // length 0 its elastic part, k d, is zero anyway).
+        for rest in [0.0, 0.5] {
+            let (w, _) = spring_pair(integrator, rest, [0.0, 0.0]);
+            let rows = w.pose(0, w.rows());
+            assert!(
+                rows.iter().all(|&x| x == 0.0),
+                "{integrator:?}, rest {rest}: the coincident anchors moved or went non-finite"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_zero_length_spring_pulls_a_body_through_its_anchor() {
+    for integrator in [Integrator::Solver, Integrator::PointMasses] {
+        let (w, b) = spring_pair(integrator, 0.0, [0.5, 0.2]);
+        let p = common::poses(&w, b);
+        assert!(
+            p.iter().flatten().all(|x| x.is_finite()),
+            "{integrator:?}: a non-finite pose"
+        );
+        // Released at rest, it first heads straight for the anchor, then through it.
+        let crossed = p.iter().any(|q| q[0] < 0.0 && q[1] < 0.0);
+        assert!(crossed, "{integrator:?}: it never passed the anchor");
+        let line = p
+            .iter()
+            .map(|q| (q[0] * 0.2 - q[1] * 0.5).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            line < 1e-4,
+            "{integrator:?}: it left the line through the anchor by {line}"
+        );
+    }
+}
+
+/// Two free bodies on a zero-length damped spring, moving across the line between them (along y,
+/// the line along x), integrated by `integrator`; returns the world after 10 s and the bodies.
+fn turning_pair(integrator: Integrator) -> (World, u32, u32) {
+    let mut w = World::new(2, integrator, false).expect("a world");
+    let a = body(&mut w, false, &[-0.5, 0.0], &[0.0, 1.0], 1.0);
+    let b = body(&mut w, false, &[0.5, 0.0], &[0.0, -0.5], 2.0);
+    w.add_force(Force::Spring {
+        body_a: a,
+        anchor_a: vec![0.0; 2],
+        body_b: b,
+        anchor_b: vec![0.0; 2],
+        stiffness: 10.0,
+        damping: 2.0,
+        rest: 0.0,
+    })
+    .expect("the spring");
+    w.advance_to(600).expect("10 s");
+    (w, a, b)
+}
+
+/// A spring's damping acts along the line between its anchors, as its elastic part does: the
+/// pair's angular momentum `sum m (x v_y - y v_x)` is conserved while the spring pulls it in and
+/// damps it (the point masses evaluate the force at every half kick, along the line as it is
+/// then, so only rounding moves it).
+#[test]
+fn a_damped_spring_keeps_a_free_pair_angular_momentum() {
+    let (w, a, b) = turning_pair(Integrator::PointMasses);
+    let (pa, pb) = (common::poses(&w, a), common::poses(&w, b));
+    let (va, vb) = (common::velocities(&w, a), common::velocities(&w, b));
+    let momentum = |row: usize| {
+        let l = |m: f64, p: &[f64], v: &[f64]| m * (p[0] * v[1] - p[1] * v[0]);
+        l(1.0, pa[row].as_slice(), va[row].as_slice())
+            + l(2.0, pb[row].as_slice(), vb[row].as_slice())
+    };
+    let l0 = momentum(0);
+    let off: Vec<f64> = (0..w.rows())
+        .map(|row| (momentum(row) - l0).abs() / l0.abs())
+        .collect();
+    let worst = common::largest("the angular momentum's change", &off, 601);
+    let ok = worst < 1e-4;
+    common::report(
+        "damped spring, a free pair's angular momentum",
+        "L(t) = L(0) = sum m (x v_y - y v_x): the force is along the line between them",
+        "max |L(t) - L(0)| / |L(0)| over 10 s",
+        worst,
+        "< 0.0001",
+        ok,
+    );
+    assert!(ok, "angular momentum moved by {worst}");
+    // The damping took energy: the spring did pull and damp.
+    let energy = |row: usize| {
+        let (p, q) = (&pa[row], &pb[row]);
+        let d2 = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]);
+        let k = |m: f64, v: &[f64]| 0.5 * m * (v[0] * v[0] + v[1] * v[1]);
+        k(1.0, va[row].as_slice()) + k(2.0, vb[row].as_slice()) + 0.5 * 10.0 * d2
+    };
+    assert!(energy(600) < 0.9 * energy(0), "no damping");
+}
+
+/// The solver's worlds hold a tick's force through the tick, so their pair's angular momentum
+/// is not a measure of the force's direction; the first tick's change of velocity is. With the
+/// relative velocity across the line, a damping along the line changes no velocity across it.
+#[test]
+fn a_solver_spring_damps_only_along_its_line() {
+    let (w, a, _) = turning_pair(Integrator::Solver);
+    let v = common::velocities(&w, a);
+    let (along, across) = (v[1][0] - v[0][0], v[1][1] - v[0][1]);
+    assert!(along > 0.0, "the spring did not pull");
+    assert_eq!(
+        across, 0.0,
+        "a damping across the line changed v_y by {across}"
+    );
+}
+
+/// A 2D world with a fixed wall whose face is at x = 0, and a ball of radius 0.2 and mass 1
+/// whose surface starts `gap` from it, moving toward it at `speed`; returns the world and the
+/// ball.
+fn approach(gap: f64, speed: f64) -> (World, u32) {
+    let mut w = World::new(2, Integrator::Solver, false).expect("a world");
+    let wall = body(&mut w, true, &[0.5, 0.0], &[0.0, 0.0], 0.0);
+    w.add_shape(Shape {
+        body: wall,
+        kind: ShapeKind::Cuboid {
+            half_extents: vec![0.5, 2.0],
+        },
+        position: vec![0.0; 2],
+        rotation: vec![0.0],
+        density: 1.0,
+        friction: 0.0,
+        restitution: 0.0,
+    })
+    .expect("the wall");
+    let ball = body(&mut w, false, &[-0.2 - gap, 0.0], &[speed, 0.0], 1.0);
+    w.add_shape(Shape {
+        body: ball,
+        kind: ShapeKind::Ball { radius: 0.2 },
+        position: vec![0.0; 2],
+        rotation: vec![0.0],
+        density: 0.0,
+        friction: 0.0,
+        restitution: 0.0,
+    })
+    .expect("the ball");
+    (w, ball)
+}
+
+#[test]
+fn a_contact_between_shapes_touching_at_the_first_row_begins_at_row_0() {
+    let (mut w, _) = approach(0.0, 0.0);
+    w.advance_to(30).expect("the rows");
+    assert_eq!(w.contacts(), &[[0, 0, 1, 1]]);
+}
+
+/// The allowed linear error, the distance at or under which shapes touch (the declaration's
+/// settings), and the solver's prediction distance, under which it prepares a contact.
+const TOUCH: f64 = 0.005;
+const PREDICTION: f64 = 0.02;
+
+#[test]
+fn a_contact_begins_when_the_gap_closes() {
+    // 0.2 u/s closes 0.0033 a tick: the prediction distance is six ticks of the approach.
+    let (gap, speed) = (0.8, 0.2);
+    let (mut w, _) = approach(gap, speed);
+    w.advance_to(300).expect("5 s");
+    let closes = gap / speed * 60.0;
+    let began: Vec<u32> = w
+        .contacts()
+        .iter()
+        .filter(|e| e[3] == 1)
+        .map(|e| e[0])
+        .collect();
+    assert_eq!(began.len(), 1, "{:?}", w.contacts());
+    let row = f64::from(began[0]);
+    println!(
+        "case contact begins: closed form the gap closes at row {closes:.2}; began at row {row}; \
+         tolerance one row; {}",
+        if (row - closes).abs() <= 1.0 {
+            "holds"
+        } else {
+            "FAILS"
+        }
+    );
+    assert!(
+        (row - closes).abs() <= 1.0,
+        "began at row {row}, the gap closes at row {closes}"
+    );
+}
+
+#[test]
+fn a_near_miss_inside_the_prediction_distance_is_no_contact() {
+    // A constant pull back stops the ball short of the wall, its surface about 0.0125 from it,
+    // inside the prediction distance and beyond the allowed linear error, then sends it back.
+    let (gap, speed, stop) = (0.8, 0.2, 0.0125);
+    let pull = speed * speed / (2.0 * (gap - stop));
+    let (mut w, ball) = approach(gap, speed);
+    w.add_force(Force::Constant {
+        body: ball,
+        force: vec![f(-pull), 0.0],
+        torque: vec![0.0],
+    })
+    .expect("the pull");
+    w.advance_to(600).expect("10 s");
+    let nearest = common::poses(&w, ball)
+        .iter()
+        .map(|q| -(q[0] + 0.2))
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        TOUCH < nearest && nearest < PREDICTION,
+        "the ball came within {nearest} of the wall, not inside the prediction distance alone"
+    );
+    assert_eq!(w.contacts(), &[] as &[[u32; 4]], "nearest {nearest}");
 }
