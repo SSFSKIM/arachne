@@ -616,3 +616,105 @@ class Heavier(Scene):
         world.body(Dot(UP * 2), shape=None, mass=1.0, velocity=RIGHT)
         self.add(world)
         self.wait(1)
+
+
+class FadedInGrouped(_Logged):
+    """An open world faded in with a label, in one group, by the last play."""
+
+    def construct(self):
+        self.log_ticks()
+        self.play(FadeIn(Group(_logged_open_world(), Dot(UP))), run_time=0.5)
+
+
+class FadedInGroupedQuiet(Scene):
+    """The grouped fade with no other updater that reads dt."""
+
+    def construct(self):
+        EVENTS.clear()
+        self.play(FadeIn(Group(_logged_open_world(), Dot(UP))), run_time=0.5)
+
+
+class _RemovedByAnUpdater(Scene):
+    """An open world removed at tick 19 (a tick no 15 fps frame reads) by a
+    dot's dt updater, the dot in the scene before the world or after it.
+    """
+
+    dot_first = True
+
+    def construct(self):
+        EVENTS.clear()
+        world = _logged_open_world()
+        dot = Dot(DOWN)
+        ticks = [0]
+
+        def remove_at_tick_19(mob, dt):
+            if dt:
+                ticks[0] += 1
+                if ticks[0] == 19:
+                    self.remove(world)
+
+        dot.add_updater(remove_at_tick_19)
+        self.add(*((dot, world) if self.dot_first else (world, dot)))
+        self.wait(0.5)
+
+
+class RemovedBeforeItsUpdater(_RemovedByAnUpdater):
+    dot_first = True
+
+
+class RemovedAfterItsUpdater(_RemovedByAnUpdater):
+    dot_first = False
+
+
+class GroupedBeside(Scene):
+    """Two alike worlds of each kind: one of each faded in with a label in
+    one group, the other added, then a wait.
+    """
+
+    def construct(self):
+        faded, added = World(), World()
+        for world in (faded, added):
+            point = world.body(Dot(LEFT), shape=None, mass=1.0)
+            world.add_force(_pushing(point))
+        falling, dropped = World(gravity=DOWN * 9.8), World(gravity=DOWN * 9.8)
+        for world in (falling, dropped):
+            world.body(Dot(UP), shape=None, mass=1.0, velocity=RIGHT)
+        self.add(added, dropped)
+        self.play(FadeIn(Group(faded, falling, Dot(UP * 2))), run_time=0.5)
+        self.wait(0.5)
+
+
+class GroupedClosedLast(Scene):
+    """A closed world faded in with a label by the scene's last play, an
+    alike one added beside it.
+    """
+
+    def construct(self):
+        faded, added = World(gravity=DOWN * 9.8), World(gravity=DOWN * 9.8)
+        for world in (faded, added):
+            world.body(Dot(UP), shape=None, mass=1.0, velocity=RIGHT)
+        self.add(added)
+        self.play(FadeIn(Group(faded, Dot(UP * 2))), run_time=0.5)
+
+
+class SuspendedByHand(Scene):
+    """An open world in a group whose updating the scene suspends, then a
+    wait.
+    """
+
+    def construct(self):
+        group = Group(_logged_open_world(), Dot(UP))
+        self.add(group)
+        group.suspend_updating()
+        self.wait(0.5)
+
+
+class WorldSuspendedByHand(_Logged):
+    """An open world whose own updating the scene suspends, then a wait."""
+
+    def construct(self):
+        self.log_ticks()
+        world = _logged_open_world()
+        self.add(Group(world, Dot(UP)))
+        world.suspend_updating()
+        self.wait(0.5)

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
+from arachne.mobject import mobject as mobject_module
 from arachne.mobject.mobject import Mobject
 
 from . import inputs, stay
@@ -210,10 +211,23 @@ class World(Mobject):
     refused, nor after the last play; an edit inside one play that is undone
     before the play ends is not seen at all.
 
-    **An animation that holds the world's drawing** (``FadeIn(world)``, which
-    suspends its updating) holds its bodies where they are; an open world's
-    callbacks still run at every tick while it is in the scene, and the
-    bodies show the world's motion again once the animation ends.
+    **An animation that holds the world's drawing** (``FadeIn(world)``, or
+    ``FadeIn(Group(world, label))``, which suspend its updating) holds its
+    bodies where they are; an open world's callbacks still run at every tick
+    while it is in the scene, in the tick's order, and the bodies show the
+    world's motion again once the animation ends. A closed world's rows are
+    the scene clock's all the same: it computes the ticks it missed when its
+    updating resumes. Suspending the world's own updating by hand does what
+    an animation does. An open world in a group whose updating is suspended
+    by hand, outside an animation, is refused when a play that does not step
+    on the tick advances it: that play would call no callback at its ticks.
+
+    **An open world's stay ends at the last tick its callbacks ran for.**
+    Removed at tick ``k`` by an updater that runs before the world's own
+    (a mobject earlier in the scene), its stay ends at ``k - 1``; removed
+    after the world's updater ran at ``k`` (by a later mobject or a scene
+    updater), at ``k``. The order of the updaters within a tick does not
+    depend on the frame grid, so every frame rate ends it alike.
 
     A world's mobject keys as content by :attr:`_declared`, a digest of what
     it was given, and its bodies by their placements; the declaration
@@ -779,6 +793,8 @@ def _take_membership_notice(world: World) -> None:
     from arachne.scene.scene import _take_membership_notice as take
 
     take(world)
+    if stay.held_update not in mobject_module._suspended_steppers:
+        mobject_module._suspended_steppers.append(stay.held_update)
 
 
 def _pose_point(position: Sequence[float]) -> np.ndarray:

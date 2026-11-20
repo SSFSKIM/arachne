@@ -515,6 +515,78 @@ def test_a_world_faded_in_by_the_last_play_steps_at_every_tick(opened):
     assert _spans(session) == [(0, 30)]
 
 
+@pytest.mark.parametrize("fps", [15, 60])
+@pytest.mark.parametrize("name", ["FadedInGrouped", "FadedInGroupedQuiet"])
+def test_a_world_faded_in_with_a_label_steps_at_every_tick(opened, name, fps):
+    """The world's group is the animation's: its callbacks run at the
+    animation's ticks as when the world itself is faded in, with a scene
+    updater reading dt or without one.
+    """
+    session = opened(name, fps=fps)
+    events = session.module.EVENTS
+    if name == "FadedInGrouped":
+        assert _interleaved(range(1, 31)) == events
+    else:
+        assert [("call", k) for k in range(30)] == events
+    assert _spans(session) == [(0, 30)]
+
+
+def test_worlds_faded_in_with_a_label_move_as_their_twins_added_plainly(opened):
+    """An open and a closed world faded in under one group with a label,
+    beside alike ones added: the same stays and the same rows.
+    """
+    _, (added, dropped, faded, falling) = _occurrences(opened("GroupedBeside"))
+    assert not added.closed
+    assert dropped.closed
+    for plain, grouped in ((added, faded), (dropped, falling)):
+        assert (grouped.first_tick, grouped.last_tick) == (0, 60)
+        assert (plain.first_tick, plain.last_tick) == (0, 60)
+        assert grouped.content == plain.content
+
+
+@pytest.mark.parametrize("fps", [15, 60])
+def test_a_closed_world_faded_in_with_a_label_last_keeps_the_clock_s_rows(opened, fps):
+    """Its placement holds while the group's updating is suspended, as in CE;
+    its rows are computed through the scene's end all the same.
+    """
+    _, (added, faded) = _occurrences(opened("GroupedClosedLast", fps=fps))
+    assert faded.closed
+    assert (faded.first_tick, faded.last_tick) == (0, 30)
+    assert faded.content == added.content
+
+
+def test_an_open_world_in_a_group_suspended_by_hand_is_refused(opened):
+    """No animation of the play holds the group, so the play does not step
+    on the tick: the world is refused as the play advances.
+    """
+    with pytest.raises(ValueError, match="Suspend the world's own updating"):
+        opened("SuspendedByHand")
+
+
+def test_an_open_world_suspended_by_hand_keeps_stepping(opened):
+    session = opened("WorldSuspendedByHand")
+    assert _interleaved(range(1, 31)) == session.module.EVENTS
+    assert _spans(session) == [(0, 30)]
+
+
+@pytest.mark.parametrize("fps", [15, 60])
+@pytest.mark.parametrize(
+    ("name", "last"),
+    [("RemovedBeforeItsUpdater", 18), ("RemovedAfterItsUpdater", 19)],
+)
+def test_an_open_world_s_stay_ends_at_the_last_tick_its_callbacks_ran_for(
+    opened, name, last, fps
+):
+    """Removed by a dot's dt updater at tick 19: before the world's own
+    updater ran there (the dot first in the scene), the stay ends at 18;
+    after it ran, at 19. The order of updaters within a tick does not depend
+    on the frame grid, so every rate ends alike.
+    """
+    session = opened(name, fps=fps)
+    assert _spans(session) == [(0, last)]
+    assert [("call", k) for k in range(last)] == session.module.EVENTS
+
+
 def test_a_world_faded_in_moves_as_its_twin_added_plainly(opened):
     session = opened("FadedBeside")
     _, (added, faded) = _occurrences(session)

@@ -64,6 +64,7 @@ from arachne.mobject.mobject import Mobject
 from arachne.mobject.placement import Placement
 from arachne.mobject.values import FrozenPoints, freeze
 from arachne.timeline import recorder as _recorder
+from arachne.timeline.admission import TICKED
 from arachne.timeline.bake import (
     BakeContent,
     BakeIdentity,
@@ -133,6 +134,45 @@ def open_world(world: World, dt: float) -> None:
     world's drawing it steps and places nothing.
     """
     reach(world, stepping=dt != 0, placing=not world._drawing_suspended)
+
+
+def held_update(mobject: Mobject, dt: float) -> None:
+    """Step the open worlds in the family of ``mobject``, whose updating is
+    suspended (``mobject._suspended_steppers``): their callbacks run at every
+    tick they are in the scene, whatever holds an ancestor's updating, as
+    they do when an animation holds the world itself. A play that holds
+    such a world steps on the tick when an animation suspends the ancestor
+    (its copies carry the world's updater); one that does not, the ancestor
+    suspended by hand, is refused as it advances.
+    """
+    from .world import World
+
+    recorder = _recorder.running()
+    record = None if recorder is None else recorder.record
+    if record is None or record.bakes is None or not record.bakes.held:
+        return
+    pending = list(reversed(mobject.__dict__.get("submobjects", ())))
+    while pending:
+        member = pending.pop()
+        if not isinstance(member, World):
+            pending.extend(reversed(member.__dict__.get("submobjects", ())))
+            continue
+        if not member.is_open or member.updating_suspended:
+            continue
+        if dt != 0 and live_stay(member) is not None and not _ticked(record):
+            raise ValueError(
+                f"An open world is in a {type(mobject).__name__} whose updating was"
+                " suspended outside an animation of the play, so its callbacks"
+                " would not run at the scene's ticks. Suspend the world's own"
+                " updating (it keeps stepping and holds its bodies where they are)"
+                " or a group without the world in it; or animate the group."
+            )
+        member.update(dt)
+
+
+def _ticked(record: Any) -> bool:
+    """Whether the play running now steps on the scene's tick."""
+    return bool(record.plays) and record.plays[-1].route == TICKED
 
 
 def _run_of(world: World) -> _Run | None:
