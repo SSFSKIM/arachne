@@ -59,7 +59,8 @@ def keyed(mobject: Mobject, attribute: str) -> tuple[bytes, bytes]:
     both keys, and a value they cannot encode is left out of both.
     """
     state = NodeState.of(mobject)
-    given, rounded = dict(content_fields(state)), dict(content_fields(state, 6))
+    given = {key: part for key, part, *_ in content_fields(state)}
+    rounded = {key: part for key, part, *_ in content_fields(state, 6)}
     assert attribute in given, f"{attribute} is in no content key"
     return given[attribute], rounded[attribute]
 
