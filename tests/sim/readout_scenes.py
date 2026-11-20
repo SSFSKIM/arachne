@@ -118,6 +118,21 @@ class FadedInOverAFall(Scene):
         self.wait(0.2)
 
 
+class FadedInOffTheTickGrid(Scene):
+    """As :class:`FadedInOverAFall`, the fade ending the scene at 0.69 s,
+    off the tick grid, with the world still in the scene: its stay's last
+    row, tick 41, is a frame the fade draws at 60 fps.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.2)
+        reading = world.readout(ball, "velocity", part="y")
+        self.play(FadeIn(reading), run_time=0.49)
+
+
 class AddedOverAFall(Scene):
     """The twin of :class:`FadedInOverAFall`: the readout added."""
 

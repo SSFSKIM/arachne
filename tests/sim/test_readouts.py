@@ -439,6 +439,20 @@ def test_a_readout_faded_in_over_a_moving_body_is_stale(opened):
     assert "self.add" in finding.fix
 
 
+def test_a_readout_stale_at_its_world_s_last_row_is_reported(opened):
+    """The fade ends the scene off the tick grid, the world in it: the frame
+    at tick 41, the stay's last row, still shows the readout held at tick 12.
+    """
+    session = opened("FadedInOffTheTickGrid", 60)
+    (occurrence,) = session.record.bakes.occurrences
+    assert occurrence.last_tick == 41
+    asked = Fraction(41, 60)
+    result = lint(session, rules=(), at=[asked])
+    (finding,) = [f for f in result.findings if f.code == "sim.readout_stale"]
+    assert (finding.t_start, finding.t_end) == (asked, asked)
+    assert (finding.detail["tick"], finding.detail["scene_tick"]) == (12, 41)
+
+
 def test_a_readout_added_over_a_moving_body_is_not_stale(opened):
     assert _stale(opened("AddedOverAFall")) == []
 

@@ -219,6 +219,26 @@ def test_a_body_back_on_screen_after_its_world_left_reads_its_stay_s_last_row(
     assert found == [], [f.message for f in found]
 
 
+@pytest.mark.parametrize(
+    "scene", ["GroupBackAfterItsWorld", "GroupBackAfterItsWorldUnmoved"]
+)
+def test_a_group_body_after_its_world_left_is_unreadable(opened, scene):
+    """A body drawn by a group, past its stay, is unreadable: one of its dots
+    moved, it no longer shows the stay's last row; unmoved, its drawing is
+    its members', which its own capture does not hold.
+    """
+    session = opened(scene)
+    (body,) = _bodies(session)
+    state = session.state_at(Fraction(3, 4))
+    tick = math.floor(state.as_of * 60)
+    assert tick > 30
+    quantities = state.quantities[body]
+    assert quantities
+    for quantity in quantities:
+        assert quantity.value is None
+        assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
+
+
 def test_a_body_shown_after_its_world_left_is_unreadable(opened):
     session = opened("ShownAfterItsWorld")
     (body,) = _bodies(session)

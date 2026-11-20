@@ -18,6 +18,7 @@ from arachne import (
     Dot,
     Rectangle,
     Scene,
+    VGroup,
     World,
 )
 
@@ -163,6 +164,40 @@ class BackAfterItsWorldTicked(BackAfterItsWorld):
 
         self.add_updater(count)
         super().construct()
+
+
+class GroupBackAfterItsWorld(Scene):
+    """A falling body drawn by a group of two dots, its world removed at 1/2
+    s and the group added back; then, with ``moves``, one dot of it moved by
+    a play, else a wait over a scene updater that reads ``dt``.
+    """
+
+    moves = True
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        pair = VGroup(Dot(UP * 2 + LEFT * 0.3), Dot(UP * 2 + RIGHT * 0.3))
+        world.body(pair, shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(pair)
+        if self.moves:
+            self.play(pair[0].animate.shift(LEFT), run_time=0.5)
+        else:
+            self.wait(0.5)
+
+
+class GroupBackAfterItsWorldUnmoved(GroupBackAfterItsWorld):
+    """As :class:`GroupBackAfterItsWorld`, the group left as it was."""
+
+    moves = False
 
 
 class ShownAfterItsWorld(Scene):
