@@ -544,6 +544,21 @@ class Dispatcher:
         """
         assert self._opened is not None
         file, scene, _ = self._opened
+        # What the scene's code found for the lint refuses every render of
+        # it, the plays before the finding too: read from its whole record,
+        # or from what the store kept of it.
+        if self.session is not None:
+            if self.session.record.bridge.calls:
+                from ..lint.raised import refuse_drawing
+
+                refuse_drawing(self.session.record)
+        elif self.stored is not None and self.stored.refuses is not None:
+            from ..lint.raised import RaisedFinding
+
+            kept = self.stored.refuses
+            raise RaisedFinding(
+                kept["code"], kept["message"], detail=kept["detail"], line=kept["line"]
+            )
         config = {**self._config, **rendering.quality_options(quality)}
         key = self._execution_key(config)
         reference = None if self.store is None else self.store.summary(key)

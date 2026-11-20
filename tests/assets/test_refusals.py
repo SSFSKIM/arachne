@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -507,7 +508,7 @@ def test_a_miter_join_drawn_alike_at_both_limits_is_accepted(
     """A join whose miter both limits keep, or both cut to a bevel, or one
     not stroked at all, draws as the file means.
     """
-    directory = copied(tmp_path, "dial")
+    directory = _any_needle(tmp_path)
     text = _stroked(d, *attributes, stroke=stroke, width=width)
     (directory / "pieces" / "needle.svg").write_text(text)
     assert Rig(directory).part("needle").submobjects
@@ -520,7 +521,7 @@ def test_a_round_or_bevel_join_is_drawn_as_the_file_says(tmp_path, join, drawn):
     """The engine strokes round and bevel joins as SVG does, so the reader
     carries them, from the shape or from a group around it.
     """
-    directory = copied(tmp_path, "dial")
+    directory = _any_needle(tmp_path)
     (directory / "pieces" / "needle.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">\n'
         f'  <g style="stroke-linejoin: {join}"><path d="{_spike(20)}" fill="none"'
@@ -529,6 +530,13 @@ def test_a_round_or_bevel_join_is_drawn_as_the_file_says(tmp_path, join, drawn):
     )
     (shape,) = Rig(directory).part("needle").submobjects
     assert shape.joint_type is drawn
+
+
+def _any_needle(tmp_path: Path) -> Path:
+    """The dial, for a test that draws its needle otherwise: with no anchor,
+    since the needle's anchor names a point of the needle it replaces.
+    """
+    return edited(copied(tmp_path, "dial"), lambda d: d.update(anchors=[]))
 
 
 def _needle(body: str) -> str:
@@ -558,7 +566,7 @@ def test_a_shape_under_what_draws_nothing_is_not_drawn(tmp_path, hidden):
     is passed over by the drawing too: a part whose only shape sits there
     draws nothing, and is refused for it.
     """
-    directory = copied(tmp_path, "dial")
+    directory = _any_needle(tmp_path)
     needle = directory / "pieces" / "needle.svg"
     needle.write_text(_needle(hidden))
     found = refused("asset.unreadable", lambda: Rig(directory))
@@ -605,7 +613,7 @@ def test_a_stroke_under_an_uneven_transform_is_refused(tmp_path, transform, on):
     ids=["unstroked", "similarity", "stroke-none"],
 )
 def test_a_transform_the_stroke_survives_is_accepted(tmp_path, shape):
-    directory = copied(tmp_path, "dial")
+    directory = _any_needle(tmp_path)
     (directory / "pieces" / "needle.svg").write_text(_needle(shape))
     assert Rig(directory).part("needle").submobjects
 
@@ -659,7 +667,7 @@ def test_an_open_stroke_ending_where_it_starts_is_refused(tmp_path, shape):
     ids=["closed", "unstroked", "polygon"],
 )
 def test_a_closed_or_unstroked_outline_meeting_itself_is_accepted(tmp_path, shape):
-    directory = copied(tmp_path, "dial")
+    directory = _any_needle(tmp_path)
     (directory / "pieces" / "needle.svg").write_text(_needle(shape))
     assert Rig(directory).part("needle").submobjects
 
@@ -720,6 +728,6 @@ def test_a_stroke_whose_next_subpath_starts_where_one_ends_is_refused(tmp_path, 
     ids=["joined", "two-elements", "unstroked", "apart"],
 )
 def test_segments_sharing_an_end_as_one_path_or_two_are_accepted(tmp_path, body):
-    directory = copied(tmp_path, "dial")
+    directory = _any_needle(tmp_path)
     (directory / "pieces" / "needle.svg").write_text(_needle(body))
     assert Rig(directory).part("needle").submobjects

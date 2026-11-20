@@ -171,3 +171,258 @@ def test_a_dashed_stroke_is_refused(tmp_path):
     data, line = _refusal(tmp_path, str(directory))
     detail = _assert_refused(data, "asset.unreadable", line)
     assert "stroke-dasharray" in detail["reason"]
+
+
+RANGE = """\
+from arachne import *
+
+
+class Stage(Scene):
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        self.play(Pose(box, lid_open={value}))  # @asks
+"""
+
+
+def _line_of(scene: Path, mark: str) -> int:
+    return next(
+        number
+        for number, text in enumerate(scene.read_text().splitlines(), start=1)
+        if text.endswith(mark)
+    )
+
+
+def test_a_value_outside_its_tested_range_refuses_the_opening(tmp_path):
+    scene = tmp_path / "stage.py"
+    scene.write_text(RANGE.format(value=140))
+    server = Dispatcher()
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    with pytest.raises(RpcError) as answer:
+        server.handle("open", {"file": str(scene), "scene": "Stage", "config": config})
+    assert answer.value.code == REFUSED
+    detail = _assert_refused(answer.value.data, "rig.range", _line_of(scene, "# @asks"))
+    assert detail == {
+        "asset": "lidded-box",
+        "parameter": "lid_open",
+        "value": 140,
+        "min": 0,
+        "max": 110,
+    }
+    # Nothing was opened, so there is no frame to draw.
+    with pytest.raises(RpcError):
+        server.handle("frame", {"t": 0, "path": str(tmp_path / "frame.png")})
+
+
+UNKNOWN_ANCHOR = """\
+from arachne import *
+
+
+class Stage(Scene):
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        tip = box.anchor("knbo")  # @anchor
+        self.play(Pose(box, lid_open=60), run_time=0.5)
+"""
+
+
+def test_an_unknown_anchor_is_found_by_the_lint_and_refuses_drawing(tmp_path):
+    scene = tmp_path / "stage.py"
+    scene.write_text(UNKNOWN_ANCHOR)
+    line = _line_of(scene, "# @anchor")
+    server = Dispatcher()
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    server.handle("open", {"file": str(scene), "scene": "Stage", "config": config})
+    report = server.handle("lint", {"rules": []})["lint_result"]["report"]
+    (found,) = report["violations"]
+    assert found["code"] == "annotation.anchor_unknown"
+    assert found["line"] == line
+    assert found["detail"] == {
+        "asset": "lidded-box",
+        "name": "knbo",
+        "nearest": ["knob"],
+    }
+    assert found["fix"] == CODES["annotation.anchor_unknown"].fix
+    # What the lint reads still answers.
+    assert server.handle("state_at", {"t": 0.25})
+    with pytest.raises(RpcError) as answer:
+        server.handle("frame", {"t": 0.25, "path": str(tmp_path / "frame.png")})
+    assert answer.value.code == REFUSED
+    detail = _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert detail["name"] == "knbo"
+    assert not (tmp_path / "frame.png").exists()
+    # A clip renders the scene again, and refuses as it draws.
+    clip = tmp_path / "clip.mp4"
+    with pytest.raises(RpcError) as answer:
+        server.handle("clip", {"t0": 0, "t1": 0.5, "out": str(clip)})
+    assert answer.value.code == REFUSED
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not clip.exists()
+
+
+EASED = """\
+from arachne import *
+from arachne.utils.rate_functions import ease_out_back
+
+
+class Stage(Scene):
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        self.play(Pose(box, lid_open=110, rate_func=ease_out_back))  # @asks
+"""
+
+
+def test_a_pose_eased_past_its_tested_range_refuses_the_opening_at_its_play(tmp_path):
+    scene = tmp_path / "stage.py"
+    scene.write_text(EASED)
+    server = Dispatcher()
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    with pytest.raises(RpcError) as answer:
+        server.handle("open", {"file": str(scene), "scene": "Stage", "config": config})
+    assert answer.value.code == REFUSED
+    detail = _assert_refused(answer.value.data, "rig.range", _line_of(scene, "# @asks"))
+    assert detail["parameter"] == "lid_open"
+    assert detail["value"] > 110
+
+
+LATE_ANCHOR = """\
+from arachne import *
+
+
+class Stage(Scene):
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        self.play(Pose(box, lid_open=60), run_time=0.5)
+        self.play(box.animate.shift(UP), run_time=0.5)
+        tip = box.anchor("knbo")  # @anchor
+        self.wait(0.5)
+"""
+
+
+def test_a_clip_that_ends_before_an_unknown_anchor_is_asked_is_refused(tmp_path):
+    scene = tmp_path / "stage.py"
+    scene.write_text(LATE_ANCHOR)
+    line = _line_of(scene, "# @anchor")
+    server = Dispatcher()
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    server.handle("open", {"file": str(scene), "scene": "Stage", "config": config})
+    clip = tmp_path / "clip.mp4"
+    with pytest.raises(RpcError) as answer:
+        server.handle("clip", {"t0": 0, "t1": 0.25, "out": str(clip)})
+    assert answer.value.code == REFUSED
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not clip.exists()
+    rendered = tmp_path / "plays.mp4"
+    with pytest.raises(RpcError) as answer:
+        server.handle("render", {"plays": [0], "out": str(rendered)})
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not rendered.exists()
+
+
+LIVE_ONLY = """\
+from arachne import *
+
+
+class Stage(Scene):
+    def __init__(self, **kwargs):
+        super().__init__(camera_class=MappingCamera, **kwargs)
+
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        tip = box.anchor("knbo")  # @anchor
+        self.play(Pose(box, lid_open=60), run_time=0.5)
+"""
+
+
+def test_a_scene_drawn_only_as_it_runs_lints_and_answers_states_with_an_unknown_anchor(
+    tmp_path,
+):
+    scene = tmp_path / "stage.py"
+    scene.write_text(LIVE_ONLY)
+    line = _line_of(scene, "# @anchor")
+    server = Dispatcher()
+    config = {**SMALL, "media_dir": str(tmp_path / "media")}
+    server.handle("open", {"file": str(scene), "scene": "Stage", "config": config})
+    report = server.handle("lint", {})["lint_result"]["report"]
+    codes = [found["code"] for found in report["violations"]]
+    assert "annotation.anchor_unknown" in codes
+    assert server.handle("state_at", {"t": 0.25})
+    with pytest.raises(RpcError) as answer:
+        server.handle("frame", {"t": 0.25, "path": str(tmp_path / "frame.png")})
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not (tmp_path / "frame.png").exists()
+
+
+def _stored_render(tmp_path: Path, text: str, monkeypatch) -> tuple[Dispatcher, list]:
+    """A server holding the scene ``text`` opened from the store, a first
+    server having executed and kept it, and the executions made since.
+    """
+    from arachne.server.store import Store
+    from arachne.session import Session
+
+    scene = tmp_path / "stage.py"
+    scene.write_text(text)
+    params = {
+        "file": str(scene),
+        "scene": "Stage",
+        "config": {**SMALL, "media_dir": str(tmp_path / "media")},
+    }
+    first = Dispatcher(Store())
+    first.handle("open", params)
+    first.handle("close", {})
+    server = Dispatcher(Store())
+    server.handle("open", params)
+    assert server.session is None
+    assert server.stored is not None
+    opened: list = []
+    real = Session.open.__func__
+
+    def counted(cls, *args, **kwargs):
+        opened.append(args)
+        return real(cls, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "open", classmethod(counted))
+    return server, opened
+
+
+STORED = """\
+from arachne import *
+
+
+class Stage(Scene):
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        self.play(Pose(box, lid_open=60), run_time=0.5)
+"""
+
+
+def test_a_stored_session_renders_without_executing_again(tmp_path, monkeypatch):
+    server, opened = _stored_render(tmp_path, STORED, monkeypatch)
+    out = tmp_path / "stored.mp4"
+    server.handle("render", {"out": str(out)})
+    assert out.exists()
+    # Rendered from the store: the session was not executed for it.
+    assert opened == []
+    assert server.session is None
+    server.handle("close", {})
+
+
+def test_a_stored_session_whose_code_found_an_unknown_anchor_refuses_a_render(
+    tmp_path, monkeypatch
+):
+    server, opened = _stored_render(tmp_path, LATE_ANCHOR, monkeypatch)
+    line = _line_of(tmp_path / "stage.py", "# @anchor")
+    out = tmp_path / "plays.mp4"
+    with pytest.raises(RpcError) as answer:
+        server.handle("render", {"plays": [0], "out": str(out)})
+    assert answer.value.code == REFUSED
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not out.exists()
+    assert opened == []
+    assert server.session is None
+    server.handle("close", {})

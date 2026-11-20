@@ -21,6 +21,8 @@ play):
   motion rule, which the lint then runs unasked, and the states the
   temporal rules read (:mod:`.watch`, :mod:`.departures`), which hold
   the scene to the arming in force.
+- :func:`~.raised.found` keeps a finding the engine's own code found
+  while the scene ran (an anchor its asset does not have), at its call.
 
 A call returns what it found as violations in the report's shape
 (:mod:`.serialise`) and never raises for a finding; :func:`~arachne.lint.lint`
@@ -558,7 +560,7 @@ def findings(source: Record) -> list[Finding]:
         elif call.kind == "watch":
             end = min(source.duration, stops.get(index, source.duration))
             found.extend(_watch_findings(call, fps, end))
-        elif call.kind in ("sweep", "apart"):
+        elif call.kind in ("sweep", "apart", "found"):
             found.extend(_call_findings(call))
     return found
 
@@ -845,7 +847,7 @@ def _found(call: BridgeCall, found: Iterable[Finding]) -> list[dict[str, Any]]:
 
 
 def _call_findings(call: BridgeCall) -> tuple[Finding, ...]:
-    """What a sweep or an apart found at its call."""
+    """What a sweep, an apart or a found call found at its call."""
     (reading,) = (r for r in call.readings if r.values and "findings" in r.values)
     assert reading.values is not None
     found: tuple[Finding, ...] = reading.values["findings"]
@@ -911,10 +913,13 @@ def _points(operands: Any) -> np.ndarray:
 def _outline(mobject: Any) -> np.ndarray:
     """Points along ``mobject``'s family: each cubic curve of a member
     sampled about every :data:`SPACING` units of its longest control
-    polygon, other points as they are; its centre when it has none.
+    polygon, other points as they are; its centre when it has none. A
+    member that draws nothing by its class (a rig's carrier) is passed over.
     """
     out: list[np.ndarray] = []
     for member in mobject.family_members_with_points():
+        if getattr(type(member), "_scaffold", False):
+            continue
         points = np.asarray(member.points, dtype=float)
         per_curve = getattr(member, "n_points_per_curve", 4)
         whole = len(points) - len(points) % per_curve

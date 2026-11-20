@@ -56,3 +56,38 @@ def test_its_finding_is_whole_with_the_line_the_server_found():
     }
     # A line the raiser gave is the one the finding keeps.
     assert RaisedFinding("asset.remote", line=3).finding(14)["line"] == 3
+
+
+def test_a_finding_found_outside_a_recording_is_raised():
+    from arachne.lint.raised import found
+
+    with pytest.raises(RaisedFinding) as raised:
+        found(
+            "annotation.anchor_unknown",
+            "the asset box has no anchor 'lid_tip'",
+            detail={"asset": "box", "name": "lid_tip", "nearest": []},
+        )
+    assert raised.value.code == "annotation.anchor_unknown"
+    assert raised.value.detail["name"] == "lid_tip"
+
+
+def test_a_scene_whose_bridge_found_nothing_draws_as_before():
+    """A scene's own bridge calls (here a check of a point) are no finding
+    that refuses drawing: its frames are drawn.
+    """
+    from pathlib import Path
+
+    from arachne.session import Session
+
+    from . import bridge_scenes
+
+    session = Session.open(
+        Path(bridge_scenes.__file__),
+        "PointOff",
+        config={"pixel_width": 96, "pixel_height": 54, "frame_rate": 4},
+    )
+    try:
+        assert session.record.bridge.calls
+        assert session.frame(0) is not None
+    finally:
+        session.close()

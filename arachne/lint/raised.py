@@ -11,13 +11,17 @@ finding whole, with the line of the scene file it was raised through
 
 from __future__ import annotations
 
-__all__ = ["RaisedFinding"]
+__all__ = ["RaisedFinding", "drawing_refusal", "found", "refuse_drawing"]
 
-from collections.abc import Mapping
+import sys
+from collections.abc import Iterable, Mapping
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .codes import code as _code
+
+if TYPE_CHECKING:
+    from arachne.timeline.record import Record
 
 
 class RaisedFinding(Exception):
@@ -70,3 +74,88 @@ class RaisedFinding(Exception):
             "line": self.line if self.line is not None else line,
             "detail": dict(self.detail),
         }
+
+
+def found(
+    code: str,
+    what: str | None = None,
+    *,
+    detail: Mapping[str, Any] | None = None,
+    objects: Iterable[Any] = (),
+) -> None:
+    """Record the finding of ``code`` for the lint, at the scene's line and
+    time now: about ``objects`` (mobjects), saying ``what`` is wrong, with
+    ``detail`` as :class:`RaisedFinding` takes them. Drawing a frame of the
+    scene then raises it (:func:`refuse_drawing`). Outside a recording,
+    raises it now.
+    """
+    from arachne.timeline.recorder import Reading, running
+
+    raised = RaisedFinding(code, what, detail=detail)
+    recorder = running()
+    if recorder is None:
+        raise raised
+    from arachne.timeline.origins import origin_of
+
+    from .findings import Finding, FindingObject
+
+    mobjects = tuple(objects)
+    call = recorder.bridge_call(
+        "found",
+        sys._getframe(1),
+        code=code,
+        operands=tuple(origin_of(mob).id for mob in mobjects),
+    )
+    finding = Finding(
+        code,
+        call.t,
+        call.t,
+        objects=tuple(
+            FindingObject(
+                id=origin.id,
+                source_line=origin.scene_line,
+                kind=type(mob).__name__,
+                label_or_text=None,
+                bbox=None,
+                screen_bbox=None,
+            )
+            for mob in mobjects
+            for origin in (origin_of(mob),)
+        ),
+        message=raised.what,
+        line=call.line,
+        detail=raised.detail,
+    )
+    call.readings.append(
+        Reading(call.t, call.line, {"findings": (finding,)}, seq=call.seq)
+    )
+
+
+def refuse_drawing(record: Record) -> None:
+    """Raise, as a :class:`RaisedFinding` at its line, the first finding of
+    error severity :func:`found` recorded in ``record``; nothing when there
+    is none.
+    """
+    refusal = drawing_refusal(record)
+    if refusal is not None:
+        raise refusal
+
+
+def drawing_refusal(record: Record) -> RaisedFinding | None:
+    """The first finding of error severity :func:`found` recorded in
+    ``record``, as the :class:`RaisedFinding` drawing raises; ``None`` when
+    there is none.
+    """
+    for call in record.bridge.calls:
+        if call.kind != "found":
+            continue
+        for reading in call.readings:
+            for finding in (reading.values or {}).get("findings", ()):
+                if finding.severity == "error":
+                    return RaisedFinding(
+                        finding.code,
+                        finding.message,
+                        detail=finding.detail,
+                        line=finding.line.line if finding.line is not None else None,
+                    )
+    return None

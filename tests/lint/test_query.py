@@ -416,3 +416,31 @@ def test_a_replaced_path_setter_marks_the_screen_space_answers(session_of):
     for name, answer in _screen_space(query, square.id).items():
         assert isinstance(answer, CameraReplaced), name
         assert answer.replaced == ("Camera.set_cairo_context_path (on the instance)",)
+
+
+TRACKED = """\
+from arachne import *
+
+
+class Tracked(Scene):
+    def construct(self):
+        self.add(Group(Dot(), ValueTracker(5)))
+        self.wait(0.5)
+"""
+
+
+def test_a_group_holding_a_tracker_is_boxed_with_the_trackers_point(
+    session_of, tmp_path
+):
+    path = tmp_path / "tracked.py"
+    path.write_text(TRACKED)
+    session = session_of("Tracked", path, frame_rate=15)
+    state = session.state_at(Fraction(1, 5))
+    (group,) = [node for node in state.nodes if node.type == "Group"]
+    # The tracker draws nothing, but its point is the group's: x = 5.
+    assert group.box[2] == pytest.approx(5)
+    assert group.scene_box[2] == pytest.approx(5)
+    assert session.query(Fraction(1, 5)).bbox(group.id) == group.box
+    width = session.scene.renderer.camera.pixel_width
+    frame = session.scene.renderer.camera.frame_width
+    assert group.screen_box[2] == pytest.approx(width / 2 + 5 * width / frame)
