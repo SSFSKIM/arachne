@@ -48,6 +48,7 @@ from .camera.moving_camera import *
 from .camera.multi_camera import *
 from .camera.three_d_camera import *
 from .constants import *
+from .effects import *
 from .manager import *
 from .mobject.annotation import *
 from .mobject.diagram import *
