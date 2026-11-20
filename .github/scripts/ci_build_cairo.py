@@ -1,8 +1,15 @@
 # Logic is as follows:
-# 1. Download cairo source code: https://cairographics.org/releases/cairo-<version>.tar.xz
-#    A download is retried, with a growing wait, through a reset connection or another
-#    network failure (a URLError that is no 4xx response); any other error fails at once.
-# 2. Verify the downloaded file against its pinned checksum, CAIRO_SHA256.
+# 1. Download cairo source code from the first of CAIRO_SOURCES that serves it: the
+#    upstream release (https://cairographics.org/releases/cairo-<version>.tar.xz), then
+#    mirrors of the same file. Each connection and read times out after DOWNLOAD_TIMEOUT,
+#    and each attempt as a whole after DOWNLOAD_DEADLINE, so a source that trickles bytes
+#    gives way like one that is silent.
+#    A download is retried, with a growing wait, through a reset connection, a timeout or
+#    another network failure (a URLError that is no 4xx response); any other error, or
+#    the last attempt's failure, moves on to the next source.
+# 2. Verify each downloaded file against its pinned checksum, CAIRO_SHA256, whatever its
+#    source; a file that does not match counts as a failed source. When every source
+#    fails, the error names each one and why.
 # 3. Extract the downloaded file.
 # 4. Create a virtual environment and install meson and ninja.
 # 5. Run meson build in the extracted directory. Also, set required prefix.
@@ -25,14 +32,29 @@ from pathlib import Path
 from sys import stdout
 
 CAIRO_VERSION = "1.18.0"
-CAIRO_URL = f"https://cairographics.org/releases/cairo-{CAIRO_VERSION}.tar.xz"
+# The upstream release first, then mirrors serving the byte-identical file; the checksum
+# below is the one check of what any of them returns.
+CAIRO_SOURCES = [
+    f"https://cairographics.org/releases/cairo-{CAIRO_VERSION}.tar.xz",
+    f"https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/cairo/{CAIRO_VERSION}-1/cairo_{CAIRO_VERSION}.orig.tar.xz",
+    f"https://ftp.osuosl.org/pub/blfs/conglomeration/cairo/cairo-{CAIRO_VERSION}.tar.xz",
+]
 # The checksum cairographics.org publishes beside the tarball; it changes with CAIRO_VERSION
 # (https://cairographics.org/releases/cairo-1.18.0.tar.xz.sha256sum).
 CAIRO_SHA256 = "243a0736b978a33dee29f9cca7521733b78a65b5418206fef7bd1c3d4cf10b64"
 
-# Attempts at one download, and the wait before the second; it doubles after each.
-DOWNLOAD_ATTEMPTS = 5
+# Attempts at each source, and the wait before the second; it doubles after each.
+# With every source silent, the download gives up after about
+# len(CAIRO_SOURCES) * (DOWNLOAD_ATTEMPTS * DOWNLOAD_TIMEOUT + DOWNLOAD_WAIT) seconds,
+# about 3.3 minutes; with every source trickling, after about
+# len(CAIRO_SOURCES) * (DOWNLOAD_ATTEMPTS * DOWNLOAD_DEADLINE + DOWNLOAD_WAIT) seconds,
+# about 9 minutes. Name resolution is outside both: the resolver's own timeout applies.
+DOWNLOAD_ATTEMPTS = 2
 DOWNLOAD_WAIT = 5.0
+# Seconds a connection or a read may wait for the server.
+DOWNLOAD_TIMEOUT = 30.0
+# Seconds one attempt may take in all, from before connecting to the last byte.
+DOWNLOAD_DEADLINE = 90.0
 
 VENV_NAME = "meson-venv"
 BUILD_DIR = "build"
@@ -47,19 +69,35 @@ def is_ci():
 
 def _retried(error):
     # A failure of the network, not of the request: a reset or refused
-    # connection, a server error. A missing file is no such failure.
+    # connection, a timeout, a server error. A missing file is no such failure.
     if isinstance(error, urllib.error.HTTPError):
         return error.code >= 500
-    return isinstance(error, (urllib.error.URLError, ConnectionResetError))
+    return isinstance(error, (urllib.error.URLError, ConnectionResetError, TimeoutError))
 
 
-def download_file(url, path, *, attempts=DOWNLOAD_ATTEMPTS, wait=DOWNLOAD_WAIT, sleep=time.sleep):
+def download_cairo(path, sources=CAIRO_SOURCES, sha256sum=CAIRO_SHA256, **retry):
+    # Each source in turn until one serves a file that matches the checksum.
+    failures = []
+    for url in sources:
+        try:
+            download_file(url, path, **retry)
+            verify_sha256sum(path, sha256sum)
+            return url
+        except Exception as error:
+            logger.warning(f"Downloading {url} failed ({error!r}); trying the next source")
+            failures.append(f"{url}: {error!r}")
+    raise Exception("Every source of cairo failed:\n  " + "\n  ".join(failures))
+
+
+def download_file(
+    url, path, *, attempts=DOWNLOAD_ATTEMPTS, wait=DOWNLOAD_WAIT, sleep=time.sleep, clock=time.monotonic
+):
     for attempt in range(1, attempts + 1):
         logger.info(f"Downloading {url} to {path} (attempt {attempt} of {attempts})")
         try:
-            _fetch(url, path)
+            _fetch(url, path, clock)
             return
-        except (urllib.error.URLError, ConnectionResetError) as error:
+        except (urllib.error.URLError, ConnectionResetError, TimeoutError) as error:
             if not _retried(error) or attempt == attempts:
                 raise
             logger.warning(f"Downloading {url} failed ({error}); retrying in {wait:.0f} s")
@@ -67,14 +105,17 @@ def download_file(url, path, *, attempts=DOWNLOAD_ATTEMPTS, wait=DOWNLOAD_WAIT, 
             wait *= 2
 
 
-def _fetch(url, path):
+def _fetch(url, path, clock=time.monotonic):
     block_size = 1024 * 1024
-    with urllib.request.urlopen(url) as response, open(path, "wb") as file:
+    deadline = clock() + DOWNLOAD_DEADLINE
+    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response, open(path, "wb") as file:
         while True:
             data = response.read(block_size)
             if not data:
                 break
             file.write(data)
+            if clock() > deadline:
+                raise TimeoutError(f"the download took longer than {DOWNLOAD_DEADLINE:.0f} s")
 
 
 def verify_sha256sum(path, sha256sum):
@@ -147,10 +188,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         with gha_group("Downloading and Extracting Cairo"):
             logger.info(f"Downloading cairo version {CAIRO_VERSION}")
-            download_file(CAIRO_URL, os.path.join(tmpdir, "cairo.tar.xz"))
-
-            logger.info("Verifying cairo sha256sum")
-            verify_sha256sum(os.path.join(tmpdir, "cairo.tar.xz"), CAIRO_SHA256)
+            source = download_cairo(os.path.join(tmpdir, "cairo.tar.xz"))
+            logger.info(f"Downloaded cairo from {source}; its sha256sum matches")
 
             logger.info("Extracting cairo")
             extract_tar_xz(os.path.join(tmpdir, "cairo.tar.xz"), tmpdir)
