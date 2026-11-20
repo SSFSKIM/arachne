@@ -62,6 +62,13 @@ def art(rig: Rig) -> list:
     ]
 
 
+def scene_box_of(rig: Rig) -> tuple[float, ...]:
+    """The box of ``rig``'s art, as a state's ``scene_box`` gives it."""
+    points = np.concatenate([shape.points[:, :2] for shape in art(rig)])
+    (x0, y0), (x1, y1) = points.min(axis=0), points.max(axis=0)
+    return (x0, y0, x1, y1)
+
+
 def close(got: list[np.ndarray], want: list[np.ndarray], tol: float = 1e-7) -> None:
     assert len(got) == len(want)
     for a, b in zip(got, want, strict=True):

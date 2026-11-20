@@ -22,14 +22,19 @@ from arachne import (
     Capsule,
     DecimalNumber,
     Diagram,
+    Dot,
     FadeIn,
     Flow,
     Line,
+    MaintainPositionRelativeTo,
+    MoveAlongPath,
     MovingCameraScene,
+    PhaseFlow,
     Pose,
     Rig,
     Scene,
     Square,
+    Succession,
     Text,
     UpdateFromFunc,
     VGroup,
@@ -197,6 +202,32 @@ class Boiling(Scene):
         self.play(box.animate(rate_func=linear).shift(RIGHT), run_time=0.5)
 
 
+class SuccessionOfMoves(Scene):
+    """Two moves of a boiling declared rig in one Succession, the first
+    ending off the grid: the second begins in the middle of the play.
+    """
+
+    declared = True
+
+    def construct(self) -> None:
+        box = _box()
+        self.add(box)
+        if self.declared:
+            set_timing(box, RATE, boil=BOIL)
+        self.play(
+            Succession(
+                box.animate(rate_func=linear, run_time=0.45).shift(RIGHT),
+                box.animate(rate_func=linear, run_time=0.5).shift(UP),
+            )
+        )
+
+
+class SuccessionOfMovesUndeclared(SuccessionOfMoves):
+    """The same moves, declared nothing: what is true at each instant."""
+
+    declared = False
+
+
 class PosedBetweenPlays(Scene):
     """The scene's code poses a declared rig between two plays, the first
     ending off the grid.
@@ -225,6 +256,23 @@ class CalloutOnSteppedBox(Scene):
             run_time=1,
         )
         self.wait(0.25)
+
+
+class BoiledCallout(Scene):
+    """A callout on the knob of a boiling declared rig, posed while it
+    moves.
+    """
+
+    def construct(self) -> None:
+        box = _box()
+        knob = Callout("knob", at=box.anchor("knob"), offset=UR, name="callout")
+        self.add(box, knob)
+        set_timing(box, RATE, boil=BOIL)
+        self.play(
+            Pose(box, lid_open=OPEN, rate_func=linear),
+            box.animate(rate_func=linear).shift(MOVE),
+            run_time=1,
+        )
 
 
 class FlowBesideSteppedBox(Scene):
@@ -268,6 +316,31 @@ class NestedDeclarations(Scene):
         set_timing(group, 6)
 
 
+class SharedMember(Scene):
+    """Two declared groups holding one rig."""
+
+    def construct(self) -> None:
+        box = _box()
+        first, second = VGroup(Square(), box), VGroup(Square(), box)
+        self.add(first, second)
+        set_timing(first, RATE)
+        set_timing(second, RATE)
+
+
+class MemberJoinsSecondFamily(Scene):
+    """A declared rig joins a second declared group between two waits."""
+
+    def construct(self) -> None:
+        box = _box()
+        first, second = VGroup(box), VGroup(Square())
+        self.add(first, second)
+        set_timing(first, RATE)
+        set_timing(second, RATE)
+        self.wait(0.25)
+        second.add(box)
+        self.wait(0.25)
+
+
 class Redeclared(Scene):
     """A declared rig given another rate between two plays."""
 
@@ -288,7 +361,7 @@ SEEN: dict[str, list[tuple[str, object, float]]] = {}
 class StubDriver:
     """A scene driver of the contract the clock takes over: it reads the
     scene's time, never adds up ``dt``, is found on its scene, and accepts
-    later objects without adding its updater again.
+    later objects without adding its updater again. It holds its scene.
     """
 
     def __init__(self, scene: Scene, name: str, box: Rig) -> None:
@@ -309,19 +382,34 @@ class StubDriver:
         )
 
 
-#: Each scene's stub drivers, by kind.
-STUBS: dict[str, dict[Scene, StubDriver]] = {"first": {}, "second": {}}
+class BoundDriver(StubDriver):
+    """A stub driver whose updater is a bound method: a new object at each
+    lookup, equal to the one before.
+    """
+
+    def __init__(self, scene: Scene, name: str, box: Rig) -> None:
+        super().__init__(scene, name, box)
+        del self.updater
+
+    def updater(self, dt: float) -> None:
+        self()
 
 
 def _found(kind: str):
     def find(scene: Scene) -> StubDriver | None:
-        return STUBS[kind].get(scene)
+        return scene.__dict__.get("stubs", {}).get(kind)
 
     return find
 
 
-timing.register_driver(_found("first"))
-timing.register_driver(_found("second"))
+def _register_stubs(scene: Scene) -> None:
+    """Register the finders of the stub drivers, first then second, for the
+    test that runs the scene (its fixture lets them go), and give the scene
+    a place to keep its own.
+    """
+    scene.stubs = {}
+    timing.register_driver(_found("first"))
+    timing.register_driver(_found("second"))
 
 
 class StubDrivers(Scene):
@@ -330,14 +418,32 @@ class StubDrivers(Scene):
     """
 
     def construct(self) -> None:
+        _register_stubs(self)
         box = _box()
         self.add(box)
-        first = STUBS["first"][self] = StubDriver(self, "first", box)
+        first = self.stubs["first"] = StubDriver(self, "first", box)
         timing.drive(self, first)
         set_timing(box, RATE)
-        second = STUBS["second"][self] = StubDriver(self, "second", box)
+        second = self.stubs["second"] = StubDriver(self, "second", box)
         timing.drive(self, second)
         first.hold("later")
+        self.play(Pose(box, lid_open=OPEN, rate_func=linear), run_time=0.25)
+
+
+class BoundDrivers(Scene):
+    """Two drivers with bound-method updaters, both made before the timing
+    is declared, put in the scene in the reverse of their finders' order.
+    """
+
+    def construct(self) -> None:
+        _register_stubs(self)
+        box = _box()
+        self.add(box)
+        second = self.stubs["second"] = BoundDriver(self, "second", box)
+        timing.drive(self, second)
+        first = self.stubs["first"] = BoundDriver(self, "first", box)
+        timing.drive(self, first)
+        set_timing(box, RATE)
         self.play(Pose(box, lid_open=OPEN, rate_func=linear), run_time=0.25)
 
 
@@ -392,6 +498,50 @@ class OwnAnimationOnBox(Scene):
         self.add(box)
         set_timing(box, RATE)
         self.play(Nudge(box))  # @refused
+
+
+class _Moved(Scene):
+    """Plays what :meth:`move` makes of a boiling declared rig."""
+
+    def move(self, box: Rig) -> Animation:
+        raise NotImplementedError
+
+    def construct(self) -> None:
+        box = _box()
+        self.add(box)
+        set_timing(box, RATE, boil=BOIL)
+        self.play(self.move(box), run_time=0.5)  # @refused
+
+
+class AlongPath(_Moved):
+    def move(self, box: Rig) -> Animation:
+        return MoveAlongPath(box, Line(LEFT, RIGHT), rate_func=linear)
+
+
+class ByPhaseFlow(_Moved):
+    def move(self, box: Rig) -> Animation:
+        return PhaseFlow(lambda p: 0.1 * RIGHT + 0 * p, box)
+
+
+class KeptBesideDot(_Moved):
+    def move(self, box: Rig) -> Animation:
+        dot = Dot(2 * LEFT)
+        self.add(dot)
+        return AnimationGroup(
+            dot.animate.shift(RIGHT), MaintainPositionRelativeTo(box, dot)
+        )
+
+
+class SuccessionAfterAnotherPart(_Moved):
+    """A Succession whose second part moves the rig, after a part that
+    animates something else.
+    """
+
+    def move(self, box: Rig) -> Animation:
+        dot = Dot(2 * LEFT)
+        return Succession(
+            FadeIn(dot, run_time=0.45), box.animate(run_time=0.5).shift(UP)
+        )
 
 
 class _Declared(Scene):

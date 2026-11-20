@@ -367,11 +367,16 @@ _TABLE = (
         "TimingUpdater",
         "an object with declared timing is moved by something the engine cannot"
         " hold to its timing: the scene's own updater on it, an animation of the"
-        " scene's own or UpdateFromFunc or UpdateFromAlphaFunc on it, or a scene"
+        " scene's own or UpdateFromFunc or UpdateFromAlphaFunc on it, an engine"
+        " animation that moves it from where it stands (MoveAlongPath, PhaseFlow,"
+        " MaintainPositionRelativeTo), a Succession's part that begins in the"
+        " middle of a play after a part that does not animate it, or a scene"
         " updater registered after the timing was declared",
-        "Move the illustration with the engine's animations (Pose, .animate,"
-        " Transform and the rest) or its rig's parameters; register scene updaters"
-        " before declaring timing.",
+        "Move the illustration with the engine's animations that write where it"
+        " goes (Pose, .animate, Transform and the rest) or its rig's parameters;"
+        " in a Succession, animate it in the part before one that moves it, or"
+        " play that part on its own; register scene updaters before declaring"
+        " timing.",
         ("kind", "name"),
     ),
 )

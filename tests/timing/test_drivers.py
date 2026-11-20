@@ -71,7 +71,7 @@ def test_registered_drivers_run_first_in_the_clock_s_instant_in_their_order(open
     # The session runs the scene file as a module of its own.
     scenes = sys.modules[type(scene).__module__]
     clock = timing.clock_of(scene)
-    first, second = (scenes.STUBS[kind][scene] for kind in ("first", "second"))
+    first, second = (scene.stubs[kind] for kind in ("first", "second"))
     # Taken over: neither updater is the scene's, and the clock is last.
     assert _scene_updaters(session) == {(clock.updater,)}
     assert clock.drivers[-2:] == [first, second]
@@ -88,6 +88,26 @@ def test_registered_drivers_run_first_in_the_clock_s_instant_in_their_order(open
         assert value == pytest.approx(OPEN * float(t) / 0.25), (name, t)
     held = [t for t in instants if t != boundary(t)]
     assert held
+
+
+def test_drivers_taken_over_keep_the_scene_s_order_and_run_once(opened):
+    # Each driver's updater is a bound method, a new object at each lookup:
+    # it is the scene's updater all the same, and leaves the scene's
+    # updaters when the clock takes it over.
+    session = opened("BoundDrivers", 60)
+    scene = session.scene
+    scenes = sys.modules[type(scene).__module__]
+    clock = timing.clock_of(scene)
+    first, second = (scene.stubs[kind] for kind in ("first", "second"))
+    assert first.updater is not first.updater
+    assert _scene_updaters(session) == {(clock.updater,)}
+    # In the order the scene put them in, not their finders'.
+    assert clock.drivers[-2:] == [second, first]
+    seen = scenes.SEEN["BoundDrivers"]
+    instants = sorted({t for _, t, _ in seen})
+    assert len(instants) >= 15
+    for t in instants:
+        assert [name for name, at, _ in seen if at == t] == ["second", "first"], t
 
 
 def test_a_scene_without_a_declaration_keeps_its_drivers_as_they_were(opened):

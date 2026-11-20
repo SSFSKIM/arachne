@@ -15,7 +15,7 @@ from arachne import Callout, Rig
 from arachne.lint import lint
 from arachne.lint.rules import anchored
 
-from .reading import RATES, boundary, frame_captures
+from .reading import RATES, boundary, box_of, frame_captures
 from .timing_scenes import MOVE, OPEN
 
 
@@ -73,3 +73,27 @@ def test_the_callout_s_label_moves_with_the_drawing_it_names(opened):
     assert (
         min(np.linalg.norm(a - b) for a, b in zip(held, held[1:], strict=False)) > 1e-3
     )
+
+
+@pytest.mark.parametrize("fps", RATES)
+def test_a_boiling_drawing_s_leader_ends_on_its_painted_outline(opened, fps):
+    session = opened("BoiledCallout", fps)
+    record = session.record
+    box = box_of(session)
+    leader = next(m for m in record.mobjects() if isinstance(m, Callout)).leader
+    anchor = box.anchor("knob").attachment
+    shape = box.part(anchor.part).submobjects[anchor.shape]
+    boiled = 0
+    for t, capture in frame_captures(session, fps):
+        painted = np.asarray(record.node_state(shape, capture).get("_points"))
+        p0, p1, p2, p3 = painted[4 * anchor.curve : 4 * anchor.curve + 4]
+        a, s = anchor.at, 1 - anchor.at
+        landmark = s**3 * p0 + 3 * s**2 * a * p1 + 3 * s * a**2 * p2 + a**3 * p3
+        end = np.asarray(record.node_state(leader, capture).get("_points"))[-1]
+        assert np.linalg.norm(end - landmark) < 1e-9, t
+        at = boundary(t)
+        boiled += bool(
+            np.linalg.norm(landmark - _knob(float(OPEN * at), float(at))) > 1e-4
+        )
+    # The landmark painted is not the one the rig's pose puts there.
+    assert boiled > 0

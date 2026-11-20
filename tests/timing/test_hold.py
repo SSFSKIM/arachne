@@ -28,6 +28,7 @@ from .reading import (
     close,
     frame_captures,
     points_at,
+    scene_box_of,
     value_at,
 )
 from .timing_scenes import BOIL, MOVE, OPEN, RATE
@@ -337,10 +338,33 @@ def test_two_declarations_over_one_family_are_a_plain_error(opened):
         opened("NestedDeclarations", 15)
 
 
-def _box_of(rig: Rig) -> tuple[float, ...]:
-    points = np.concatenate([shape.points[:, :2] for shape in art(rig)])
-    (x0, y0), (x1, y1) = points.min(axis=0), points.max(axis=0)
-    return (x0, y0, x1, y1)
+def test_two_declared_families_sharing_a_member_are_the_same_error(opened):
+    with pytest.raises(ValueError, match="shares its family"):
+        opened("SharedMember", 15)
+
+
+def test_a_member_joining_a_second_declared_family_is_the_same_error(opened):
+    with pytest.raises(ValueError, match="shares its family"):
+        opened("MemberJoinsSecondFamily", 15)
+
+
+@pytest.mark.parametrize("fps", RATES)
+def test_a_succession_s_later_part_begins_from_what_is_true(opened, fps):
+    # The second move begins at 0.45 s, between two boundaries, while the
+    # drawing on display is the first move's at 5/12 with its boil: it
+    # starts from where the first move left the rig, and no boil is kept.
+    session = opened("SuccessionOfMoves", fps)
+    twin = opened("SuccessionOfMovesUndeclared", 60)
+    box, true_box = box_of(session), box_of(twin)
+    for t, capture in frame_captures(session, fps):
+        true = points_at(twin, art(true_box), twin.record.capture_at(boundary(t))[1])
+        step = BOIL.step(t)
+        want = [p + BOIL.displacement(p, step) for p in true]
+        close(points_at(session, art(box), capture), want, 1e-9)
+    final = session.record.state_at(session.record.duration)
+    assert final.named("box").scene_box == pytest.approx(
+        twin.record.state_at(twin.record.duration).named("box").scene_box, abs=1e-12
+    )
 
 
 @pytest.mark.parametrize("fps", RATES)
@@ -352,8 +376,8 @@ def test_state_at_answers_the_last_frame_instant_of_the_grid_and_says_so(opened,
     want = {15: Fraction(1, 15), 30: Fraction(1, 15), 60: Fraction(1, 12)}[fps]
     assert state.as_of == want
     drawn = _posed(OPEN * boundary(want))
-    assert state.named("box").scene_box == pytest.approx(_box_of(drawn), abs=1e-9)
+    assert state.named("box").scene_box == pytest.approx(scene_box_of(drawn), abs=1e-9)
     if fps == 60:
         assert state.named("box").scene_box != pytest.approx(
-            _box_of(_posed(0)), abs=1e-3
+            scene_box_of(_posed(0)), abs=1e-3
         )

@@ -1,11 +1,12 @@
-"""The timing tests' fixture: sessions of the timing scenes, closed after
-each test.
+"""The timing tests' fixtures: sessions of the timing scenes, closed after
+each test; and the scene drivers' finders, as they were before it.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from arachne.assets import timing
 from arachne.session import Session
 from arachne.timeline import admission
 
@@ -26,3 +27,13 @@ def opened():
     for session in sessions:
         session.close()
     admission.DEMOTED.clear()
+
+
+@pytest.fixture(autouse=True)
+def finders():
+    """Let go of the finders a test's scenes registered: each execution of a
+    scene file registers its own.
+    """
+    before = list(timing._FINDERS)
+    yield
+    timing._FINDERS[:] = before
