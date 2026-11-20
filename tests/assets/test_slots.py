@@ -186,8 +186,11 @@ def test_a_slot_switched_while_its_rig_moves_shows_its_drawing_in_place_in_its_p
     np.testing.assert_allclose(moved.linear, start.linear, atol=1e-12)
 
 
-def test_a_drawing_switched_in_after_an_animated_fade_has_the_faded_opacity(opened):
-    session = opened("FadedThenSwitched")
+@pytest.mark.parametrize("scene", ["FadedThenSwitched", "TransformedThenSwitched"])
+def test_a_drawing_switched_in_after_an_animated_fade_has_the_faded_opacity(
+    opened, scene
+):
+    session = opened(scene)
     dial = next(m for m in session.scene.mobjects if isinstance(m, Rig))
     _invariants(dial.part("lamp"), "on")
     for shape in _drawing(dial, "lamp", "on").submobjects:

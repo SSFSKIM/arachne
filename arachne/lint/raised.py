@@ -11,7 +11,7 @@ finding whole, with the line of the scene file it was raised through
 
 from __future__ import annotations
 
-__all__ = ["RaisedFinding", "found", "refuse_drawing"]
+__all__ = ["RaisedFinding", "drawing_refusal", "found", "refuse_drawing"]
 
 import sys
 from collections.abc import Iterable, Mapping
@@ -136,15 +136,26 @@ def refuse_drawing(record: Record) -> None:
     error severity :func:`found` recorded in ``record``; nothing when there
     is none.
     """
+    refusal = drawing_refusal(record)
+    if refusal is not None:
+        raise refusal
+
+
+def drawing_refusal(record: Record) -> RaisedFinding | None:
+    """The first finding of error severity :func:`found` recorded in
+    ``record``, as the :class:`RaisedFinding` drawing raises; ``None`` when
+    there is none.
+    """
     for call in record.bridge.calls:
         if call.kind != "found":
             continue
         for reading in call.readings:
             for finding in (reading.values or {}).get("findings", ()):
                 if finding.severity == "error":
-                    raise RaisedFinding(
+                    return RaisedFinding(
                         finding.code,
                         finding.message,
                         detail=finding.detail,
                         line=finding.line.line if finding.line is not None else None,
                     )
+    return None

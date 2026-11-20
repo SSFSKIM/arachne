@@ -356,11 +356,20 @@ def test_the_lint_boxes_a_rig_by_its_art(rod, tmp_path):
     try:
         rig = _rig(session, "rod")
         art = _art(rig)
-        query = session.query(Fraction(1, 4))
-        x0, y0, x1, y1 = query.bbox(session.record.origin(rig).id)
-        # The line stands upright: the box is the line's, as thin as it is.
-        assert x1 - x0 == pytest.approx(0, abs=1e-9)
-        assert y1 - y0 == pytest.approx(art[:, 1].max() - art[:, 1].min(), abs=1e-9)
+        node_id = session.record.origin(rig).id
+        (node,) = [n for n in session.state_at(Fraction(1, 4)).nodes if n.id == node_id]
+        height = art[:, 1].max() - art[:, 1].min()
+        # The line stands upright: every box of it is the line's, as thin as
+        # it is, the lint's query and the state's alike.
+        for x0, y0, x1, y1 in (
+            session.query(Fraction(1, 4)).bbox(node_id),
+            node.box,
+            node.scene_box,
+        ):
+            assert x1 - x0 == pytest.approx(0, abs=1e-9)
+            assert y1 - y0 == pytest.approx(height, abs=1e-9)
+        x0, _, x1, _ = node.screen_box
+        assert x1 - x0 == pytest.approx(0, abs=1e-6)
     finally:
         session.close()
         admission.DEMOTED.clear()

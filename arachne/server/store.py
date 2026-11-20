@@ -229,6 +229,9 @@ class Manifest:
     its source, and ``reads``, the files its execution read, each as
     ``(path relative to the scene's directory, sha256)``), its execution's
     ``identity``, and ``record``, the record's form ``open`` answered.
+    ``refuses`` is the finding its scene's code recorded that refuses
+    drawing it, as the server answers a finding (``None``: none, and what a
+    manifest kept without it says).
     """
 
     key: str
@@ -239,6 +242,7 @@ class Manifest:
     reads: tuple[tuple[str, str], ...]
     identity: dict[str, Any]
     record: dict[str, Any]
+    refuses: dict[str, Any] | None = None
 
     @property
     def answers_key(self) -> str:
@@ -275,6 +279,7 @@ class Manifest:
             "reads": [list(pair) for pair in self.reads],
             "identity": self.identity,
             "record": self.record,
+            "refuses": self.refuses,
         }
 
     @classmethod
@@ -288,6 +293,7 @@ class Manifest:
             reads=tuple((path, digest) for path, digest in data["reads"]),
             identity=data["identity"],
             record=data["record"],
+            refuses=data.get("refuses"),
         )
 
 
@@ -341,6 +347,12 @@ class Store:
         source = session._source
         if source is None or source.files is None or session.stale:
             return None
+        refuses = None
+        if session.record.bridge.calls:
+            from arachne.lint.raised import drawing_refusal
+
+            refusal = drawing_refusal(session.record)
+            refuses = None if refusal is None else refusal.finding()
         manifest = Manifest(
             key=self.manifest_key(file, scene, config),
             file=file,
@@ -350,6 +362,7 @@ class Store:
             reads=dependency_reads(session, loaded),
             identity=identity_form(session.record.identity),
             record=record,
+            refuses=refuses,
         )
         self._write(self._manifest_path(manifest.key), manifest.to_json())
         return manifest

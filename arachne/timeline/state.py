@@ -268,9 +268,14 @@ def _visible_ids(
 
 def _scene_box(mob: Mobject) -> tuple[float, float, float, float] | None:
     """The box of ``mob``'s family's points in scene units, unprojected;
-    ``None`` when they have none.
+    ``None`` when they have none. A rig's carrier (a scaffold member) is no
+    part of it.
     """
-    members = mob.family_members_with_points()
+    members = [
+        member
+        for member in mob.family_members_with_points()
+        if not getattr(type(member), "_scaffold", False)
+    ]
     if not members:
         return None
     points = np.concatenate([member.points[:, :2] for member in members])

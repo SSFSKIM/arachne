@@ -194,6 +194,9 @@ class CairoRenderer:
         live = None
         opened = False
         if draw:
+            # What the scene's code found so far refuses the frames before
+            # one is written.
+            self._refuse_found(timeline.ensure_record())
             # The play's segment opens at its first frame: a stop condition
             # can end the play before the frame grid reaches it, and then it
             # has no segment, like a frameless play drawn from the record.

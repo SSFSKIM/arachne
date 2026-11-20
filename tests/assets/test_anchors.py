@@ -185,3 +185,25 @@ def test_a_render_refuses_a_scene_that_asks_an_unknown_anchor(tmp_path, still):
     written = [p.name for p in tmp_path.rglob("*") if p.suffix in (".png", ".mp4")]
     assert "StillWithUnknownAnchor.mp4" not in written
     assert not any(name.endswith(".png") for name in written)
+
+
+def test_a_live_drawn_render_writes_no_frame_after_an_unknown_anchor(tmp_path):
+    """A camera the record cannot draw draws each frame as its play runs:
+    the anchor asked before the play refuses the play before a frame of
+    the sequence is written.
+    """
+    from arachne import tempconfig
+    from arachne.lint.raised import RaisedFinding
+
+    options = {
+        "media_dir": str(tmp_path),
+        "pixel_width": 96,
+        "pixel_height": 54,
+        "frame_rate": 4,
+        "disable_caching": True,
+        "format": "png-sequence",
+    }
+    with tempconfig(options), pytest.raises(RaisedFinding) as raised:
+        rig_scenes.LiveWithUnknownAnchor().render()
+    assert raised.value.code == "annotation.anchor_unknown"
+    assert not list(tmp_path.rglob("*.png"))

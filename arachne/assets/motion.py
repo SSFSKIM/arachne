@@ -171,6 +171,7 @@ class Pose(Animation):
     def __init__(
         self,
         rig: Rig,
+        /,
         *,
         run_time: float | None = None,
         rate_func: Callable[[float], float] | None = None,

@@ -347,3 +347,16 @@ def test_a_model_lives_as_long_as_its_asset():
     gc.collect()
     assert gone() is None
     assert model() is None
+
+
+def test_a_parameter_or_slot_named_as_the_rig_or_self_is_posed_by_its_keyword(tmp_path):
+    def named(document: dict) -> None:
+        document["parameters"][0]["name"] = "self"
+        document["slots"][0]["name"] = "rig"
+
+    dial = Rig(edited(copied(tmp_path, "dial"), named))
+    dial.pose(self=20).show(rig="on")
+    assert (dial.value("self"), dial.shown("rig")) == (20, "on")
+    pose = Pose(dial, self=80, rig="off")
+    assert pose.targets == {0: 80}
+    assert pose.switches == {0: "off"}

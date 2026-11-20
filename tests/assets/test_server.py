@@ -355,3 +355,74 @@ def test_a_scene_drawn_only_as_it_runs_lints_and_answers_states_with_an_unknown_
         server.handle("frame", {"t": 0.25, "path": str(tmp_path / "frame.png")})
     _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
     assert not (tmp_path / "frame.png").exists()
+
+
+def _stored_render(tmp_path: Path, text: str, monkeypatch) -> tuple[Dispatcher, list]:
+    """A server holding the scene ``text`` opened from the store, a first
+    server having executed and kept it, and the executions made since.
+    """
+    from arachne.server.store import Store
+    from arachne.session import Session
+
+    scene = tmp_path / "stage.py"
+    scene.write_text(text)
+    params = {
+        "file": str(scene),
+        "scene": "Stage",
+        "config": {**SMALL, "media_dir": str(tmp_path / "media")},
+    }
+    first = Dispatcher(Store())
+    first.handle("open", params)
+    first.handle("close", {})
+    server = Dispatcher(Store())
+    server.handle("open", params)
+    assert server.session is None
+    assert server.stored is not None
+    opened: list = []
+    real = Session.open.__func__
+
+    def counted(cls, *args, **kwargs):
+        opened.append(args)
+        return real(cls, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "open", classmethod(counted))
+    return server, opened
+
+
+STORED = """\
+from arachne import *
+
+
+class Stage(Scene):
+    def construct(self):
+        box = Rig("fixture:lidded-box")
+        self.add(box)
+        self.play(Pose(box, lid_open=60), run_time=0.5)
+"""
+
+
+def test_a_stored_session_renders_without_executing_again(tmp_path, monkeypatch):
+    server, opened = _stored_render(tmp_path, STORED, monkeypatch)
+    out = tmp_path / "stored.mp4"
+    server.handle("render", {"out": str(out)})
+    assert out.exists()
+    # Rendered from the store: the session was not executed for it.
+    assert opened == []
+    assert server.session is None
+    server.handle("close", {})
+
+
+def test_a_stored_session_whose_code_found_an_unknown_anchor_refuses_a_render(
+    tmp_path, monkeypatch
+):
+    server, opened = _stored_render(tmp_path, LATE_ANCHOR, monkeypatch)
+    line = _line_of(tmp_path / "stage.py", "# @anchor")
+    out = tmp_path / "plays.mp4"
+    with pytest.raises(RpcError) as answer:
+        server.handle("render", {"plays": [0], "out": str(out)})
+    assert answer.value.code == REFUSED
+    _assert_refused(answer.value.data, "annotation.anchor_unknown", line)
+    assert not out.exists()
+    assert opened == []
+    assert server.session is None
+    server.handle("close", {})

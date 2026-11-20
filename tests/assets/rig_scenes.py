@@ -14,10 +14,12 @@ from arachne import (
     Dot,
     Flow,
     Line,
+    MappingCamera,
     MorphParts,
     Pose,
     Rig,
     Scene,
+    Transform,
     VGroup,
 )
 from arachne.utils.rate_functions import ease_out_back
@@ -136,6 +138,34 @@ class FadedThenSwitched(Scene):
         self.play(dial.animate.set_opacity(0.4), run_time=0.25)
         dial.show(lamp="on")
         self.wait(0.25)
+
+
+class TransformedThenSwitched(Scene):
+    """A rig transformed into a faded copy of itself, then a slot switched
+    to a drawing hidden while it faded.
+    """
+
+    def construct(self) -> None:
+        dial = Rig("fixture:dial", name="dial")
+        self.add(dial)
+        self.play(Transform(dial, dial.copy().set_opacity(0.4)), run_time=0.25)
+        dial.show(lamp="on")
+        self.wait(0.25)
+
+
+class LiveWithUnknownAnchor(Scene):
+    """An anchor the asset does not have, asked before the play, under a
+    camera the record cannot draw.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(camera_class=MappingCamera, **kwargs)  # type: ignore[arg-type]
+
+    def construct(self) -> None:
+        box = Rig("fixture:lidded-box", name="box")
+        self.add(box)
+        box.anchor("lid_tip")
+        self.play(Pose(box, lid_open=30), run_time=0.25)
 
 
 class TwoPoses(Scene):

@@ -45,12 +45,14 @@ __all__ = ["CarrierPoint", "Rig", "keep_settled"]
 import difflib
 import math
 import os
+import weakref
 from typing import TYPE_CHECKING, Any, NoReturn
 
 import numpy as np
 
 from ..mobject.types.vectorized_mobject import VectorizedPoint, VGroup, VMobject
 from ..mobject.values import FrozenPoints, adopt
+from ..utils.paths import straight_path
 from .manifest import PartSpec, refuse
 from .pose import CanvasMap, RigValues, model_of, posed_with, transforms
 from .reader import Asset, load_asset
@@ -72,8 +74,7 @@ class CarrierPoint(VectorizedPoint):
     and where it stands are its art's.
     """
 
-    #: Passed over by the camera's reading of what is drawn and by the
-    #: anchors a family's box is read from.
+    #: Passed over by the boxes the lint and the state read of a family.
     _scaffold = True
 
     def _point_bounds(self, anchors_every: int | None = None) -> Any:
@@ -89,6 +90,36 @@ class CarrierPoint(VectorizedPoint):
 
     def get_anchors(self) -> np.ndarray:
         return np.zeros((0, self.dim))
+
+    def interpolate(
+        self,
+        mobject1: Mobject,
+        mobject2: Mobject,
+        alpha: float,
+        path_func: Any = straight_path(),
+    ) -> Self:
+        super().interpolate(mobject1, mobject2, alpha, path_func)
+        # A carrier's first point runs between its rig's copies: so do the
+        # paints of the drawings its rig hides, which no animation pairs.
+        rig, start, end = _rig_of(self), _rig_of(mobject1), _rig_of(mobject2)
+        if rig is not None and start is not None and end is not None:
+            rig._interpolate_hidden(start, end, alpha)
+        return self
+
+
+#: The rig of each rig's carrier's first point, made or copied, held weakly.
+_CARRIED: weakref.WeakKeyDictionary[Mobject, weakref.ref[Rig]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _rig_of(point: Mobject) -> Rig | None:
+    held = _CARRIED.get(point)
+    return None if held is None else held()
+
+
+def _carry(rig: Rig) -> None:
+    _CARRIED[rig.carrier.submobjects[0]] = weakref.ref(rig)
 
 
 def keep_settled(rig: Mobject) -> None:
@@ -163,7 +194,13 @@ class Rig(VGroup):
         self._shown = ",".join(slot.default for slot in manifest.slots)
         self._settled_from: tuple[Any, ...] | None = None
         self.add_updater(keep_settled)
+        _carry(self)
         self.settle()
+
+    def __deepcopy__(self, clone_from_id: dict[int, Any]) -> Self:
+        copied = super().__deepcopy__(clone_from_id)
+        _carry(copied)
+        return copied
 
     # Names
 
@@ -261,12 +298,12 @@ class Rig(VGroup):
             checked[index] = drawing
         return checked
 
-    def pose(self, **values: float) -> Self:
+    def pose(self, /, **values: float) -> Self:
         """Set the parameters ``values`` (names to values) and settle."""
         self.write_values(self.checked_values(values))
         return self.settle()
 
-    def show(self, **drawings: str) -> Self:  # type: ignore[override]
+    def show(self, /, **drawings: str) -> Self:  # type: ignore[override]
         """Have each slot named in ``drawings`` show the drawing given, and
         settle.
         """
@@ -409,6 +446,30 @@ class Rig(VGroup):
         ):
             mobject.adopt_choices(self)
         return super().align_data(mobject, skip_point_alignment)
+
+    def _interpolate_hidden(self, start: Rig, end: Rig, alpha: float) -> None:
+        """Give each shape this rig hides the paint between its own in the
+        copies ``start`` and ``end``, which hide it too, at ``alpha``: an
+        animation pairs only shapes with points, so a drawing switched in
+        later shows the paint the animation left on the rig.
+        """
+        if not (
+            start.model is self.model
+            and end.model is self.model
+            and self._intact()
+            and start._intact()
+            and end._intact()
+        ):
+            return
+        for shape, first, last in zip(
+            self._shapes(), start._shapes(), end._shapes(), strict=True
+        ):
+            if not (
+                shape.get_num_points()
+                or first.get_num_points()
+                or last.get_num_points()
+            ):
+                shape.interpolate_color(first, last, alpha)
 
     def adopt_choices(self, rig: Rig) -> None:
         """Show what ``rig``, a rig of the same asset, shows, and settle."""
