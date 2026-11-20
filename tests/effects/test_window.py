@@ -7,11 +7,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from arachne import Circle, Square, Window, clear_effects, routing, set_blur, set_mask
+from arachne import (
+    Circle,
+    ImageMobject,
+    MovingCamera,
+    Square,
+    Window,
+    clear_effects,
+    routing,
+    set_blur,
+    set_mask,
+)
+from arachne.camera.camera import Camera
 from arachne.compose.layer import layer_of
-from arachne.compose.stack import _window_size
+from arachne.compose.stack import _camera_of_size, _window_size
 from arachne.server.dispatch import Dispatcher
 from arachne.server.protocol import REFUSED, RpcError
 
@@ -78,6 +90,28 @@ UNSIZED = {
 @pytest.mark.parametrize("placed", sorted(UNSIZED))
 def test_a_window_at_any_other_corners_keeps_the_frame_s_size(placed):
     assert _window_size(UNSIZED[placed]) is None
+
+
+@pytest.mark.parametrize("kind", [Camera, MovingCamera])
+def test_a_window_s_camera_draws_what_a_camera_of_its_size_draws(kind):
+    outer = kind(pixel_width=96, pixel_height=54)
+    before = outer.pixel_array.copy()
+    inner = _camera_of_size(outer, (48, 27))
+    alone = Camera(pixel_width=48, pixel_height=27, frame_width=outer.frame_width)
+    alone.frame_height = outer.frame_height
+    image = ImageMobject(np.full((4, 4, 4), 200, dtype=np.uint8)).shift(
+        2 * np.array([1, 0, 0])
+    )
+    objects = [Square(fill_opacity=1), Circle(radius=0.5), image]
+    for camera in (inner, alone):
+        camera.pixel_array[...] = 0
+        camera.capture_mobjects(objects)
+    assert inner.pixel_array.shape == (27, 48, 4)
+    assert inner.pixel_array.any()
+    assert np.array_equal(inner.pixel_array, alone.pixel_array)
+    # The frame's own camera is left as it was.
+    assert (outer.pixel_width, outer.pixel_height) == (96, 54)
+    assert np.array_equal(outer.pixel_array, before)
 
 
 def test_a_window_shows_its_objects_in_place_of_a_picture_of_its_own():

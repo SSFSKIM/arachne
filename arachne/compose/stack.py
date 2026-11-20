@@ -463,7 +463,12 @@ def _camera_of_size(camera: Camera, size: tuple[int, int]) -> Camera:
     width, height = size
     inner = copy.copy(camera)
     inner.pixel_width, inner.pixel_height = width, height
-    # What a camera keeps by its pixel array, or for its size.
+    # The camera's own painters, bound to the copy, which paints with its
+    # own size; and what a camera keeps by its pixel array, or for its size.
+    inner.display_funcs = {
+        kind: _bound_to(paint, camera, inner)
+        for kind, paint in camera.display_funcs.items()
+    }
     inner.pixel_array_to_cairo_context = {}
     inner.pixel_array_to_mapping_centre = {}
     inner.background_colored_vmobject_displayer = None
@@ -471,6 +476,13 @@ def _camera_of_size(camera: Camera, size: tuple[int, int]) -> Camera:
         (height, width, camera.n_channels), dtype=camera.pixel_array_dtype
     )
     return inner
+
+
+def _bound_to(method: Any, owner: Any, other: Any) -> Any:
+    """``method``, if it is one bound to ``owner``, bound to ``other``."""
+    if getattr(method, "__self__", None) is owner:
+        return method.__func__.__get__(other)
+    return method
 
 
 def _read_through(roots: Iterable[Mobject]) -> set[int]:
