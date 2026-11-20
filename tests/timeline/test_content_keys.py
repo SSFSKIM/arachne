@@ -1814,3 +1814,38 @@ def test_a_dict_keeps_the_order_it_holds_its_items_in():
     assert _value_difference({a: 0, b: 0}, {b: 0, a: 0}, places=places) is not None
     assert _value_difference({a: 0, b: 0}, {a: 0, b: 0}, places=places) is None
     assert _value_difference({a, b}, {b, a}, places=places) is None
+
+
+OMITTING = (
+    HEADER
+    + """
+class Noting(Dot):
+    _content_key_omits = frozenset({"note"})
+
+
+class Omits(Scene):
+    def construct(self):
+        dot = Noting()
+        dot.note = NOTE
+        dot.kept = KEPT
+        self.add(dot)
+        self.play(dot.animate.shift(RIGHT))
+"""
+)
+
+
+def test_a_field_a_class_declares_no_content_is_not_keyed(scene_dir):
+    """A class's ``_content_key_omits`` leaves those fields out of its
+    content key; every other field stays in it.
+    """
+
+    def keys(note: str, kept: str) -> tuple[bytes, ...]:
+        text = OMITTING.replace("NOTE", note).replace("KEPT", kept)
+        session = _open(_write(scene_dir, "omits.py", text), "Omits")
+        try:
+            return play_keys(session.record)
+        finally:
+            session.close()
+
+    assert keys("1", "1") == keys("2", "1")
+    assert keys("1", "1") != keys("1", "2")

@@ -730,14 +730,17 @@ def _omitted_fields(mob: Mobject) -> frozenset[str]:
     typesetting's (a hash CE gives it in ``tex_dir`` or ``text_dir``, another
     the shared directory gives it), so the same formula keys apart by the
     lever that typeset it; its points and the string it was typeset from are
-    keyed, and they carry its content.
+    keyed, and they carry its content. A class names more of its own
+    fields that are not content in ``_content_key_omits`` (a media object's
+    asset, which its digest stands for).
     """
     from arachne.mobject.text.tex_mobject import SingleStringMathTex
     from arachne.mobject.text.text_mobject import MarkupText, Text
 
+    declared: frozenset[str] = getattr(type(mob), "_content_key_omits", frozenset())
     if isinstance(mob, (SingleStringMathTex, Text, MarkupText)):
-        return _TYPESET_FILE
-    return frozenset()
+        return _TYPESET_FILE | declared
+    return declared
 
 
 def _value_key(value: Any, decimals: int | None = None) -> bytes:
