@@ -34,8 +34,22 @@ frame rate reads. A later object joins it through :func:`hold_media`. A rig
 viewed through a moving camera (:meth:`~arachne.assets.Rig.view_through`)
 joins it too, and is settled by it at every instant, after the clocks are
 set: the rig's art slides with the camera through plays that animate the
-rig, whose own updater an animation suspends. Importing this module reads
-no asset and builds no object.
+rig, whose own updater an animation suspends.
+
+The driver is a scene driver of stepped timing (:mod:`arachne.assets.timing`,
+"Scene drivers"): in a scene that declares timing, before or after its
+first running clock, the scene's timing clock takes the driver's updater
+over and calls the driver at the start of each of its instants, before it
+holds the declared illustrations, which then read what the driver wrote as
+a write made since the clock last installed its state. A media object
+declared with stepped timing thus shows a new frame only at its drawing
+boundaries, while its program time (``media.time``) runs on. Known limit:
+the hold reads a write as no write when the value written is, by object
+identity, the one it holds on display (a frame index equal to the frame
+shown, which Python keeps as one object), so such a boundary can show the
+frame before the one its instant names. Importing this module registers
+the driver's finder with the timing layer; it reads no asset and builds no
+object.
 """
 
 from __future__ import annotations
@@ -59,6 +73,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
+from ...assets.timing import drive, register_driver
 from ...timeline.record import DEPENDENCIES
 
 if TYPE_CHECKING:
@@ -151,10 +166,9 @@ class MediaDriver:
     time: the driver reads :attr:`~.Scene.time`, and a callback that reads
     its ``dt`` runs at every tick, so the driver answers alike at every
     frame rate. Calling the driver sets every object it holds; an object
-    joins only through :func:`hold_media`. Something else that is to run
-    the driver, such as a clock that runs last itself, takes
-    :attr:`updater` out of the scene's updaters and calls the driver at its
-    own instant.
+    joins only through :func:`hold_media`. A scene's timing clock, which
+    runs last itself, takes :attr:`updater` out of the scene's updaters and
+    calls the driver at the start of its own instant.
 
     Once set, an object that is shown while its program is out of range is
     refused with ``media.clock_past_end``; one that runs while a layer of
@@ -291,8 +305,9 @@ def media_driver(scene: Scene) -> MediaDriver | None:
 def hold_media(scene: Scene, mobject: MediaObject | Rig) -> None:
     """Have ``mobject`` set on ``scene``'s time: a media object's frame, or
     a rig viewed through a moving camera, settled; by the scene's media
-    driver, made and added to the scene's updaters with the first object it
-    holds.
+    driver, made with the first object it holds and put to work as one of
+    the scene's updaters, or handed to the scene's timing clock when it has
+    one (:func:`arachne.assets.timing.drive`).
     """
     from ...assets.rig import Rig
     from .objects import MediaObject
@@ -305,5 +320,9 @@ def hold_media(scene: Scene, mobject: MediaObject | Rig) -> None:
     driver = _DRIVERS.get(scene)
     if driver is None:
         driver = _DRIVERS[scene] = MediaDriver(scene)
-        scene.add_updater(driver.updater)
+        drive(scene, driver)
     driver.hold(mobject)
+
+
+# A scene that declares stepped timing runs its media driver from its clock.
+register_driver(media_driver)
