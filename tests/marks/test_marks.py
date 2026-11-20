@@ -237,12 +237,12 @@ def test_ports_follow_their_mark():
 
 
 def test_a_switch_opens_and_closes_in_place():
-    switch = Switch(LEFT, RIGHT, closed=True)
-    assert np.allclose(np.asarray(switch.blade.points)[-1], RIGHT)
+    switch = Switch(LEFT, RIGHT, closed=True, contact_radius=0.06)
+    assert np.allclose(np.asarray(switch.blade.points)[-1], RIGHT + LEFT * 0.06)
     switch.shift(UP).set_closed(False)
     end = np.asarray(switch.blade.points)[-1]
     assert end[1] > 1
-    assert np.linalg.norm(end - (LEFT + UP)) == pytest.approx(2)
+    assert np.linalg.norm(end - (LEFT + UP)) == pytest.approx(2 - 0.06)
 
 
 def test_magnifier_lines_touch_both_circles():
@@ -616,3 +616,22 @@ def test_a_coils_leads_cross_no_loop_and_its_ends_mirror(turns, radius, start, e
     along = (points - middle) @ u
     mirrored = points - 2 * along[:, None] * u
     assert np.allclose(mirrored[::-1], points, atol=1e-6)
+
+
+@pytest.mark.parametrize("closed", [True, False])
+def test_a_switchs_blade_draws_nothing_inside_its_rings(closed):
+    switch = Switch(LEFT, RIGHT + UP * 0.5, closed=closed, contact_radius=0.08)
+    switch.shift(DOWN).scale(1.5)
+    for state in (closed, not closed):
+        switch.set_closed(state)
+        blade = np.concatenate([_bezier_polyline(c) for c in _curves(switch.blade)])
+        for ring in switch.contacts:
+            centre, radius = ring.get_center()[:2], ring.width / 2
+            distances = np.linalg.norm(blade - centre, axis=1)
+            assert distances.min() >= radius - 1e-6
+    # Closed, it spans the rings edge to edge.
+    switch.set_closed(True)
+    ends = np.asarray(switch.blade.points)[[0, -1], :2]
+    for end, ring in zip(ends, switch.contacts, strict=True):
+        radius = ring.width / 2
+        assert np.linalg.norm(end - ring.get_center()[:2]) == pytest.approx(radius)

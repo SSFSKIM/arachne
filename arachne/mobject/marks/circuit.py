@@ -90,14 +90,21 @@ class Switch(VGroup):
         self.set_closed(self.closed)
 
     def set_closed(self, closed: bool) -> Switch:
-        """Draw the switch closed or open, where its contacts are now."""
+        """Draw the switch closed or open, where its contacts are now: the
+        blade pivots on the first contact and runs from its ring's edge to
+        the second ring's edge, or as far lifted, so it draws nothing inside
+        a ring.
+        """
         self.closed = bool(closed)
         first, second = (c.get_center() for c in self.contacts)
+        near, far = (c.width / 2 for c in self.contacts)
         u = direction(first, second)
         length = float(np.linalg.norm(second - first))
         angle = 0.0 if self.closed else self.open_angle
-        tip = first + length * (u * math.cos(angle) + normal(u) * math.sin(angle))
-        self.blade.set_points(line(first, tip))
+        along = u * math.cos(angle) + normal(u) * math.sin(angle)
+        self.blade.set_points(
+            line(first + along * near, first + along * (length - far))
+        )
         return self
 
 
