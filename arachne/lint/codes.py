@@ -349,6 +349,40 @@ _TABLE = (
         ("distance", "allowed", "anchor"),
     ),
     Code(
+        "timing.exact_content",
+        "error",
+        "TimingExactContent",
+        "stepped timing or line boil is declared on a family that holds exact"
+        " content: text, a number, a coordinate system or a plot, an annotation,"
+        " a schematic mark, a diagram, or the scene's camera's frame, whose"
+        " drawing must change at every frame",
+        "Declare the timing on the illustration alone, a group that holds"
+        " none of these; keep labels, plots, annotation and the camera beside it,"
+        " where they stay smooth.",
+        ("object", "camera"),
+    ),
+    Code(
+        "timing.updater",
+        "error",
+        "TimingUpdater",
+        "an object with declared timing is moved by something the engine cannot"
+        " hold to its timing: the scene's own updater on it, an animation of the"
+        " scene's own or UpdateFromFunc or UpdateFromAlphaFunc on it, an engine"
+        " animation that moves it from where it stands (MoveAlongPath, PhaseFlow,"
+        " MaintainPositionRelativeTo), a Succession's part that begins in the"
+        " middle of a play after a part that does not animate it, its updating"
+        " suspended by the scene's code, an animation that takes it out of the"
+        " scene without suspending its updating or as a Succession's part, or a"
+        " scene updater registered after the timing was declared",
+        "Move the illustration with the engine's animations that write where it"
+        " goes (Pose, .animate, Transform and the rest) or its rig's parameters;"
+        " in a Succession, animate it in the part before one that moves it, or"
+        " play that part on its own; leave its updating to the engine, and take"
+        " it out of the scene with a play of its own; register scene updaters"
+        " before declaring timing.",
+        ("kind", "name"),
+    ),
+    Code(
         "media.inexact",
         "error",
         "MediaInexact",
