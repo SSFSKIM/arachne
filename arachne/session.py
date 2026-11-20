@@ -510,11 +510,10 @@ class Session:
         while it draws (a point cloud's thickness reads the frame's pixel
         size), and what a restore's callbacks read, are the session's.
         """
-        if record.bridge.calls:
-            from .lint.raised import refuse_drawing
-
-            refuse_drawing(record)
         from .compose.session import drawing as session_drawing
+        from .compose.session import refuse_pictures
+
+        refuse_pictures(self, record)
 
         freeze_mapping_centre(record)
         with session_drawing(self, record) as drawing:
@@ -553,11 +552,12 @@ class Session:
         (:func:`~.lint.raised.found`), wherever in the scene it was found;
         states alone are answered.
         """
-        if frames and self.record.bridge.calls:
-            from .lint.raised import refuse_drawing
+        if frames:
+            from .compose.session import refuse_pictures
 
-            refuse_drawing(self.record)
-        self._live_refused()
+            refuse_pictures(self, self.record)
+        else:
+            self._live_refused()
         found = answer_instants(self, instants, quality, frames=frames)
         if frames and self.route == "gpu":
             found = [replace(answer, renderer=self._renderer) for answer in found]

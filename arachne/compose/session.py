@@ -21,10 +21,12 @@ the ``gpu`` route every frame is drawn as a stack on this process's device
 from __future__ import annotations
 
 __all__ = [
+    "Refusals",
     "Route",
     "drawing",
     "live_refusal",
     "refuse_live",
+    "refuse_pictures",
     "refuse_render",
     "route_of",
 ]
@@ -41,6 +43,8 @@ from . import device
 from .guard import RECORD_FIRST
 
 if TYPE_CHECKING:
+    from arachne.lint.raised import RaisedFinding
+    from arachne.server.store import Manifest
     from arachne.session import Session
     from arachne.timeline.draw import LeaveOut
     from arachne.timeline.record import Record
@@ -137,6 +141,68 @@ class Route:
         raise routing.GpuLive(self.capabilities, RECORD_FIRST)
 
 
+@dataclass(frozen=True)
+class Refusals:
+    """Why a scene's pictures, or a render of it, are refused before
+    anything of it runs, in the order they are refused: ``found``, the
+    finding its code recorded that refuses drawing it
+    (:func:`~arachne.lint.raised.found`), an error on every host and the
+    author's to fix; then its ``route``'s (:class:`Route`). A session's are
+    read from its record and route (:meth:`of`), a stored session's from
+    its manifest (:meth:`stored`): one decision either way, without
+    executing a stored scene.
+    """
+
+    found: RaisedFinding | None
+    route: Route
+
+    @classmethod
+    def of(cls, session: Session) -> Refusals:
+        record = session.record
+        if not record.bridge.calls:
+            return cls(None, route_of(session))
+        from arachne.lint.raised import drawing_refusal
+
+        return cls(drawing_refusal(record), route_of(session))
+
+    @classmethod
+    def stored(cls, manifest: Manifest) -> Refusals:
+        kept = manifest.refuses
+        found = None
+        if kept is not None:
+            from arachne.lint.raised import RaisedFinding
+
+            found = RaisedFinding(
+                kept["code"], kept["message"], detail=kept["detail"], line=kept["line"]
+            )
+        return cls(found, Route.from_form(manifest.route, manifest.gpu))
+
+    def refuse_here(self) -> None:
+        """Refuse drawing a picture of the scene on this host."""
+        if self.found is not None:
+            raise self.found
+        self.route.refuse_here()
+
+    def refuse_render(self) -> None:
+        """Refuse a render or a clip of the scene."""
+        if self.found is not None:
+            raise self.found
+        self.route.refuse_render()
+
+
+def refuse_pictures(session: Session, record: Record) -> None:
+    """Refuse drawing pictures of ``record`` (the session's own, or a
+    forward run's) before anything is drawn: for the finding its scene's
+    code recorded that refuses drawing it, then for a ``gpu`` route drawn
+    as it runs (:class:`Refusals`, in that order).
+    """
+    if record.bridge.calls:
+        from arachne.lint.raised import refuse_drawing
+
+        refuse_drawing(record)
+    refuse_live(session)
+
+
 def route_of(session: Session) -> Route:
     """The route ``session`` took from its record when it was opened or
     last reloaded.
@@ -181,7 +247,6 @@ def drawing(
         return Drawing(record, draw_path=session.draw_path, leave_out=leave_out)
     from .stack import Stack
 
-    refuse_live(session)
     camera = record._scene.renderer.camera
     opened = device.compositor(camera.pixel_width, camera.pixel_height)
     if opened is None:
