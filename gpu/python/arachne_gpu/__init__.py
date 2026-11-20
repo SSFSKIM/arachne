@@ -26,7 +26,7 @@ used this build, opening a compositor or listing ``adapters()`` raises
 
 from __future__ import annotations
 
-from arachne_gpu._errors import ForkedProcessError, NoGpu, Unsupported
+from arachne_gpu._errors import ForkedProcessError, NoGpu, SizeMismatch, Unsupported
 from arachne_gpu._frame import (
     Blur,
     Focus,
@@ -52,6 +52,7 @@ __all__ = [
     "NoGpu",
     "Picture",
     "Quad",
+    "SizeMismatch",
     "SoftMask",
     "Unsupported",
     "Window",
