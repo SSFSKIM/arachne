@@ -493,14 +493,18 @@ class Stay:
         self.left_at = at
         self.left_tick = min(tick, self.computed_tick)
         self.left_declaration = self.crate.declaration_bytes()
-        # Each body's drawing as it is left: a body shown unchanged after
-        # this reads the stay's last row (:mod:`.measures`).
+        # Each body's drawing as it is left, when it is placed at the stay's
+        # last row: a body shown unchanged after this reads that row
+        # (:mod:`.measures`). One its world last placed at an older row (its
+        # updating held until it left) is not of the last row, and reads
+        # nothing past the stay.
+        placed = self._placed == self._solver_row(self.left_tick)
         for number, mobject in enumerate(self.world._body_mobjects):
             measures.bind(
                 mobject,
                 self.ordinal,
                 number,
-                measures.drawn_key(mobject.__dict__),
+                measures.drawn_key(mobject.__dict__) if placed else None,
             )
 
     # The record's side

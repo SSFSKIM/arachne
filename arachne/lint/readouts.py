@@ -93,7 +93,7 @@ def _read(
         shows = state.get("_shows")
         if shows is None or id(shows.world) not in present:
             continue
-        body = _body_id(bakes, shown.occurrence, shown.body)
+        body = _body_id(record, bakes, shown.occurrence, shown.body)
         if body is None:
             continue
         origin = record.origin(mob)
@@ -110,11 +110,21 @@ def _read(
     return tuple(found)
 
 
-def _body_id(bakes: Bakes, ordinal: int, body: int) -> str | None:
-    """The stable id of the body ``body`` of the occurrence ``ordinal``."""
+def _body_id(record: Record, bakes: Bakes, ordinal: int, body: int) -> str | None:
+    """The stable id of the body ``body`` of the occurrence ``ordinal``: from
+    its bindings once sealed, else from the stay that computes it (a forward
+    run's, read while it runs).
+    """
     occurrence = bakes.occurrence(ordinal)
     if occurrence is None:
-        return None
+        try:
+            live = bakes.live(ordinal)
+        except KeyError:
+            return None
+        mobjects = getattr(getattr(live, "world", None), "_body_mobjects", ())
+        if not 0 <= body < len(mobjects):
+            return None
+        return record.origin(mobjects[body]).id
     return next(
         (
             binding.id
