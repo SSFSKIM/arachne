@@ -395,20 +395,48 @@ def _prefix_xs(reading: Readout, glyphs: int) -> np.ndarray:
     return np.array([m.get_left()[0] for m in shown[:glyphs]])
 
 
+def _prefix_corners(reading: Readout, glyphs: int) -> np.ndarray:
+    """The lower left corners of the label's first ``glyphs`` glyphs."""
+    label = reading.label
+    plate = getattr(label, "background_rectangle", None)
+    plates = set() if plate is None else {id(m) for m in plate.get_family()}
+    shown = [m for m in label.family_members_with_points() if id(m) not in plates]
+    return np.array([m.get_corner(DOWN + LEFT) for m in shown[:glyphs]])
+
+
 @pytest.mark.parametrize("pill", [False, True])
 def test_a_leading_word_stays_still_as_the_number_widens(pill):
     from arachne import CountUp
 
-    reading = Readout(0, format=WORDED, pill=pill).shift(LEFT + UP)
-    before = _prefix_xs(reading, 5)
-    middle = reading.label.get_center()[1]
+    reading = Readout(0, format=WORDED, pill=pill, font_size=COUNT_FONT_SIZE)
+    reading.shift(LEFT + UP)
+    before = _prefix_corners(reading, 5)
     count = CountUp(reading, 100, rate_func=lambda a: a)
     count.begin()
-    for alpha in (0.05, 0.5, 1.0):
-        count.interpolate(alpha)
-        assert np.abs(_prefix_xs(reading, 5) - before).max() < 1e-9, alpha
-        assert reading.label.get_center()[1] == pytest.approx(middle, abs=0.02)
+    # Every number the count shows: digits of other heights, and other
+    # widths, never move the word, across or up and down.
+    for value in range(101):
+        count.interpolate(value / 100)
+        moved = np.abs(_prefix_corners(reading, 5) - before).max()
+        assert moved < 1e-9, (reading.label.original_text, moved)
     assert reading.label.original_text == "swell 100%"
+
+
+@pytest.mark.parametrize(("offset", "pill"), [(UR, False), (RIGHT, True)])
+def test_an_attached_leading_word_stays_still_as_it_follows(offset, pill):
+    from arachne import CountUp, Dot, anchor
+
+    dot = Dot(LEFT)
+    reading = Readout(0, format=WORDED, at=anchor(dot), offset=offset, pill=pill)
+    before = _prefix_corners(reading, 5) - dot.get_center()
+    count = CountUp(reading, 100, rate_func=lambda a: a)
+    count.begin()
+    for value in range(101):
+        dot.shift(0.01 * RIGHT)
+        count.interpolate(value / 100)
+        reading.attach()
+        moved = np.abs(_prefix_corners(reading, 5) - dot.get_center() - before)
+        assert moved.max() < 1e-9, reading.label.original_text
 
 
 def test_a_bare_number_stays_centred_where_it_was_put():

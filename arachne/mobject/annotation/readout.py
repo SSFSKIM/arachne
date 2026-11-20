@@ -30,8 +30,10 @@ its *hold*, so what the reader has found does not move under the eye:
 - ``hold`` names it outright, for a placement the readout cannot see: a
   number right-aligned in a column holds ``RIGHT``.
 
-Its vertical place is its centre's: a new digit does not change the text's
-height.
+Up and down it keeps its baseline: the bottom of a glyph its format shows
+in every text (the first of a leading word, else the last of a trailing
+unit), which digits of other heights or a dipping round digit never move;
+a bare number keeps its centre's height.
 
 A readout declares its value as ``annotation.count``
 (:mod:`arachne.quantities`), read from the value a capture holds: the
@@ -121,6 +123,24 @@ def _leads_with_text(pattern: str) -> bool:
     return bool(literal.strip())
 
 
+def _fixed_glyph(pattern: str) -> int | None:
+    """The index, among a text's glyphs, of one its format shows in every
+    text: the first when it shows something before the number, the last
+    when only after it; ``None`` for a bare number.
+    """
+    if _leads_with_text(pattern):
+        return 0
+    parts = list(string.Formatter().parse(pattern))
+    trailing = "".join(literal for literal, *_ in parts[1:])
+    return -1 if trailing.strip() else None
+
+
+def _glyphs(label: Text) -> list[Any]:
+    """``label``'s glyphs, without its plate."""
+    plates = _plate_ids(label)
+    return [m for m in label.family_members_with_points() if id(m) not in plates]
+
+
 def _held_point(
     pattern: str,
     at: Anchor | None,
@@ -184,6 +204,20 @@ class Readout(Annotation):
             name=name,
         )
 
+    def _held_point(self, label: Text | None = None) -> np.ndarray:
+        """Where the label's (or ``label``'s) :attr:`hold` point stands:
+        across, that point of its box; up and down, the bottom of the glyph
+        its format always shows (its baseline), or its box's when it shows
+        none.
+        """
+        label = self.label if label is None else label
+        point = np.array(label.get_critical_point(self.hold), dtype=float)
+        fixed = _fixed_glyph(self.format)
+        glyphs = _glyphs(label)
+        if fixed is not None and glyphs:
+            point[1] = glyphs[fixed].get_bottom()[1]
+        return point
+
     @property
     def value(self) -> float:
         """The declared value now."""
@@ -202,7 +236,7 @@ class Readout(Annotation):
         label = self.label
         if said != label.original_text:
             made = self._label_class(said, font_size=label.font_size)
-            made.move_to(label.get_critical_point(self.hold), aligned_edge=self.hold)
+            made.shift(self._held_point() - self._held_point(made))
             _restyle(made, label)
             # A play draws its moving mobjects as listed when it began (CE's
             # moving list), so the glyphs replaced draw nothing from now on,

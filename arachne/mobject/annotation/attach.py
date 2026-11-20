@@ -268,10 +268,14 @@ class Annotation(VGroup):
             return
         # Placed at its anchor first, whether it follows or stays there.
         body.move_to(point + place)
-        self._held_from_place = body.get_critical_point(self.hold) - (point + place)
+        self._held_from_place = self._held_point() - (point + place)
         if self.attached.follow or self.leader is not None:
             self.add_updater(keep_attached)
         self.attach()
+
+    def _held_point(self) -> np.ndarray:
+        """Where the body's :attr:`hold` point stands now."""
+        return np.asarray(self.body.get_critical_point(self.hold))
 
     def attach(self) -> None:
         """Put the body at the anchor's point plus the offset, when it
@@ -286,7 +290,7 @@ class Annotation(VGroup):
             return
         if attached.follow:
             place = point + np.array(attached.offset) + self._held_from_place
-            self.body.shift(place - self.body.get_critical_point(self.hold))
+            self.body.shift(place - self._held_point())
         if self.leader is not None:
             self.leader.put_between(_edge_toward(self.body, point), point)
 
