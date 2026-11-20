@@ -493,6 +493,15 @@ class Stay:
         self.left_at = at
         self.left_tick = min(tick, self.computed_tick)
         self.left_declaration = self.crate.declaration_bytes()
+        # Each body's drawing as it is left: a body shown unchanged after
+        # this reads the stay's last row (:mod:`.measures`).
+        for number, mobject in enumerate(self.world._body_mobjects):
+            measures.bind(
+                mobject,
+                self.ordinal,
+                number,
+                measures.drawn_key(mobject.__dict__),
+            )
 
     # The record's side
 

@@ -21,7 +21,11 @@ or before it), the bake's row and its contact events, and nothing else:
   before the instant.
 
 Each is exact as baked, the contact instants to within a tick (their
-tolerance, 1/60 s). Outside the stay its occurrence covers, every one is
+tolerance, 1/60 s). A body left on screen after its world left reads the
+row its placement shows, the stay's last, at every instant after it while
+its own drawing stays as the stay left it, whichever route answers the
+instant: a held wait's one capture or a ticked play's own. Outside its
+stay otherwise (moved, redrawn, or before the stay) every one is
 unreadable, with the reason, and the lint reports
 ``sim.quantity_unreadable``. A contact begins where two shapes come within
 the world's allowed linear error, touching or overlapping
@@ -30,8 +34,9 @@ the world's allowed linear error, touching or overlapping
 
 from __future__ import annotations
 
-__all__ = ["SimBody", "bind", "body_quantities"]
+__all__ = ["SimBody", "bind", "body_quantities", "drawn_key"]
 
+import hashlib
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
@@ -63,26 +68,57 @@ CONTACT_TOLERANCE = 1 / TICK_RATE
 class SimBody:
     """A simulated body's source: the occurrence ``ordinal`` of its world's
     stay in the record's bakes, and its number ``body`` among the world's
-    bodies.
+    bodies; once the stay has ended, ``drawn``, the key of the body's own
+    drawing as the stay left it (:func:`drawn_key`).
     """
 
     ordinal: int
     body: int
+    drawn: bytes | None = None
 
 
-def bind(mobject: Mobject, ordinal: int, body: int) -> None:
-    """Make ``mobject``'s source the body ``body`` of the stay ``ordinal``,
-    in place of the one an earlier stay set; its other sources stay.
+def bind(mobject: Mobject, ordinal: int, body: int, drawn: bytes | None = None) -> None:
+    """Make ``mobject``'s source the body ``body`` of the stay ``ordinal``
+    (its drawing as the stay left it ``drawn``), in place of the one an
+    earlier stay set; its other sources stay.
     """
     held = mobject.__dict__.get(SOURCES, ())
     kept = tuple(each for each in held if type(each) is not SimBody)
     setattr(mobject, SOURCES, kept)
-    quantities.attach(mobject, SimBody(ordinal, body))
+    quantities.attach(mobject, SimBody(ordinal, body, drawn))
+
+
+def drawn_key(own: Mapping[str, Any]) -> bytes | None:
+    """The key of what a mobject's own attributes ``own`` draw: its
+    placement's, or its points'; ``None`` when it has no points of its own.
+    """
+    placement = own.get("_placement")
+    points = own.get("_points")
+    if placement is not None and (points is None or points is placement.materialized):
+        return bytes(placement.key)
+    if points is None:
+        return None
+    array = np.ascontiguousarray(points)
+    return hashlib.blake2b(array.tobytes(), digest_size=16).digest()
 
 
 @quantities.source(SimBody)
 def _sim_body(found: SimBody, held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
-    return body_quantities(at.bakes, found.ordinal, found.body, at.tick)
+    return body_quantities(at.bakes, found.ordinal, found.body, _tick(found, held, at))
+
+
+def _tick(found: SimBody, held: Mapping[str, Any], at: At) -> int:
+    """The tick a body's capture shows: the instant's; past the end of its
+    stay, while its drawing is still as the stay left it, the stay's last.
+    """
+    if found.drawn is None or at.bakes is None:
+        return at.tick
+    occurrence = at.bakes.occurrence(found.ordinal)
+    if occurrence is None or at.tick <= occurrence.last_tick:
+        return at.tick
+    if drawn_key(held) != found.drawn:
+        return at.tick
+    return occurrence.last_tick
 
 
 def body_quantities(
