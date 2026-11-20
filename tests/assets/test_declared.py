@@ -13,8 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from arachne import Boil, Rig, Square, quantities
+from arachne import Boil, Rig, Square
 from arachne.assets import load_asset
+from arachne.assets.reader import read_asset
+from arachne.assets.rig import unadmitted_rig
 from arachne.assets.timing import Timing
 from arachne.quantities import MAX_NAME_BYTES, At, read
 from arachne.timeline.clock import frames_in
@@ -217,23 +219,27 @@ def test_the_longest_drawing_name_a_quantity_carries_loads_and_reads_back(tmp_pa
     assert {q.name: q.value for q in found}["rig.slot.lamp"] == longest
 
 
-def test_a_custom_unit_is_registered_when_its_asset_loads(tmp_path):
-    unit = "dial-turns"
-    assert unit not in quantities._UNITS
-    directory = admitted(edited(copied(tmp_path, "dial"), _parameter_unit(unit)))
-    # Admitting it drew a rig of it, and registered nothing.
-    assert unit not in quantities._UNITS
-    load_asset(directory)
-    # Registered by the load alone, before any rig is made.
-    assert unit in quantities._UNITS
-    rig = Rig(directory)
-    (reading,) = (
+def _reading(rig: Rig):
+    """The rig's ``rig.param.reading``, as the declared quantities read it."""
+    (found,) = (
         q
         for q in read(Rig, rig.__dict__, At.of(Fraction(0), None))
-        if "param" in q.name
+        if q.name == "rig.param.reading"
     )
-    assert (reading.name, reading.unit, reading.unreadable) == (
-        "rig.param.reading",
-        unit,
-        None,
-    )
+    return found
+
+
+def test_a_custom_unit_is_registered_when_its_asset_loads(tmp_path):
+    unit = "dial-turns"
+    directory = admitted(edited(copied(tmp_path, "dial"), _parameter_unit(unit)))
+    # A rig of the asset read, not loaded (as admitting it drew one): its
+    # value is in a unit nothing has registered, so it reads as unreadable.
+    drawn = unadmitted_rig(read_asset(directory))
+    before = _reading(drawn)
+    assert before.value is None
+    assert unit in before.unreadable
+    # Loaded alone, before any rig of it is made, the same rig reads in it.
+    load_asset(directory)
+    after = _reading(drawn)
+    assert (after.value, after.unit, after.unreadable) == (50.0, unit, None)
+    assert _reading(Rig(directory)) == after

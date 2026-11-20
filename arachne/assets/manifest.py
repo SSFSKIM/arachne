@@ -526,6 +526,7 @@ class _Reader:
         ``name`` (always registered), a number's rules do not depend on its
         unit.
         """
+        # XN's internals, until it offers a public validator.
         known = unit in quantities._UNITS
         probe = quantities.Quantity(name, value, unit if known else DEFAULT_UNIT)
         why = quantities._check(probe).unreadable
