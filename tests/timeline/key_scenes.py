@@ -121,6 +121,7 @@ MADE_WITH_ARGUMENTS = {
     "Variable": lambda: Variable(1.5, "x"),
     "VectorField": lambda: VectorField(_field),
     "VideoMobject": lambda: VideoMobject("fixture:numbered-clip"),
+    "Window": lambda: Window(Square(), width=1, height=1),
 }
 
 
