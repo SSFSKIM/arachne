@@ -44,6 +44,7 @@ __all__ = [
     "member_box",
     "member_place",
     "picture_place",
+    "picture_shows",
     "pixel_box",
     "pixel_points",
     "point_thickness",
@@ -740,9 +741,36 @@ def _image_painted(camera: Camera, view: View, member: Mobject) -> bool:
     (``Camera.display_image_mobject``), and a raster whose every pixel is
     fully transparent paints nothing (its opacity is in its alpha).
     """
-    return _quad_painted(
-        camera, view, member, member.points, getattr(member, "pixel_array", None)
-    )
+    return _quad_painted(camera, view, member, member.points)
+
+
+def picture_shows(member: Mobject) -> bool:
+    """Whether a pixel of the picture ``member`` draws shows: not every
+    pixel of it fully transparent. An image's picture is its
+    ``pixel_array`` (its opacity is in its alpha); a path whose fill is a
+    picture (``fill_is_picture``) draws its picture at its fill opacity
+    (``member.pixels()``), and one the engine refuses to draw, or with no
+    pixels to read, is taken to show, standing where it would be drawn. The one reading of a picture's
+    presence the lint's parts and ``apart`` share.
+    """
+    if getattr(member, "fill_is_picture", False):
+        from arachne.lint.raised import RaisedFinding
+
+        read = getattr(member, "pixels", None)
+        if read is None:
+            # A fill declared a picture with no pixels to read: all of it.
+            return True
+        try:
+            raster = read()
+        except RaisedFinding:
+            # Refused where a frame is drawn.
+            return True
+    else:
+        raster = getattr(member, "pixel_array", None)
+    if raster is None:
+        return True
+    raster = np.asarray(raster)
+    return not (raster.ndim == 3 and raster.shape[-1] == 4 and not raster[..., 3].any())
 
 
 def picture_place(
@@ -756,18 +784,10 @@ def picture_place(
     corners, a picture under half a pixel high, or one every pixel of which
     is transparent at the path's opacity (``member.pixels()``).
     """
-    from arachne.lint.raised import RaisedFinding
-
     corners = member.corners()  # type: ignore[attr-defined]
     if corners is None:
         return None
-    try:
-        raster = member.pixels()  # type: ignore[attr-defined]
-    except RaisedFinding:
-        # A picture the engine refuses to draw is refused where a frame is
-        # drawn; read here, it stands where it would be drawn.
-        raster = None
-    if not _quad_painted(camera, view, member, corners, raster):
+    if not _quad_painted(camera, view, member, corners):
         return None
     shown = _pre_display(camera, member, corners)
     ink = _span(_placed(view, shown, view.frame_center, home=True))
@@ -775,15 +795,13 @@ def picture_place(
 
 
 def _quad_painted(
-    camera: Camera, view: View, member: Mobject, points: np.ndarray, raster: Any
+    camera: Camera, view: View, member: Mobject, points: np.ndarray
 ) -> bool:
-    """:func:`_image_painted` for an image of ``member`` at ``points`` (its
-    corners, CE's image order) whose pixels are ``raster``.
+    """:func:`_image_painted` for the picture of ``member`` at ``points``
+    (its corners, CE's image order).
     """
-    if raster is not None:
-        raster = np.asarray(raster)
-        if raster.ndim == 3 and raster.shape[-1] == 4 and not raster[..., 3].any():
-            return False
+    if not picture_shows(member):
+        return False
     shown = _pre_display(camera, member, points)
     target = _placed(view, shown, view.frame_center, home=False)
     target = target - target.astype(np.int64).min(axis=0)
