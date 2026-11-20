@@ -32,10 +32,14 @@ def test_a_flow_answers_its_speed_and_0_once_stopped(flows):
     found = flows.quantities(0.25, "fast")
     assert values(found) == {"diagram.flow_speed": FAST}
     assert found["diagram.flow_speed"]["unit"] == "u/s"
+    # Measured speed holds within 1 % of the declared one.
+    assert found["diagram.flow_speed"]["tolerance"] == pytest.approx(0.01 * FAST)
     assert values(flows.quantities(0.25, "slow")) == {"diagram.flow_speed": SLOW}
     # Stopped, its tokens stand still.
     assert values(flows.quantities(0.75, "fast")) == {"diagram.flow_speed": FAST}
-    assert values(flows.quantities(0.75, "slow")) == {"diagram.flow_speed": 0.0}
+    stopped = flows.quantities(0.75, "slow")
+    assert values(stopped) == {"diagram.flow_speed": 0.0}
+    assert stopped["diagram.flow_speed"]["tolerance"] == 0.0
 
 
 @pytest.mark.parametrize(("attribute", "changed"), [("speed", 2.0), ("stopped", True)])

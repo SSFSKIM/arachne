@@ -13,7 +13,8 @@ joins, and a camera move into one piece.
 
 A flow declares its speed as ``diagram.flow_speed``, in scene units a
 second (:mod:`arachne.quantities`), read from what a capture holds: its
-declared speed while it runs, 0 once it is stopped.
+declared speed while it runs, 0 once it is stopped, with a tolerance of 1 %
+of it, within which its tokens' measured speed holds.
 
 A diagram's labels are measured against each other, against the frame's
 edge and for their height by the lint rule
@@ -362,11 +363,18 @@ class Flow(VGroup):
 
 quantities.register("diagram.", owner="arachne.mobject.diagram", units=("u/s",))
 
+#: A flow's declared speed holds within this share of it, measured.
+FLOW_TOLERANCE = 0.01
+
 
 @quantities.provider(Flow)
 def _declared(held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
     speed = 0.0 if held["stopped"] else held["speed"]
-    return (Quantity("diagram.flow_speed", speed, "u/s"),)
+    return (
+        Quantity(
+            "diagram.flow_speed", speed, "u/s", tolerance=FLOW_TOLERANCE * abs(speed)
+        ),
+    )
 
 
 def _start_flow(flow: Mobject, dt: float) -> None:
