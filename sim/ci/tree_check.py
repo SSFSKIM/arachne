@@ -2,11 +2,14 @@
 determinism feature on.
 
 ``tree_check.py deps``
-    Fails if the crate's dependency tree (every kind, every target) holds a GPU crate (the
-    pattern is the core's, read from ``core/ci/tree_check.py``), if ``arachne-core`` is in it,
-    or if ``simba`` (the solver's scalar maths) is built without ``libm_force``, which routes
-    its transcendental functions to the pure-Rust ``libm``. Prints which crates are built with
-    their ``std`` feature.
+    Fails if the crate's dependency tree (every kind, every target, with the Python binding's
+    feature: the tree the shipped extension is built from) holds a GPU crate (the pattern is the
+    core's, read from ``core/ci/tree_check.py``), if ``arachne-core`` is in it, if ``simba``
+    (the solver's scalar maths) is built without ``libm_force``, which routes its
+    transcendental functions to the pure-Rust ``libm``, or if one of the solver's vendored
+    crates (``vendor/VENDORED.md``) resolves from anywhere but its directory under ``vendor/``,
+    or the lock file holds a git source. Prints which crates are built with their ``std``
+    feature.
 
 Run from ``sim/``.
 """
@@ -14,12 +17,24 @@ Run from ``sim/``.
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
+from typing import Any
 
-CORE_CHECK = Path(__file__).resolve().parents[2] / "core" / "ci" / "tree_check.py"
+SIM = Path(__file__).resolve().parents[1]
+CORE_CHECK = SIM.parent / "core" / "ci" / "tree_check.py"
+#: Each vendored crate and its directory under vendor/.
+VENDORED = {
+    "rapier2d": "rapier/crates/rapier2d",
+    "rapier3d": "rapier/crates/rapier3d",
+    "parry2d": "parry/crates/parry2d",
+    "parry3d": "parry/crates/parry3d",
+    "glamx": "glamx",
+}
 
 
 def core_gpu_pattern() -> re.Pattern[str]:
@@ -55,6 +70,8 @@ def check_deps() -> list[str]:
             "cargo",
             "tree",
             "--locked",
+            "--features",
+            "python",
             "--target",
             "all",
             "-e",
@@ -91,6 +108,54 @@ def check_deps() -> list[str]:
 
     with_std = sorted(p for p, f in packages.items() if "std" in f)
     print(f"deps: built with std: {', '.join(with_std) or 'none'}")
+
+    out = subprocess.run(
+        [
+            "cargo",
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+            "--features",
+            "python",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode != 0:
+        sys.exit(f"cargo metadata failed:\n{out.stderr}")
+    found = check_vendored(
+        json.loads(out.stdout), (SIM / "Cargo.lock").read_text(), SIM / "vendor"
+    )
+    if not found:
+        print(f"deps: {', '.join(VENDORED)} from vendor/ only; no git source locked")
+    return problems + found
+
+
+def check_vendored(metadata: dict[str, Any], lock: str, vendor: Path) -> list[str]:
+    """Each vendored crate is one package, built from its directory under ``vendor``, and
+    the lock file names no git source.
+    """
+    problems = []
+    for name, directory in VENDORED.items():
+        packages = [p for p in metadata["packages"] if p["name"] == name]
+        expected = (vendor / directory / "Cargo.toml").resolve()
+        if len(packages) != 1:
+            problems.append(f"{name}: {len(packages)} packages in the tree, not 1")
+            continue
+        package = packages[0]
+        if package["source"] is not None:
+            problems.append(f"{name} resolves from {package['source']}, not vendor/")
+        elif Path(package["manifest_path"]).resolve() != expected:
+            problems.append(
+                f"{name} is built from {package['manifest_path']}, not {expected}"
+            )
+    problems += [
+        f"Cargo.lock holds a git source: {package['name']} {package['source']}"
+        for package in tomllib.loads(lock).get("package", [])
+        if package.get("source", "").startswith("git+")
+    ]
     return problems
 
 

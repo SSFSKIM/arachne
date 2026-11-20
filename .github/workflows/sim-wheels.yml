@@ -1,0 +1,51 @@
+# Builds the simulation crate's wheels (arachne-sim: one abi3 wheel for CPython 3.12+ per
+# platform) for manylinux_2_28 x86_64 and macOS arm64, with the toolchain sim/rust-toolchain.toml
+# pins, and keeps them as workflow artifacts. Runs on every pull request touching sim/ and on every
+# push to main. Builds from source at a pinned commit (the gate, the production image) do not
+# depend on these.
+name: sim-wheels
+on:
+  pull_request:
+    paths: ['sim/**', '.github/workflows/sim-wheels.yml']
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  wheel:
+    name: wheel (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: manylinux_2_28-x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: '2_28'
+          - platform: macos-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            manylinux: ''
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: The pinned toolchain
+        id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' sim/rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1 (v1.51.0)
+        with:
+          working-directory: sim
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          rust-toolchain: ${{ steps.toolchain.outputs.channel }}
+          maturin-version: v1.16.0  # sim/pyproject.toml's build-system pin
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: arachne-sim-${{ matrix.platform }}
+          path: sim/dist/*.whl
+          if-no-files-found: error
