@@ -155,6 +155,16 @@ def test_a_flow_wraps_and_spaces_its_tokens_by_arc_length():
     )
 
 
+def test_a_flow_on_an_edge_collapsed_to_a_point_is_refused():
+    a, b = Node("a"), Node("b").shift(RIGHT * 4)
+    diagram = Diagram(a, b)
+    edge = diagram.connect((a, "right"), (b, "left"), route="straight", tip=False)
+    flow = Flow(edge, speed=1.0, tokens=3)
+    edge.scale(0, about_point=edge.points[0])
+    with pytest.raises(ValueError, match="no length"):
+        flow.show_at(1.0)
+
+
 @pytest.fixture
 def moving():
     admission.DEMOTED.clear()
