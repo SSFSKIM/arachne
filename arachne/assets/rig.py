@@ -40,7 +40,7 @@ settled until it has a size again.
 A rig declares its values (:mod:`arachne.quantities`), read from the values
 a capture holds: ``rig.param.<parameter>`` for each parameter, in its
 manifest's unit, and ``rig.slot.<slot>`` for each slot, the name of the
-drawing it shows. On a rig held to stepped timing (:mod:`.timing`) they are
+drawing it shows (:func:`~.reader.load_asset` registers the units). On a rig held to stepped timing (:mod:`.timing`) they are
 the values of the drawing on display.
 """
 
@@ -61,6 +61,7 @@ from ..mobject.types.vectorized_mobject import VectorizedPoint, VGroup, VMobject
 from ..mobject.values import FrozenPoints, adopt
 from ..quantities import Quantity
 from ..utils.paths import straight_path
+from .manifest import QUANTITY_PREFIX as PREFIX
 from .manifest import PartSpec, refuse
 from .pose import CanvasMap, Model, RigValues, model_of, posed_with, transforms
 from .reader import Asset, load_asset
@@ -72,10 +73,6 @@ if TYPE_CHECKING:
     from ..mobject.mobject import Mobject
     from ..quantities import At
     from .anchor import Anchor
-
-#: The prefix of a rig's declared quantities.
-PREFIX = "rig."
-quantities.register(PREFIX, owner="arachne.assets")
 
 #: The points of a shape that draws nothing.
 _EMPTY = adopt(np.zeros((0, 3)), FrozenPoints)
@@ -160,9 +157,6 @@ class Rig(VGroup):
     def _make(self, asset: Asset, **vmobject_kwargs: Any) -> None:
         """Build the rig of ``asset``, read whole, whatever its admission."""
         model = model_of(asset)
-        # A parameter's value is declared in its manifest's unit.
-        for parameter in model.parameters:
-            quantities.register_unit(parameter.unit)
         super().__init__(**vmobject_kwargs)
         self.asset = asset
         self.model = model

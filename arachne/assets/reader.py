@@ -57,7 +57,7 @@ from types import MappingProxyType
 from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
-from .. import config
+from .. import config, quantities
 from ..mobject.types.vectorized_mobject import VMobject
 from .manifest import (
     MANIFEST,
@@ -177,9 +177,18 @@ def load_asset(ref: str | os.PathLike[str] | Asset) -> Asset:
     """
     if isinstance(ref, Asset):
         _admitted(ref, str(ref.directory))
-        return ref
+        return _units_registered(ref)
     asset = read_asset(ref)
     _admitted(asset, os.fspath(ref))
+    return _units_registered(asset)
+
+
+def _units_registered(asset: Asset) -> Asset:
+    """``asset``, its parameters' units registered as units of declared
+    quantities (:mod:`arachne.quantities`), so a rig's values read in them.
+    """
+    for parameter in asset.manifest.parameters:
+        quantities.register_unit(parameter.unit)
     return asset
 
 

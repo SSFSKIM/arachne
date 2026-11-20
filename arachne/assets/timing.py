@@ -67,8 +67,9 @@ is declared too when it enters the scene that declared it.
 The declared mobject declares its timing (:mod:`arachne.quantities`),
 read from the mark a capture holds: ``timing.rate``, its drawings a second,
 and with boil ``timing.boil_rate`` and ``timing.boil_amplitude``, in
-changes a second (``1/s``) and pixels of the 1080-pixel reference picture
-(``px``).
+changes a second (``1/s``) and in ``px``: one 1080th of the frame's shorter
+side, ``min(frame_width, frame_height) / 1080`` scene units, not a device
+pixel of the rendered frame.
 
 Stated limit. A frozen frame (``pause``, ``wait(frozen_frame=True)``) runs
 no updater, so it shows the family as true when it begins, without boil:
@@ -190,9 +191,11 @@ def _rate(value: Any, what: str) -> int:
 @dataclass(frozen=True)
 class Boil:
     """Line boil: an illustration's outlines redrawn ``rate`` times a second
-    (a divisor of 60), each point moved by at most ``amplitude`` pixels of
-    the 1080-pixel reference picture, by a wobble that is a function of the
-    boil's step (``floor(t * rate)``), the point's place and ``seed``.
+    (a divisor of 60), each point moved by at most ``amplitude`` ``px``, a
+    ``px`` being one 1080th of the frame's shorter side,
+    ``min(frame_width, frame_height) / 1080`` scene units, not a device pixel
+    of the rendered frame; by a wobble that is a function of the boil's step
+    (``floor(t * rate)``), the point's place and ``seed``.
 
     The wobble is one smooth field over the picture, so points that
     coincide move together: a closed outline stays closed and parts that
@@ -213,7 +216,8 @@ class Boil:
             or amplitude < 0
         ):
             raise ValueError(
-                f"A boil's amplitude is a finite number of pixels, 0 or more, not"
+                f"A boil's amplitude is a finite number of px (1080ths of the frame's"
+                f" shorter side), 0 or more, not"
                 f" {amplitude!r}."
             )
         object.__setattr__(self, "amplitude", float(amplitude))
