@@ -47,7 +47,6 @@ __all__ = ["Stack", "Unsupported"]
 
 import contextlib
 import copy
-import functools
 import math
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
@@ -55,6 +54,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from arachne.frame_ir.xf import image_key
+from arachne.timeline.camera_code import engine_own
 from arachne.timeline.record import DEPENDENCIES
 
 from .layer import focus_at, layer_of, pixels
@@ -488,21 +488,25 @@ def _camera_of_size(camera: Camera, size: tuple[int, int]) -> Camera:
     inner.pixel_array_to_cairo_context = {}
     inner.pixel_array_to_mapping_centre = {}
     inner.background_colored_vmobject_displayer = None
-    inner.adjusted_thickness = functools.partial(_thickness_at_own_size, inner)
+    inner.adjusted_thickness = _thickness_at_own_size
     inner.pixel_array = np.zeros(
         (height, width, camera.n_channels), dtype=camera.pixel_array_dtype
     )
     return inner
 
 
-def _thickness_at_own_size(camera: Camera, thickness: float) -> float:
+def _thickness_at_own_size(thickness: float) -> float:
     """A point's thickness as ``Camera.adjusted_thickness`` gives it, with
-    ``camera``'s own size where that reads the configured one: a scene
-    configured at the window's size, drawn alone, thickens its points by a
-    factor of 1, and so does the window's camera.
+    the window camera's own size where that reads the configured one: a
+    scene configured at the window's size, drawn alone, thickens its points
+    by a factor of 1 (its own size over itself), and so does the window's
+    camera.
     """
-    own = camera.pixel_height + camera.pixel_width
-    return 1 + (thickness - 1) * (own / own)
+    return 1 + (thickness - 1) * 1.0
+
+
+# Put on a window's camera by the engine, not by the scene's code.
+engine_own(_thickness_at_own_size)
 
 
 def _bound_to(method: Any, owner: Any, other: Any) -> Any:
