@@ -97,7 +97,8 @@ class World(_World):
         :data:`ANGULAR_SPEED` the row's speed (u/s) or angular speed (rad/s); for
         :data:`SPEED_CAPPED` and :data:`ANGULAR_SPEED_CAPPED` a lower bound, the larger of the
         row's and the cap (the finite cap, even where the speed overflowed); for
-        :data:`TUNNELLED` the closest the sweep saw the two bodies (0 when seen overlapping, NaN
-        when a number could not be told); NaN for :data:`NON_FINITE`.
+        :data:`TUNNELLED` minus the depth the sweep saw the two bodies penetrating, else the
+        closest distance it measured within the allowed linear error, or NaN when it could not
+        show them apart; NaN for :data:`NON_FINITE`.
         """
         return np.frombuffer(self._finding_values(), dtype="<f4")

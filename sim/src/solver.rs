@@ -46,17 +46,74 @@ struct Motion {
     enabled: bool,
 }
 
-/// The part of a measured distance the distance query may overstate: its iterative solver stops
-/// once its bounds agree to the square root of ten machine epsilons (about 1.1e-3) of the
-/// distance, so the true distance is at least the measured one less this share of it.
-const QUERY_ERROR: f32 = 2.0e-3;
+/// The rounding allowed a certified separation (units): it is computed from single-precision
+/// support points and dot products, which are exact to about 6e-5 units within 1000 units of the
+/// origin (the range the sweep claims; `Sweep`).
+const ROUNDING: f32 = 5.0e-4;
 
-/// A distance measured between two shapes, taken as a lower bound on the true one: less the
-/// query's own error. `None` when it is not a finite number.
-fn at_least(distance: f32) -> Option<f32> {
-    distance
-        .is_finite()
-        .then_some(distance - distance.abs() * QUERY_ERROR)
+/// What two shapes are at one instant, as far as can be shown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Gap {
+    /// Seen penetrating each other: a contact query's negative distance, deeper than the
+    /// rounding, which this holds.
+    Overlap(f32),
+    /// Within the allowance of each other, measured (the distance, zero when touching or
+    /// intersecting too shallowly to tell from touching).
+    Within(f32),
+    /// Apart by at least this certified separation, and by more than the allowance as measured.
+    Apart(f32),
+    /// Nothing can be shown: a number not finite, a query that cannot answer, a separation that
+    /// cannot be certified.
+    Unknown,
+}
+
+/// A lower bound on the distance between two convex shapes at their poses, along the direction
+/// `n` (a unit vector from the first toward the second): the second's support in `-n` less the
+/// first's in `n`, less the rounding. Every point of the first lies at most at the first value
+/// along `n`, every point of the second at least at the second, so no two are closer than their
+/// difference, whatever the distance query's own convergence. `None` when a shape has no support
+/// map or a number is not finite.
+fn separation(
+    p1: &Pose,
+    s1: &dyn Geometry,
+    p2: &Pose,
+    s2: &dyn Geometry,
+    n: Vector,
+) -> Option<f32> {
+    let (m1, m2) = (s1.as_support_map()?, s2.as_support_map()?);
+    let far = m1.support_point(p1, n).dot(n);
+    let near = m2.support_point(p2, -n).dot(n);
+    let bound = near - far - ROUNDING;
+    bound.is_finite().then_some(bound)
+}
+
+/// What the two shapes at their poses are (`Gap`), within `allowance`.
+fn gap(p1: &Pose, s1: &dyn Geometry, p2: &Pose, s2: &dyn Geometry, allowance: f32) -> Gap {
+    if !p1.is_finite() || !p2.is_finite() {
+        return Gap::Unknown;
+    }
+    match query::contact(p1, s1, p2, s2, 0.0) {
+        Ok(Some(c)) if c.dist.is_finite() && c.dist < -ROUNDING => return Gap::Overlap(c.dist),
+        Ok(_) => {}
+        Err(_) => return Gap::Unknown,
+    }
+    let points = match query::closest_points(p1, s1, p2, s2, f32::MAX) {
+        Ok(query::ClosestPoints::WithinMargin(a, b)) => (a, b),
+        Ok(query::ClosestPoints::Intersecting) => return Gap::Within(0.0),
+        _ => return Gap::Unknown,
+    };
+    let offset = points.1 - points.0;
+    let measured = offset.length();
+    if !measured.is_finite() {
+        return Gap::Unknown;
+    }
+    if measured <= allowance {
+        return Gap::Within(measured);
+    }
+    match separation(p1, s1, p2, s2, offset / measured) {
+        Some(bound) => Gap::Apart(bound),
+        None => Gap::Unknown,
+    }
 }
 
 /// Whether `bound`, a lower bound on how far apart two shapes are, rules out their meeting when
@@ -66,11 +123,11 @@ fn rules_out(bound: f32, need: f32) -> bool {
     bound.is_finite() && need.is_finite() && bound >= need
 }
 
-/// Two of a pair's closest distances as one: zero (seen overlapping) if either is, else NaN
-/// (indeterminate) if either is, else the smaller.
+/// Two of a pair's sweeps as one (`Swept::value`): a penetration seen (negative) wins, the
+/// deeper; else an indeterminate one (NaN); else the closer.
 fn merge(a: f32, b: f32) -> f32 {
-    if a == 0.0 || b == 0.0 {
-        0.0
+    if a < 0.0 || b < 0.0 {
+        a.min(b)
     } else if a.is_nan() || b.is_nan() {
         f32::NAN
     } else {
@@ -79,12 +136,13 @@ fn merge(a: f32, b: f32) -> f32 {
 }
 
 /// Two shapes swept through a step: each one's motion, the most their distance can shrink over
-/// the whole step (`rate`), and the allowance kept for rounding and the distance query.
+/// the whole step (`rate`), and the allowance (the allowed linear error, 0.005 units).
 ///
-/// The allowance (the allowed linear error, 0.005 units) covers the rounding of single-precision
-/// poses and of the shapes' distance while the shapes and their motion stay within about 1000
-/// units of the origin, where a number is exact to about 6e-5 units: forty times less than half
-/// the allowance. Beyond that, nothing is claimed.
+/// Every distance the sweep advances by is certified: a separation along the measured closest
+/// direction, from the shapes' support maps (`separation`), less a rounding of 5e-4 units, which
+/// covers single-precision poses and dot products while the shapes and their motion stay within
+/// about 1000 units of the origin, where a number is exact to about 6e-5 units. Beyond that,
+/// nothing is claimed.
 struct Sweep<'a> {
     motions: (query::NonlinearRigidMotion, query::NonlinearRigidMotion),
     shapes: (&'a dyn Geometry, &'a dyn Geometry),
@@ -93,89 +151,98 @@ struct Sweep<'a> {
 }
 
 /// What a sweep found of two shapes over a step.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Swept {
-    /// They stayed apart by more than half the allowance throughout.
+    /// Certified apart by more than half the allowance throughout.
     Apart,
-    /// They came within the allowance of each other: the smallest distance measured, zero when
-    /// they were seen overlapping, NaN when a number could not be told (a possible meeting).
-    Met(f32),
+    /// Seen penetrating each other, by this depth (positive).
+    Overlap(f32),
+    /// Within the allowance of each other, never seen penetrating: the closest measured.
+    Near(f32),
+    /// A crossing could not be ruled out.
+    Indeterminate,
+}
+
+impl Swept {
+    /// The finding's value (`World::finding_values`): minus the depth seen penetrating, the
+    /// closest distance measured, or NaN when indeterminate; `None` when apart.
+    fn value(self) -> Option<f32> {
+        match self {
+            Swept::Apart => None,
+            Swept::Overlap(depth) => Some(-depth),
+            Swept::Near(closest) => Some(closest),
+            Swept::Indeterminate => Some(f32::NAN),
+        }
+    }
 }
 
 impl Sweep<'_> {
-    /// What the two shapes did over the step, by conservative advancement: at each instant the
-    /// distance between them is measured, and the next instant is as far on as the distance's
-    /// lower bound, less half the allowance, lets them close at `rate`. Between two instants
+    /// What the two shapes did over the step, by conservative advancement: at each instant
+    /// their gap is measured (`gap`), and the next instant is as far on as the certified
+    /// separation, less half the allowance, lets them close at `rate`, so between two instants
     /// they stay half the allowance apart. Once within the allowance, the rest of the step is
-    /// stepped through by the allowance's worth of closing at a time, to see them overlap.
-    /// Anything indeterminate (a rate, a pose or a distance not finite, a distance the query
-    /// cannot measure, an instant that does not move on) counts as meeting: what is not shown
-    /// apart is never taken to be.
+    /// stepped through by the allowance's worth of closing at a time, to see them penetrate.
+    /// Anything that cannot be shown (`Gap::Unknown`, a rate or an instant not finite, a
+    /// separation too small to advance by, an instant that does not move on) is indeterminate:
+    /// what is not shown apart is never taken to be.
     fn swept(&self) -> Swept {
         let rate = self.rate;
         if !rate.is_finite() || rate <= 0.0 {
-            return Swept::Met(f32::NAN);
+            return Swept::Indeterminate;
         }
         let mut t = 0.0f32;
         loop {
-            let Some(d) = self.distance(t) else {
-                return Swept::Met(f32::NAN);
-            };
-            if d <= self.allowance {
-                return Swept::Met(self.closest(t, d));
+            match self.gap(t) {
+                Gap::Overlap(depth) => return Swept::Overlap(-depth),
+                Gap::Within(d) => return self.closest(t, d),
+                Gap::Unknown => return Swept::Indeterminate,
+                Gap::Apart(bound) => {
+                    let room = bound - self.allowance / 2.0;
+                    if room <= 0.0 {
+                        return Swept::Indeterminate;
+                    }
+                    let next = t + room / rate;
+                    if !next.is_finite() || next <= t {
+                        return Swept::Indeterminate;
+                    }
+                    if next >= 1.0 {
+                        return Swept::Apart;
+                    }
+                    t = next;
+                }
             }
-            let Some(bound) = at_least(d) else {
-                return Swept::Met(f32::NAN);
-            };
-            let next = t + (bound - self.allowance / 2.0) / rate;
-            if !next.is_finite() || next <= t {
-                return Swept::Met(f32::NAN);
-            }
-            if next >= 1.0 {
-                return Swept::Apart;
-            }
-            t = next;
         }
     }
 
-    /// The smallest distance measured from `t`, where it was `d`, through the step's end, at
-    /// steps over which the shapes close by at most the allowance: zero once they are seen
-    /// overlapping, NaN when a number could not be told.
-    fn closest(&self, mut t: f32, mut d: f32) -> f32 {
+    /// From `t`, where the shapes were `d` apart, through the step's end, at steps over which
+    /// they close by at most the allowance: penetrating if they are seen to, else near, at the
+    /// closest measured. A step that cannot be measured leaves them near: they came within the
+    /// allowance, which a crossing cannot be told from either way.
+    fn closest(&self, mut t: f32, d: f32) -> Swept {
         let step = self.allowance / self.rate;
         let mut least = d;
-        while d > 0.0 {
+        loop {
             let next = t + step;
-            if !next.is_finite() || next <= t {
-                return f32::NAN;
-            }
-            if next > 1.0 {
-                break;
+            if !next.is_finite() || next <= t || next > 1.0 {
+                return Swept::Near(least);
             }
             t = next;
-            d = match self.distance(t) {
-                Some(d) => d,
-                None => return f32::NAN,
-            };
-            if d < least {
-                least = d;
+            match self.gap(t) {
+                Gap::Overlap(depth) => return Swept::Overlap(-depth),
+                Gap::Within(d) if d < least => least = d,
+                Gap::Unknown => return Swept::Near(least),
+                _ => {}
             }
         }
-        least
     }
 
-    /// The distance between the shapes at the instant `t` of the step, or `None` when a pose or
-    /// the distance is not a finite number, or the query cannot measure it.
-    fn distance(&self, t: f32) -> Option<f32> {
+    /// The two shapes' gap at the instant `t` of the step.
+    fn gap(&self, t: f32) -> Gap {
         let (p1, p2) = (
             self.motions.0.position_at_time(t),
             self.motions.1.position_at_time(t),
         );
-        if !p1.is_finite() || !p2.is_finite() {
-            return None;
-        }
-        let measured = query::distance(&p1, self.shapes.0, &p2, self.shapes.1).ok()?;
-        measured.distance.is_finite().then_some(measured.distance)
+        gap(&p1, self.shapes.0, &p2, self.shapes.1, self.allowance)
     }
 }
 
@@ -482,23 +549,22 @@ impl Solver {
     }
 
     /// The pairs of bodies (by number, the smaller first, sorted) two of whose shapes may have
-    /// passed through each other in the last step, each with the closest the sweep saw them
-    /// (zero when seen overlapping, NaN when indeterminate; `Swept`): shapes the solver lets
-    /// collide, that touched at neither end of the step (`now`, and the last row's), with no
-    /// contact between them in the solver's step, and that met when swept through the step's
-    /// motion (`Motion`).
+    /// passed through each other in the last step, each with what the sweep saw of them
+    /// (`Swept::value`: minus the depth seen penetrating, the closest distance measured, or NaN
+    /// when indeterminate): shapes the solver lets collide, that touched at neither end of the
+    /// step (`now`, and the last row's), with no contact between them in the solver's step, and
+    /// that came within the allowed linear error of each other, or could not be shown apart,
+    /// when swept through the step's motion (`Motion`).
     ///
-    /// Two shapes meet when they come within half the allowed linear error of each other
-    /// (`Settings::allowed_linear_error`), overlapping included. No test rules out a pair that
-    /// meets: over any part of the step, the distance between two shapes shrinks by at most the
-    /// relative travel of their bodies' centres plus each turn's angle times its shape's reach
-    /// (`rate`, over the whole step), so the distance at one instant bounds it everywhere near.
-    /// Every rejection keeps a further allowance of the allowed linear error for rounding and
-    /// for the distance query's own tolerance. A pair is ruled out when its boxes at the start,
-    /// each grown by how far its points may move, do not overlap; when the gap between their
-    /// spheres, or the distance between the shapes, at the start is at least the rate plus the
-    /// allowance; and otherwise only by conservative advancement through the whole step
-    /// (`advanced`): never by a single sweep's answer.
+    /// No test rules out a pair that meets: over any part of the step, the distance between two
+    /// shapes shrinks by at most the relative travel of their bodies' centres plus each turn's
+    /// angle times its shape's reach (`rate`, over the whole step). Every rejection keeps a
+    /// further allowance of the allowed linear error, needs finite numbers, and rests on a
+    /// certified separation (`separation`) where it rests on a distance. A pair is ruled out
+    /// when its boxes at the start, each grown by how far its points may move, do not overlap;
+    /// when the gap between their spheres, or their certified separation, at the start is at
+    /// least the rate plus the allowance; and otherwise only by conservative advancement through
+    /// the whole step (`Sweep::swept`).
     fn tunnelled(&mut self, before: &[Pose], now: &[(u32, u32)]) -> Vec<((u32, u32), f32)> {
         self.measure_reach();
         let allowance = self.world.integration_parameters.allowed_linear_error();
@@ -575,14 +641,11 @@ impl Solver {
                     self.world.colliders[handle1].shape(),
                     self.world.colliders[handle2].shape(),
                 );
-                let (start1, start2) = (&swept[i].0, &swept[k].0);
-                if start1.is_finite() && start2.is_finite() {
-                    let apart = query::distance(start1, shape1, start2, shape2);
-                    if matches!(apart, Ok(d) if at_least(d.distance)
-                        .is_some_and(|bound| rules_out(bound, rate + allowance)))
-                    {
-                        continue;
-                    }
+                // Only a certified separation at the start rules a pair out here.
+                if let Gap::Apart(bound) = gap(&swept[i].0, shape1, &swept[k].0, shape2, allowance)
+                    && rules_out(bound, rate + allowance)
+                {
+                    continue;
                 }
                 let contact = self
                     .world
@@ -608,13 +671,12 @@ impl Solver {
                     rate,
                     allowance,
                 };
-                if let Swept::Met(closest) = sweep.swept() {
-                    found.push((pair, closest));
+                if let Some(value) = sweep.swept().value() {
+                    found.push((pair, value));
                 }
             }
         }
-        // One entry per pair of bodies, whichever of their shapes met: seen overlapping if any
-        // pair of shapes was, else indeterminate if any was, else the closest.
+        // One entry per pair of bodies, whichever of their shapes met (`merge`).
         found.sort_unstable_by_key(|&(pair, _)| pair);
         let mut merged: Vec<((u32, u32), f32)> = Vec::new();
         for (pair, closest) in found {
@@ -731,28 +793,33 @@ fn free_axis(kind: &JointKind) -> JointAxis {
 mod tests {
     use super::*;
 
-    /// Two balls of radius 0.1, the first at the origin and still, the second at `x` moving by
-    /// `travel` along x over the step, swept with `rate`.
-    fn balls(x: f32, travel: f32, rate: f32) -> Swept {
+    fn still(at: &[f32]) -> query::NonlinearRigidMotion {
+        moving(at, &[0.0; DIM])
+    }
+
+    fn moving(at: &[f32], by: &[f32]) -> query::NonlinearRigidMotion {
+        query::NonlinearRigidMotion::new(
+            Pose::from_translation(vector(at)),
+            vector(&[0.0; DIM]),
+            vector(by),
+            angular(&[0.0; ANGULAR]),
+        )
+    }
+
+    fn along_x(x: f32) -> [f32; DIM] {
+        let mut v = [0.0; DIM];
+        v[0] = x;
+        v
+    }
+
+    /// Two balls of radius 0.1, the first at the origin and still, the second at `x` and `y`
+    /// moving by `travel` along x over the step, swept with `rate`.
+    fn balls(x: f32, y: f32, travel: f32, rate: f32) -> Swept {
         let ball = Ball::new(0.1);
-        let mut at = [0.0; DIM];
-        at[0] = x;
-        let mut by = [0.0; DIM];
-        by[0] = travel;
-        let still = query::NonlinearRigidMotion::new(
-            Pose::from_translation(vector(&[0.0; DIM])),
-            vector(&[0.0; DIM]),
-            vector(&[0.0; DIM]),
-            angular(&[0.0; ANGULAR]),
-        );
-        let moving = query::NonlinearRigidMotion::new(
-            Pose::from_translation(vector(&at)),
-            vector(&[0.0; DIM]),
-            vector(&by),
-            angular(&[0.0; ANGULAR]),
-        );
+        let mut at = along_x(x);
+        at[1] = y;
         Sweep {
-            motions: (still, moving),
+            motions: (still(&[0.0; DIM]), moving(&at, &along_x(travel))),
             shapes: (&ball, &ball),
             rate,
             allowance: 0.005,
@@ -761,31 +828,95 @@ mod tests {
     }
 
     #[test]
-    fn a_crossing_is_seen_overlapping_and_a_miss_stays_apart() {
-        assert_eq!(balls(1.0, -2.0, 2.0), Swept::Met(0.0));
-        assert_eq!(balls(1.0, -0.5, 0.5), Swept::Apart);
+    fn a_crossing_is_seen_penetrating_and_a_miss_stays_apart() {
+        assert!(matches!(balls(1.0, 0.0, -2.0, 2.0), Swept::Overlap(depth) if depth > 0.0));
+        assert_eq!(balls(1.0, 0.0, -0.5, 0.5), Swept::Apart);
     }
 
     #[test]
-    fn a_pass_within_the_allowance_is_met_without_an_overlap() {
+    fn a_pass_within_the_allowance_is_near_and_not_an_overlap() {
         // The gap closes from 0.8 to 0.003 at the step's end, short of touching.
-        let Swept::Met(closest) = balls(1.0, -0.797, 0.797) else {
-            panic!("not met");
+        let Swept::Near(closest) = balls(1.0, 0.0, -0.797, 0.797) else {
+            panic!("not near");
         };
         assert!(closest > 0.0 && closest <= 0.005, "{closest}");
+        // Tangent: passing with their surfaces just touching (0.2 between their centres) is
+        // near, never seen penetrating.
+        let tangent = balls(1.0, 0.2, -2.0, 2.0);
+        assert!(
+            matches!(tangent, Swept::Near(closest) if closest <= 0.005),
+            "{tangent:?}"
+        );
     }
 
     #[test]
-    fn anything_indeterminate_is_a_possible_meeting() {
-        let met = |swept: Swept| matches!(swept, Swept::Met(closest) if closest.is_nan());
+    fn anything_that_cannot_be_shown_is_indeterminate() {
         // A pose that is not a number, a motion that is not finite, and rates that are not.
-        assert!(met(balls(f32::NAN, -2.0, 2.0)));
-        assert!(met(balls(1.0, f32::INFINITY, 2.0)));
-        assert!(met(balls(1.0, -0.5, f32::NAN)));
-        assert!(met(balls(1.0, -0.5, f32::INFINITY)));
-        assert!(met(balls(1.0, -0.5, 0.0)));
-        // A rate so far below the distance that the advance overflows.
-        assert!(met(balls(1.0e30, -0.5, 1.0e-30)));
+        for swept in [
+            balls(f32::NAN, 0.0, -2.0, 2.0),
+            balls(1.0, 0.0, f32::INFINITY, 2.0),
+            balls(1.0, 0.0, -0.5, f32::NAN),
+            balls(1.0, 0.0, -0.5, f32::INFINITY),
+            balls(1.0, 0.0, -0.5, 0.0),
+            // A rate so far below the distance that the advance overflows.
+            balls(1.0e30, 0.0, -0.5, 1.0e-30),
+        ] {
+            assert_eq!(swept, Swept::Indeterminate);
+            assert!(swept.value().is_some_and(f32::is_nan));
+        }
+        assert_eq!(Swept::Apart.value(), None);
+        assert_eq!(Swept::Overlap(0.25).value(), Some(-0.25));
+    }
+
+    /// Two boxes 2 long and 0.01 thick, the second `gap` above the first and turned by `angle`
+    /// about its centre: nearly parallel, the case where an iterative distance converges
+    /// slowest.
+    fn slabs(gap: f32, angle: f32) -> (Pose, Pose, Cuboid) {
+        let mut half = [0.005; DIM];
+        half[0] = 1.0;
+        let slab = Cuboid::new(vector(&half));
+        let mut above = [0.0; DIM];
+        above[1] = 0.01 + gap;
+        let mut turn = [0.0; ANGULAR];
+        turn[ANGULAR - 1] = angle;
+        let second = Pose::new(vector(&above), angular(&turn));
+        (Pose::from_translation(vector(&[0.0; DIM])), second, slab)
+    }
+
+    #[test]
+    fn the_separation_of_nearly_parallel_slabs_is_certified_below_their_distance() {
+        for (gap, angle) in [(0.05, 1.0e-3), (0.02, 1.0e-4), (0.2, 5.0e-3)] {
+            let (p1, p2, slab) = slabs(gap, angle);
+            // The second's lowest corner is gap - sin(angle) above the first's top.
+            let distance = gap - libm::sinf(angle);
+            match super::gap(&p1, &slab, &p2, &slab, 0.005) {
+                Gap::Apart(bound) => {
+                    assert!(bound <= distance, "{bound} > {distance}");
+                    assert!(bound >= distance - 0.005, "{bound} << {distance}");
+                }
+                other => panic!("{other:?} at gap {gap}"),
+            }
+        }
+        // A slab swept down through the other is seen penetrating it; one stopping short is
+        // apart.
+        let (_, _, slab) = slabs(0.0, 0.0);
+        let mut start = [0.0; DIM];
+        start[1] = 0.5;
+        let mut down = [0.0; DIM];
+        down[1] = -1.0;
+        let sweep = |by: &[f32], rate| {
+            Sweep {
+                motions: (still(&[0.0; DIM]), moving(&start, by)),
+                shapes: (&slab, &slab),
+                rate,
+                allowance: 0.005,
+            }
+            .swept()
+        };
+        assert!(matches!(sweep(&down, 1.0), Swept::Overlap(_)));
+        let mut short = [0.0; DIM];
+        short[1] = -0.4;
+        assert_eq!(sweep(&short, 0.4), Swept::Apart);
     }
 
     #[test]
@@ -794,10 +925,8 @@ mod tests {
         assert!(!rules_out(f32::NAN, 0.5));
         assert!(!rules_out(f32::INFINITY, 0.5));
         assert!(!rules_out(1.0, f32::NAN));
-        assert_eq!(at_least(f32::INFINITY), None);
-        assert_eq!(at_least(f32::NAN), None);
-        assert!(at_least(1.0).is_some_and(|bound| bound < 1.0));
-        assert_eq!(merge(0.003, 0.0), 0.0);
+        assert_eq!(merge(0.003, -0.1), -0.1);
+        assert_eq!(merge(f32::NAN, -0.1), -0.1);
         assert!(merge(0.003, f32::NAN).is_nan());
         assert_eq!(merge(0.003, 0.002), 0.002);
     }

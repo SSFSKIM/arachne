@@ -83,12 +83,13 @@ angular speed rose above the world's limit, as its row shows it or as the solver
 down in the step (the vendored solver flags that, `vendor/VENDORED.md`; the value is then a lower
 bound, the cap); and two bodies that may have passed through each other in a step. The last is
 decided by a bound that does not miss a crossing and by conservative advancement through the
-step, which reports two shapes that came within the allowed linear error (0.005 units) of each
-other, overlapping or not; anything indeterminate (a number that is not finite, a distance the
-query cannot measure) is reported too. The allowance also covers single-precision rounding of
-the poses and of the distance query while the shapes and their motion stay within about 1000
-units of the origin, where a number is exact to about 6e-5 units; beyond that the sweep claims
-nothing.
+step, which reports two shapes seen penetrating each other, two that came within the allowed
+linear error (0.005 units) of each other, and two it could not show apart (a number that is not
+finite, a query that cannot answer, a separation it cannot certify). It advances only by a
+certified separation: along the measured closest direction, from the shapes' support maps, less
+a rounding of 5e-4 units, which covers single-precision poses and dot products while the shapes
+and their motion stay within about 1000 units of the origin, where a number is exact to about
+6e-5 units; beyond that the sweep claims nothing.
 
 ## Determinism
 

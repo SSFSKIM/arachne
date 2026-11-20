@@ -72,9 +72,10 @@ pub mod finding {
     pub const SPEED: u32 = 2;
     /// A body's angular speed went above the world's angular speed limit, as its row shows.
     pub const ANGULAR_SPEED: u32 = 3;
-    /// Two bodies passed through each other in the step to the row, or came within the allowed
-    /// linear error of each other in it, which could not be told from a crossing; the finding's
-    /// value is the closest the sweep saw them (zero when seen overlapping).
+    /// Two bodies may have passed through each other in the step to the row: seen penetrating
+    /// each other (the finding's value is minus the depth seen), within the allowed linear error
+    /// of each other, which could not be told from a crossing (the closest distance measured),
+    /// or not shown apart (NaN).
     pub const TUNNELLED: u32 = 4;
     /// The solver scaled a body's speed down to its cap in the step to the row: the speed
     /// reached at least the cap, above the world's limit, whatever the row shows.
@@ -786,8 +787,9 @@ impl World {
     /// The value of each of [`World::findings`], in order: for `SPEED` and `ANGULAR_SPEED`
     /// the row's speed (units per second) or angular speed (radians per second); for
     /// `SPEED_CAPPED` and `ANGULAR_SPEED_CAPPED` a lower bound, the larger of the row's and the
-    /// cap; for `TUNNELLED` the closest the sweep saw the two (zero when seen overlapping, NaN
-    /// when a number could not be told); NaN for a non-finite state.
+    /// cap; for `TUNNELLED` minus the depth the sweep saw the two penetrating, else the closest
+    /// distance it measured within the allowed linear error, or NaN when it could not show them
+    /// apart; NaN for a non-finite state.
     pub fn finding_values(&self) -> &[f32] {
         &self.finding_values
     }

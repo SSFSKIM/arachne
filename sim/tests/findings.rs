@@ -268,7 +268,7 @@ fn a_fast_body_through_a_thin_wall_is_found_without_continuous_detection() {
     let (mut w, disc) = thin_wall(false);
     w.advance_to(30).expect("the rows");
     assert_eq!(w.findings(), &[[1, finding::TUNNELLED, 0, disc]]);
-    assert_eq!(w.finding_values(), &[0.0], "seen overlapping");
+    assert!(w.finding_values()[0] < 0.0, "seen penetrating");
     assert!(common::poses(&w, disc)[1][0] > 0.05, "it passed through");
     // The same findings however the rows are grouped into calls.
     let (mut pieces, _) = thin_wall(false);
@@ -376,9 +376,12 @@ fn two_bodies_that_pass_through_each_other_in_a_step_are_found() {
             &[[1, finding::TUNNELLED, 0, 1]],
             "{dimension}D"
         );
-        assert_eq!(w.finding_values(), &[0.0], "{dimension}D, seen overlapping");
-        // Passing 0.003 apart, within the allowed linear error and short of touching: found,
-        // and not seen overlapping.
+        assert!(
+            w.finding_values()[0] < 0.0,
+            "{dimension}D, seen penetrating"
+        );
+        // Passing 0.003 apart, within the allowed linear error and short of touching: found
+        // near, not seen penetrating.
         let mut close = crossing(dimension, 0.103, false);
         close.advance_to(10).expect("the rows");
         assert_eq!(
