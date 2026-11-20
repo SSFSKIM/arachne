@@ -408,10 +408,10 @@ class FlowDriver:
     scene updater does. Calling the driver moves, as one unit, every flow it
     holds that is not stopped; a flow that has left the scene is moved too
     and draws nothing. A flow joins its scene's driver only through
-    :func:`hold_flow`. Something else that is to run the flows, such as a
-    clock that runs last itself, takes :attr:`updater` out of the scene's
-    updaters, calls the driver at its own instant, and has
-    :func:`hold_flow` hand it later flows.
+    :func:`hold_flow`. It is the first of the scene drivers a timing clock
+    takes over (:mod:`arachne.assets.timing`): the clock takes
+    :attr:`updater` out of the scene's updaters and calls the driver at the
+    start of each of its instants.
 
     The driver is the scene's engine state, kept beside the scene (not on
     it, nor on any mobject), and no record reads it. It refers to the scene
@@ -474,13 +474,16 @@ def flow_driver(scene: Scene) -> FlowDriver | None:
 
 def hold_flow(scene: Scene, flow: Flow) -> None:
     """Have ``flow``, started in ``scene``, moved on the scene's clock: by
-    the scene's flow driver, made and added to the scene's updaters with the
-    scene's first flow.
+    the scene's flow driver, made with the scene's first flow and added to
+    the scene's updaters, or handed to the scene's timing clock when it has
+    one (:func:`arachne.assets.timing.drive`).
     """
     driver = _DRIVERS.get(scene)
     if driver is None:
+        from arachne.assets.timing import drive
+
         driver = _DRIVERS[scene] = FlowDriver(scene)
-        scene.add_updater(driver.updater)
+        drive(scene, driver)
     driver.hold(flow)
 
 

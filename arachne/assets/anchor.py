@@ -13,7 +13,9 @@ A rig's anchors are its manifest's, each on a named part:
   curve. Every stored outline has the rest outline's structure, so that curve
   and place name the same landmark in each: the anchor is that point of the
   part's outline as posed, through ``S``, ``W``, ``G`` and ``F``
-  (:mod:`.pose`). A swelling part's tip takes its anchor with it.
+  (:mod:`.pose`). A swelling part's tip takes its anchor with it. While the
+  part shows a drawing boiled by stepped timing (:mod:`.timing`), the
+  anchor is that point of the outline painted.
 - ``interior``: a free point inside the part, carried through ``W``, ``G``
   and ``F``; on a reshaped part, at its keyed positions, interpolated as the
   outline is.
@@ -113,7 +115,15 @@ class OnOutline:
     at: float
 
     def point(self, mobject: Any) -> np.ndarray | None:
+        from .timing import BOILED
+
         rig: Rig = mobject
+        drawn = rig.part(self.part).submobjects[self.shape]
+        if drawn.__dict__.get(BOILED):
+            # A boiled drawing of stepped timing (:mod:`.timing`) is on
+            # display: the landmark is on the outline painted.
+            controls = np.asarray(drawn.points)[4 * self.curve : 4 * self.curve + 4]
+            return _bezier(controls, self.at)
         model, values = rig.model, np.asarray(rig._values)
         outline = shaped(model, self.part, values)[self.shape]
         controls = outline[4 * self.curve : 4 * self.curve + 4]

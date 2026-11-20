@@ -7,7 +7,9 @@ in a scene as named vector objects (:mod:`.rig`), moved through the
 parameters its maker tested (:mod:`.pose`, :mod:`.motion`), with anchors
 that follow points of its parts (:mod:`.anchor`). An asset loads only once
 admitted by its geometry (:func:`admit`, :mod:`.admission`, and from a
-shell ``python -m arachne.assets admit <directory> --write``). The engine's
+shell ``python -m arachne.assets admit <directory> --write``). An
+illustration can be drawn a declared number of times a second, with line
+boil, the same at every frame rate (:func:`set_timing`, :mod:`.timing`). The engine's
 own fixture assets, drawn by its own code for its tests, are named
 ``fixture:<name>``. Importing this package reads no asset and builds no
 object.
@@ -19,11 +21,15 @@ __all__ = [
     "AdmissionReport",
     "Anchor",
     "Asset",
+    "Boil",
     "MorphParts",
     "Pose",
     "Rig",
+    "Timing",
     "admit",
     "load_asset",
+    "set_timing",
+    "timing_of",
 ]
 
 from .admission import AdmissionReport, admit
@@ -31,3 +37,4 @@ from .anchor import Anchor
 from .motion import MorphParts, Pose
 from .reader import Asset, load_asset
 from .rig import Rig
+from .timing import Boil, Timing, set_timing, timing_of
