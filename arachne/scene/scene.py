@@ -319,7 +319,7 @@ class Scene:
         present: dict[int, Mobject] = {}
         for top in (*self.mobjects, *self.foreground_mobjects):
             for member in _family(top):
-                if getattr(type(member), "_scene_membership", None) is not None:
+                if member in _NOTICE_TAKERS:
                     present.setdefault(id(member), member)
         known = reported or membership.seen_at in (None, now)
         membership.present = present

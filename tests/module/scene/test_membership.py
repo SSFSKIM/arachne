@@ -1,5 +1,5 @@
 """The scene's membership notice: a mobject whose class has a
-``_scene_membership`` method is told when it enters or leaves the family of
+``_scene_membership`` method and that registered itself is told when it enters or leaves the family of
 the scene's mobjects, by whichever path, at the scene's instant, or with no
 instant when scene time passed before the scene saw a change no method of
 its reported.
@@ -154,3 +154,24 @@ def test_a_scene_with_nothing_that_takes_the_notice_only_checks(dry_run, monkeyp
     scene.add(Group(Square()))
     scene.wait(0.5)
     scene.clear()
+
+
+def test_only_a_registered_mobject_is_told(dry_run):
+    """A mobject whose class has the method but that never registered is not
+    told, whatever else in the process registered.
+    """
+
+    class Unregistered(Mobject):
+        def __init__(self) -> None:
+            super().__init__()
+            self.told: list[tuple[bool, Fraction | None]] = []
+
+        def _scene_membership(self, scene, present, at):
+            self.told.append((present, at))
+
+    scene, carrier, passive = Scene(), Carrier(), Unregistered()
+    scene.add(carrier, passive)
+    scene.wait(0.5)
+    scene.remove(passive)
+    assert carrier.told == [(True, 0)]
+    assert passive.told == []
