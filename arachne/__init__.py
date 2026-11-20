@@ -128,3 +128,53 @@ from .timeline.frozen import freeze as _freeze
 
 _freeze()
 del _freeze
+
+# What `from arachne import *` binds: every public name, but of the modules only
+# those it bound before the engine had subpackages of its own, which scenes
+# written for Manim CE may name (`cli` among them: CE's star binds it, and so did
+# this one wherever the command line was imported first, as in a render). A
+# subpackage is reached by its path, `arachne.<name>` or `from arachne import
+# <name>`: a star that bound it would bind it again over a scene's own name with
+# every helper of the scene's that star-imports the engine without an `__all__`.
+# A new subpackage stays out of this list (tests/test_star_import.py).
+from types import ModuleType as _ModuleType  # noqa: E402
+
+from . import cli  # noqa: E402
+
+_STAR_MODULES = frozenset(
+    {
+        "AS2700",
+        "BS381",
+        "DVIPSNAMES",
+        "SVGNAMES",
+        "X11",
+        "XKCD",
+        "animation",
+        "camera",
+        "cli",
+        "color",
+        "constants",
+        "core",
+        "data_structures",
+        "frame_ir",
+        "manager",
+        "manim_colors",
+        "mobject",
+        "np",
+        "plugins",
+        "rate_functions",
+        "renderer",
+        "scene",
+        "timeline",
+        "typing",
+        "unit",
+        "utils",
+    }
+)
+__all__ = [
+    _name
+    for _name, _value in list(globals().items())
+    if not _name.startswith("_")
+    and (not isinstance(_value, _ModuleType) or _name in _STAR_MODULES)
+]
+del _ModuleType, _STAR_MODULES
