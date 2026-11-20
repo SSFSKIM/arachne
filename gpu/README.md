@@ -113,6 +113,13 @@ names the device that draws: `adapter`, `backend`, `driver` (the version string 
 reports) and `wgpu` (the locked version, also `arachne_gpu.__wgpu_version__`). `adapters()` lists
 what the machine offers.
 
+A process opens Vulkan once and one device for each door, at the first compositor through it, and
+keeps them: every later compositor of that door draws on the same device, with textures, working
+textures and a read-back buffer of its own, so a process may open, drop and keep as many
+compositors as it likes, and draw with several on several threads at once. A device that is lost
+is replaced at the next open. A process forked after it first used this build must not use it in
+the child: the child would hold its parent's Vulkan objects.
+
 ## Building and testing
 
 The toolchain is pinned in `rust-toolchain.toml`; the build is Linux x86_64. A host needs the

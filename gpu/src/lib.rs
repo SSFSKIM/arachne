@@ -1,7 +1,7 @@
 //! Arachne's GPU build: pictures stacked as layers on a GPU, and the frame read back.
 //!
-//! A [`Compositor`] opens a Vulkan device with no window and holds textures of two kinds, each
-//! under a content key of its own domain:
+//! A [`Compositor`] draws on a Vulkan device with no window, which every compositor of a process
+//! shares, and holds textures of two kinds, each under a content key of its own domain:
 //! - an **image**, straight RGBA as an image object holds it, keyed by the Frame IR's image-shape
 //!   key ([`image_key`]) and converted to painted values once, on upload ([`painted_from_straight`]);
 //! - a **painted picture**, colour already multiplied by alpha as Cairo leaves it, keyed by
