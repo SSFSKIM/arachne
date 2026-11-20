@@ -1,13 +1,14 @@
 """Nothing in the crate's tree picks its arithmetic from the CPU it runs on.
 
 ``census.py``
-    Searches the compiled sources of every package of the shipped tree (this crate and its
-    normal and build dependencies, on every target; not the probe's dev-dependencies) for
+    Searches the compiled sources of every package of the shipped tree (this crate, with the
+    Python binding's feature, and its normal and build dependencies, on every target; not the
+    probe's dev-dependencies) for
     run-time CPU feature detection, and fails unless each hit is on the reviewed list,
     ``ci/census.txt``, with the reason it cannot reach a result, and every entry of the list is
     still a hit. The sources searched are those Cargo compiles: the directory of each library
-    target's root file, wherever it is (rapier's and parry's are outside their manifests'
-    directories), and every file a target's root file reaches by module declarations
+    target's root file, wherever it is (the vendored rapier's and parry's are outside their
+    manifests' directories), and every file a target's root file reaches by module declarations
     (``mod x;``, ``#[path]``), a build script's own modules among them. An entry names a line,
     or every hit of a file (``:*``), and the locked source it was reviewed in
     (``sha256:<checksum>`` from the lock file, ``git:<commit>``, or ``local``), so a changed
@@ -220,7 +221,16 @@ def compiled_sources(package: dict[str, Any]) -> tuple[Path, list[Path]]:
 
 def packages() -> list[tuple[str, Path, list[Path]]]:
     out = subprocess.run(
-        ["cargo", "metadata", "--locked", "--format-version", "1"],
+        [
+            "cargo",
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+            # The tree the shipped extension is built from.
+            "--features",
+            "python",
+        ],
         capture_output=True,
         text=True,
         check=False,

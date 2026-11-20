@@ -9,6 +9,12 @@ publish = false
 
 [lib]
 name = "arachne_sim"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The Python extension (built by maturin through pyproject.toml). Off for `cargo test`, which links
+# no Python.
+python = ["dep:pyo3", "pyo3/extension-module"]
 
 [dependencies]
 # The solver, pinned by exact version, its features listed one by one, without `std` (README.md,
@@ -26,19 +32,24 @@ rapier3d = { version = "=0.36.1", default-features = false, features = [
     "alloc",
     "enhanced-determinism",
 ] }
+# The crate's own transcendental functions, in pure Rust (clippy.toml): the same as the solver's.
+libm = "0.2.16"
+pyo3 = { version = "0.30.1", optional = true, features = ["abi3-py312"] }
 
 [dev-dependencies]
 # The probe's digests.
 sha2 = "0.11.1"
 
 # The solver's calls to the platform's maths, routed through simba's traits (and so through the
-# pure-Rust libm under `enhanced-determinism`), at pinned commits: README.md, "Determinism".
+# pure-Rust libm under `enhanced-determinism`): upstream's fix commits, vendored under vendor/
+# (vendor/VENDORED.md; README.md, "Determinism"). ci/tree_check.py fails if one of these resolves
+# from anywhere else.
 [patch.crates-io]
-rapier2d = { git = "https://github.com/dimforge/rapier", rev = "b303bc13e7e69abcec31c595f095de71edf2d3d3" }
-rapier3d = { git = "https://github.com/dimforge/rapier", rev = "b303bc13e7e69abcec31c595f095de71edf2d3d3" }
-parry2d = { git = "https://github.com/dimforge/parry", rev = "dbcce4095c5c65277de1d3363d59c9a75cc02a87" }
-parry3d = { git = "https://github.com/dimforge/parry", rev = "dbcce4095c5c65277de1d3363d59c9a75cc02a87" }
-glamx = { git = "https://github.com/dimforge/glamx", rev = "78c97db71c2724b096cf751d2024c405c65d8612" }
+rapier2d = { path = "vendor/rapier/crates/rapier2d" }
+rapier3d = { path = "vendor/rapier/crates/rapier3d" }
+parry2d = { path = "vendor/parry/crates/parry2d" }
+parry3d = { path = "vendor/parry/crates/parry3d" }
+glamx = { path = "vendor/glamx" }
 
 [profile.release]
 codegen-units = 1
