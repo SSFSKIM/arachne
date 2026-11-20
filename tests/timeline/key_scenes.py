@@ -34,6 +34,12 @@ def _field(point: np.ndarray) -> np.ndarray:
     return np.array([-point[1], point[0], 0.0])
 
 
+def _world() -> World:
+    world = World(gravity=DOWN * 9.8)
+    world.body(Circle(radius=0.25), velocity=RIGHT)
+    return world
+
+
 #: A factory for every mobject class the engine exports, by class name.
 #: The classes taking no argument are made with their defaults; the others
 #: with the smallest arguments that make one.
@@ -122,6 +128,7 @@ MADE_WITH_ARGUMENTS = {
     "VectorField": lambda: VectorField(_field),
     "VideoMobject": lambda: VideoMobject("fixture:numbered-clip"),
     "Window": lambda: Window(Square(), width=1, height=1),
+    "World": _world,
 }
 
 
