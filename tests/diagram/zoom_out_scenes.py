@@ -179,44 +179,40 @@ class ReturnWithoutMovingCamera(Scene):
         self.play(ZoomOut(zoom))
 
 
-def computer() -> tuple[Diagram, Block, list]:
-    """Case 7's two levels: a computer's blocks, the processor holding its
-    core; and each connector of the computer with the blocks it joins.
+def hub() -> tuple[Diagram, Block, list]:
+    """A row of three blocks, the middle one holding a diagram of two
+    nodes, and a fourth block below the middle one; each connector of the
+    row with the blocks it joins, the first labelled.
     """
-    core = Diagram(cell=(2.4, 1.5))
-    control = core.place(Node("ctrl", radius=0.55, font_size=36), 0.5, 0)
-    alu = core.place(Node("ALU", radius=0.55, font_size=36), 0, 1)
-    registers = core.place(Node("regs", radius=0.55, font_size=36), 1, 1)
-    core.connect(control, alu)
-    core.connect(control, registers)
-    core.connect(alu, registers, route="straight")
-    machine = Diagram(cell=(3.4, 2.4))
-    source = machine.place(Block("input", width=2.2, height=1.4), 0, 0)
-    processor = machine.place(
-        Block("processor", width=2.4, height=1.6, inside=core), 1, 0
-    )
-    sink = machine.place(Block("output", width=2.2, height=1.4), 2, 0)
-    memory = machine.place(Block("memory", width=2.2, height=1.4), 1, 1)
+    inner = Diagram(cell=(2.2, 1.4))
+    first = inner.place(Node("u", radius=0.5, font_size=36), 0, 0)
+    second = inner.place(Node("v", radius=0.5, font_size=36), 1, 0)
+    inner.connect(first, second, route="straight")
+    row = Diagram(cell=(3.6, 2.5))
+    left = row.place(Block("a", width=2.0, height=1.3), 0, 0)
+    target = row.place(Block("hub", width=2.6, height=1.5, inside=inner), 1, 0)
+    right = row.place(Block("b", width=2.0, height=1.3), 2, 0)
+    below = row.place(Block("c", width=2.0, height=1.3), 1, 1)
     joins = [
-        (machine.connect(source, processor, label="data"), source, processor),
-        (machine.connect(processor, sink), processor, sink),
-        (machine.connect((processor, "bottom"), memory), processor, memory),
+        (row.connect(left, target, label="in"), left, target),
+        (row.connect(target, right), target, right),
+        (row.connect((target, "bottom"), below), target, below),
     ]
-    machine.move_to(ORIGIN)
-    return machine, processor, joins
+    row.move_to(ORIGIN)
+    return row, target, joins
 
 
-class IntoTheProcessorAndBack(MovingCameraScene):
-    """Case 7's zoom over 0.6-3.1 s, held to 4.1 s; back over 4.1-6.6 s;
-    and in again, with a new zoom, over 6.6-9.1 s.
+class IntoAHubAndBack(MovingCameraScene):
+    """Still to 0.6 s; into the hub over 0.6-3.1 s, held to 4.1 s; back
+    over 4.1-6.6 s; and in again, with a new zoom, over 6.6-9.1 s.
     """
 
     def construct(self):
-        machine, processor, self.joins = computer()
-        self.add(machine)
+        row, target, self.joins = hub()
+        self.add(row)
         self.wait(0.6)
-        zoom = ZoomInto(processor)
+        zoom = ZoomInto(target)
         self.play(zoom, run_time=2.5)
         self.wait(1)
         self.play(ZoomOut(zoom))
-        self.play(ZoomInto(processor), run_time=2.5)
+        self.play(ZoomInto(target), run_time=2.5)

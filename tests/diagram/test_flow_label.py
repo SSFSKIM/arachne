@@ -41,27 +41,26 @@ def _wire(edge) -> np.ndarray:
     return np.concatenate(found)[:, :2]
 
 
-def service() -> tuple[Diagram, list]:
-    """Case 4's systems diagram: five blocks, the first edge labelled."""
-    diagram = Diagram(cell=(3.5, 2.1))
-    client = diagram.place(Block("client", width=1.9, height=1.1), 0, 0.5)
-    balancer = diagram.place(Block("balancer", width=1.9, height=1.1), 1, 0.5)
-    server_a = diagram.place(Block("server A", width=1.9, height=1.1), 2, 0)
-    server_b = diagram.place(Block("server B", width=1.9, height=1.1), 2, 1)
-    database = diagram.place(Block("database", width=1.9, height=1.1), 3, 0.5)
+def branching() -> tuple[Diagram, list]:
+    """Four blocks: a labelled join from the first to the second, which
+    branches to the other two, one above and one below.
+    """
+    diagram = Diagram(cell=(3.2, 1.8))
+    first = diagram.place(Block("p", width=1.6, height=1.0), 0, 0.5)
+    second = diagram.place(Block("q", width=1.6, height=1.0), 1, 0.5)
+    upper = diagram.place(Block("r", width=1.6, height=1.0), 2, 0)
+    lower = diagram.place(Block("s", width=1.6, height=1.0), 2, 1)
     edges = [
-        diagram.connect(client, balancer, label="HTTP"),
-        diagram.connect(balancer, server_a),
-        diagram.connect(balancer, server_b),
-        diagram.connect(server_a, database),
-        diagram.connect(server_b, database),
+        diagram.connect(first, second, label="wire"),
+        diagram.connect(second, upper),
+        diagram.connect(second, lower),
     ]
-    diagram.move_to(0.4 * DOWN)
+    diagram.move_to(0.3 * DOWN + 0.2 * LEFT)
     return diagram, edges
 
 
-def _case_4():
-    diagram, edges = service()
+def _level():
+    diagram, edges = branching()
     return diagram, edges[0]
 
 
@@ -85,7 +84,7 @@ def _elbow():
 
 
 GEOMETRIES = {
-    "case 4": _case_4,
+    "level": _level,
     "vertical": _vertical,
     "diagonal": _diagonal,
     "elbow": _elbow,
@@ -122,8 +121,8 @@ def _points(diagram) -> list[np.ndarray]:
 
 
 def test_a_connector_without_a_flow_or_a_label_stays_as_it_was():
-    plain, _ = service()
-    flowing, edges = service()
+    plain, _ = branching()
+    flowing, edges = branching()
     # Flows on every unlabelled connector; none on the labelled one.
     for edge in edges[1:]:
         Flow(edge, speed=1.2, tokens=2)
@@ -138,18 +137,18 @@ def test_a_connector_without_a_flow_or_a_label_stays_as_it_was():
 
 
 def test_the_label_s_place_is_the_same_whatever_came_first():
-    once, edge = _case_4()
+    once, edge = _level()
     Flow(edge, speed=1.2, tokens=2)
-    twice, edge = _case_4()
+    twice, edge = _level()
     Flow(edge, speed=1.2, tokens=2)
     Flow(edge, speed=0.5, tokens=3)
     for a, b in zip(_points(twice), _points(once), strict=True):
         assert np.array_equal(a, b)
     # Moved, then a flow; or a flow, then moved.
-    moved_first, edge = _case_4()
+    moved_first, edge = _level()
     moved_first.shift(RIGHT * 1.3 + UP * 0.7)
     Flow(edge, speed=1.2, tokens=2)
-    flow_first, edge = _case_4()
+    flow_first, edge = _level()
     Flow(edge, speed=1.2, tokens=2)
     flow_first.shift(RIGHT * 1.3 + UP * 0.7)
     for a, b in zip(_points(moved_first), _points(flow_first), strict=True):
@@ -158,12 +157,12 @@ def test_the_label_s_place_is_the_same_whatever_came_first():
 
 def test_the_label_goes_to_the_side_with_more_room():
     # Level ground: above.
-    diagram, edge = _case_4()
+    diagram, edge = _level()
     Flow(edge, speed=1.2, tokens=2)
     line_y = edge.points[0][1]
     assert edge.label.get_center()[1] > line_y
     # A piece just above the line's middle: below.
-    diagram, edge = _case_4()
+    diagram, edge = _level()
     middle = (edge.points[0] + edge.points[-1]) / 2
     diagram.add(Node("x", radius=0.2).move_to(middle + UP * 0.45))
     Flow(edge, speed=1.2, tokens=2)

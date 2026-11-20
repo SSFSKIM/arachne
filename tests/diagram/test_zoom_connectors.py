@@ -44,7 +44,7 @@ def shares():
     admission.DEMOTED.clear()
     session = Session.open(
         SCENES,
-        "IntoTheProcessorAndBack",
+        "IntoAHubAndBack",
         config={"pixel_width": 480, "pixel_height": 270, "frame_rate": TICKS},
     )
     try:
@@ -92,12 +92,12 @@ def test_no_connector_shows_more_than_the_blocks_it_joins(shares, move):
 @pytest.mark.parametrize("move", MOVES)
 def test_the_connector_to_the_target_goes_with_its_other_end(shares, move):
     joins, seen = shares
-    (data, source, processor) = joins[0]
+    (data, source, target) = joins[0]
     assert data.label is not None
     during = _during(seen, move)
-    # The processor, the zoom's target, never fades; the input does, and
-    # its connector and label with it, hidden once it is.
-    assert all(share[id(processor)] == 1.0 for _, share in during)
+    # The zoom's target never fades; the block at the other end does, and
+    # the connector and its label with it, hidden once it is.
+    assert all(share[id(target)] == 1.0 for _, share in during)
     hidden = [t for t, share in during if share[id(source)] == 0.0]
     assert hidden
     for t, share in during:
