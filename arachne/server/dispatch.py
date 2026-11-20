@@ -211,11 +211,19 @@ def deadline(params: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
 
 
 def _rules(name: str, value: Any) -> Any:
-    """``"armed"``, or the rules a list names, each armed from the start."""
+    """``"armed"``, or the rules a list names: the temporal ones each armed
+    from the start, and the annotation and diagram rules.
+    """
     from ..lint.departures import departures
+    from ..lint.rules import anchored, diagram_clear
     from ..lint.watch import hold_watch
 
-    named = {"hold_watch": hold_watch, "departures": departures}
+    named = {
+        "hold_watch": hold_watch,
+        "departures": departures,
+        "anchored": anchored,
+        "diagram_clear": diagram_clear,
+    }
     if value == "armed":
         return value
     if not isinstance(value, list) or not all(

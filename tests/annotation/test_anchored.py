@@ -176,3 +176,30 @@ def test_a_counting_readout_and_a_filling_gauge_end_at_their_anchors(opened):
         reading.body.get_center() - reading.attached.offset, knob, atol=1e-9
     )
     np.testing.assert_allclose(dial.leader.points[-1], knob, atol=1e-12)
+
+
+def test_a_fault_at_an_instant_the_lint_samples_is_read(opened):
+    # 1/4 s is a frame the lint samples at 60 fps, and none of the rule's
+    # own 15 Hz instants.
+    session = opened("StepAtAQuarter", fps=60)
+    (finding,) = lint(session, rules=(anchored,)).findings
+    assert finding.code == "annotation.detached"
+    assert (finding.t_start, finding.t_end) == (Fraction(1, 4), Fraction(1, 4))
+
+
+def test_a_fault_at_an_instant_the_lint_is_asked_for_is_read(opened):
+    session = opened("StepAtThirtySevenSixtieths", fps=60)
+    asked = Fraction(37, 60)
+    assert lint(session, rules=(anchored,)).findings == ()
+    (finding,) = lint(session, at=[asked], rules=(anchored,)).findings
+    assert (finding.t_start, finding.t_end) == (asked, asked)
+    # Asked of the rule itself, it reads that frame too.
+    (finding,) = lint(session, rules=(anchored.where(at=[asked]),)).findings
+    assert finding.t_start == asked
+
+
+def test_an_anchor_on_an_object_the_scene_does_not_hold_is_not_measured(opened):
+    # The record keeps no state of the dot, so no instant can say where it
+    # was: the rule measures only anchors on what the scene holds.
+    session = opened("CalloutOnOffSceneDot")
+    assert lint(session, rules=(anchored,)).findings == ()

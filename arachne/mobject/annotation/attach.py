@@ -21,7 +21,10 @@ annotation itself suspends its updater for the play, as CE suspends any
 mobject's, except :class:`~.readout.CountUp`, which keeps it running.
 
 An anchor that names nothing (an unknown name of a rig, which the lint
-reports) has no point: what is attached to it draws nothing.
+reports) has no point: what is attached to it draws nothing. An anchor is
+measured by the lint only on an object the scene holds, whose state the
+record keeps; an annotation attached to an object the scene does not hold
+still follows it, unmeasured.
 """
 
 from __future__ import annotations

@@ -5,8 +5,9 @@ A :class:`Readout` holds its value as a plain number and its label as a
 text of the value in its format (a Python format string, ``"{:.1f} mV"``),
 rebuilt whenever the value changes. :class:`CountUp` runs the value of a
 readout, or of a gauge (:mod:`.gauge`), to a target: at ``alpha`` the
-declared value is ``start + (to - start) * rate_func(alpha)``, and when the
-play ends it is the target itself.
+declared value is ``start + (to - start) * rate_func(alpha)``, and once the
+play is done it is the target itself, whatever the rate function's last
+value.
 
 What a viewer sees of it is three statements about time, never one: the
 text ``state_at(t)`` answers is the format of the value at its ``as_of``
@@ -21,6 +22,7 @@ from __future__ import annotations
 __all__ = ["CountUp", "Readout"]
 
 import math
+import string
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -40,10 +42,6 @@ if TYPE_CHECKING:
     from arachne.assets.anchor import Anchor
     from arachne.mobject.mobject import Mobject
 
-#: How close to an end of its run a count's progress is taken to be there,
-#: so that a play's last value is the target itself.
-_END = 1e-12
-
 
 def _finite(value: Any, what: str) -> float:
     number = float(value)
@@ -52,17 +50,42 @@ def _finite(value: Any, what: str) -> float:
     return number
 
 
-def formatted(pattern: str, value: float) -> str:
-    """``value`` in ``pattern``, a Python format string with one field;
-    :class:`ValueError` for a format that does not take one number.
+def checked_format(pattern: str) -> str:
+    """``pattern`` when it is a Python format string with exactly one
+    replacement field, for the number (``"{:.1f} mV"``); :class:`ValueError`
+    for none (a label that never changes), for more than one, for a named or
+    nested field, or for a format spec no number takes.
     """
+    pattern = str(pattern)
     try:
-        return pattern.format(value)
+        fields = [
+            (name, spec)
+            for _, name, spec, _ in string.Formatter().parse(pattern)
+            if name is not None
+        ]
+    except ValueError as error:
+        fields, broken = [], str(error)
+    else:
+        broken = ""
+    if (
+        broken
+        or len(fields) != 1
+        or fields[0][0] not in ("", "0")
+        or "{" in (fields[0][1] or "")
+    ):
+        found = broken or f"it holds {len(fields)} fields"
+        raise ValueError(
+            "A readout's format is a Python format string with exactly one field"
+            f" for its number, as '{{:.1f}} mV'; {pattern!r} is not ({found})."
+        )
+    try:
+        pattern.format(0.0)
     except (IndexError, KeyError, ValueError, TypeError) as error:
         raise ValueError(
-            f"A readout's format is a Python format string with one field for its"
-            f" number, as '{{:.1f}} mV'; {pattern!r} is not ({error})."
+            "A readout's format is a Python format string with exactly one field"
+            f" for its number, as '{{:.1f}} mV'; {pattern!r} is not ({error})."
         ) from None
+    return pattern
 
 
 class Readout(Annotation):
@@ -89,11 +112,11 @@ class Readout(Annotation):
         name: str | None = None,
     ) -> None:
         number = _finite(value, "A readout's value")
-        self.format = str(format)
+        self.format = checked_format(format)
         self._label_class: type[Text] = LabelPill if pill else Text
         #: The text of the value in its format.
         self.label = self._label_class(
-            formatted(self.format, number), font_size=font_size, color=color
+            self.format.format(number), font_size=font_size, color=color
         )
         self._value = number
         super().__init__(
@@ -113,30 +136,63 @@ class Readout(Annotation):
 
     def set_value(self, value: float) -> Self:
         """Declare ``value`` and show it in the format, in place of the
-        text shown: at its centre, its size and its glyphs' colour.
+        text shown: only the text changes, at the label's centre and size,
+        its glyphs styled as its first glyph was (fill, stroke, opacity,
+        depth) and its pill as its pill was.
         """
         number = _finite(value, "A readout's value")
-        said = formatted(self.format, number)
+        said = self.format.format(number)
         self._value = number
         label = self.label
         if said != label.original_text:
-            made = self._label_class(
-                said, font_size=label.font_size, color=_glyph_color(label)
-            )
+            made = self._label_class(said, font_size=label.font_size)
             made.move_to(label.get_center())
-            # The label keeps its identity, so the record follows one text.
-            label.__dict__.update(made.__dict__)
+            _restyle(made, label)
+            # The label keeps its identity and its own attributes, so the
+            # record follows one text: only what the string makes is new.
+            for key in _TEXT_DATA:
+                if key in made.__dict__:
+                    label.__dict__[key] = made.__dict__[key]
         return self
 
 
-def _glyph_color(label: Text) -> ParsableManimColor:
-    """The colour of ``label``'s first glyph (not its pill's)."""
+#: What a text's string makes, which a readout's label takes from a text
+#: built anew; everything else of the label stays its own.
+_TEXT_DATA = (
+    "original_text",
+    "text",
+    "submobjects",
+    "chars",
+    "file_name",
+    "id_to_vgroup_dict",
+    "initial_height",
+    "_font_size",
+    "background_rectangle",
+)
+
+
+def _plate_ids(label: Text) -> set[int]:
     plate = getattr(label, "background_rectangle", None)
-    skipped = set() if plate is None else {id(m) for m in plate.get_family()}
-    for member in label.family_members_with_points():
-        if id(member) not in skipped:
-            return member.get_color()
-    return WHITE
+    return set() if plate is None else {id(m) for m in plate.get_family()}
+
+
+def _restyle(made: Text, label: Text) -> None:
+    """Style ``made``'s glyphs as ``label``'s first glyph, and its pill as
+    ``label``'s pill.
+    """
+    plates = _plate_ids(label)
+    old = label.family_members_with_points()
+    glyph = next((m for m in old if id(m) not in plates), None)
+    plate = getattr(label, "background_rectangle", None)
+    new_plates = _plate_ids(made)
+    for member in made.family_members_with_points():
+        source = plate if id(member) in new_plates else glyph
+        if source is not None:
+            member.match_style(source)
+            member.z_index = source.z_index
+    made_plate = getattr(made, "background_rectangle", None)
+    if made_plate is not None and plate is not None:
+        made_plate.z_index = plate.z_index
 
 
 class CountUp(Animation):
@@ -185,10 +241,10 @@ class CountUp(Animation):
 
     def interpolate_mobject(self, alpha: float) -> None:
         progress = self.get_sub_alpha(alpha, 0, 1)
-        if abs(progress - 1) < _END:
-            value = self.to
-        elif abs(progress) < _END:
-            value = self.start
-        else:
-            value = self.start + (self.to - self.start) * progress
-        self.counted.set_value(value)
+        self.counted.set_value(self.start + (self.to - self.start) * progress)
+
+    def finish(self) -> None:
+        super().finish()
+        # Done, the count holds its target exactly, whatever its rate
+        # function's last value.
+        self.counted.set_value(self.to)

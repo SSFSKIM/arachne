@@ -6,10 +6,14 @@ twins that wait; clipped and overlapping labels.
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 from arachne import (
+    BLUE_E,
     DOWN,
     LEFT,
     ORIGIN,
+    RED_E,
     RIGHT,
     UL,
     UP,
@@ -19,6 +23,7 @@ from arachne import (
     CountUp,
     DialGauge,
     Dot,
+    Line,
     MovingCameraScene,
     Pose,
     Readout,
@@ -27,7 +32,7 @@ from arachne import (
     Square,
     anchor,
 )
-from arachne.utils.rate_functions import linear, smooth
+from arachne.utils.rate_functions import linear, smooth, there_and_back
 
 #: How the camera's frame moves while the annotated thing moves.
 CAMERA_MOVE = 0.6 * RIGHT + 0.3 * DOWN
@@ -161,11 +166,16 @@ class FollowingReadoutAndGauge(Scene):
 
 
 #: What each count runs: the start, the target, the format, the rate
-#: function; a format that rounds, and one with a unit.
+#: function; a format that rounds, one with a unit, and one whose rate
+#: function ends where it began.
 COUNTS = {
     "Rounded": (0.0, 100.0, "{:.1f}", linear),
     "WithUnit": (20.0, 120.0, "{:.0f} mV", smooth),
+    "ThereAndBack": (0.0, 100.0, "{:.1f}", there_and_back),
 }
+#: How large a count's digits are drawn: large enough that a rendered frame
+#: tells one number from the next.
+COUNT_FONT_SIZE = 160
 
 
 class _Count(Scene):
@@ -178,7 +188,7 @@ class _Count(Scene):
 
     def construct(self) -> None:
         start, to, fmt, rate = COUNTS[self.key]
-        reading = Readout(start, format=fmt, name="readout")
+        reading = Readout(start, format=fmt, font_size=COUNT_FONT_SIZE, name="readout")
         self.add(reading)
         self.play(CountUp(reading, to, rate_func=rate), run_time=1)
         if self.waits:
@@ -201,6 +211,145 @@ class CountWithUnit(_Count):
 class CountWithUnitThenWait(_Count):
     key = "WithUnit"
     waits = True
+
+
+class CountThereAndBack(_Count):
+    key = "ThereAndBack"
+
+
+class CountThereAndBackThenWait(_Count):
+    key = "ThereAndBack"
+    waits = True
+
+
+class _Step(Scene):
+    """A callout added before a dot that its own updater moves once, at
+    the 60 Hz tick ``at``: the callout reads the dot a tick late at that
+    instant alone.
+    """
+
+    at = Fraction(1, 4)
+
+    def construct(self) -> None:
+        dot = Dot(2 * LEFT, name="dot")
+
+        def step(mob, dt):
+            mob.move_to(2 * RIGHT if self.time >= self.at - 1e-9 else 2 * LEFT)
+
+        dot.add_updater(step)
+        label = Callout("dot", at=anchor(dot), offset=UP, name="callout")
+        self.add(label, dot)
+        self.wait(1)
+
+
+class StepAtAQuarter(_Step):
+    """The step at 1/4 s: a frame the lint's sampling reads at 60 fps, and
+    not one of the rule's own 15 Hz instants.
+    """
+
+    at = Fraction(1, 4)
+
+
+class StepAtThirtySevenSixtieths(_Step):
+    """The step at 37/60 s: neither a sampled instant nor one of the rule's
+    own, read only when asked for.
+    """
+
+    at = Fraction(37, 60)
+
+
+class CalloutOnOffSceneDot(Scene):
+    """A callout on a dot the scene never holds, moved by the scene's code
+    between two waits.
+    """
+
+    def construct(self) -> None:
+        dot = Dot(2 * LEFT)
+        self.add(Callout("away", at=anchor(dot), offset=UP))
+        self.wait(0.5)
+        dot.shift(4 * RIGHT)
+        self.wait(0.5)
+
+
+def _tilted_box() -> tuple[Rig, Callout]:
+    box = Rig("fixture:lidded-box", name="box").pose(lid_open=40)
+    return box, Callout("knob", at=box.anchor("knob"), offset=UR, name="callout")
+
+
+class LeaderOnTiltedLid(Scene):
+    """A callout's leader landing on a tilted lid's outline anchor: inside
+    the boxes of the rig's parts, on no part but at its anchor.
+    """
+
+    def construct(self) -> None:
+        self.add(*_tilted_box())
+        self.wait(0.25)
+
+
+class LineOnTiltedLid(Scene):
+    """:class:`LeaderOnTiltedLid`'s geometry with no annotation: the pill
+    and a plain line where the leader was, declaring nothing.
+    """
+
+    def construct(self) -> None:
+        box, callout = _tilted_box()
+        start, end = callout.leader.points[0], callout.leader.points[-1]
+        self.add(box, Line(start, end, stroke_width=2), callout.pill.copy())
+        self.wait(0.25)
+
+
+def _target() -> Square:
+    return Square(2, fill_opacity=1, color=BLUE_E, name="target")
+
+
+class LeaderThroughTarget(Scene):
+    """A leader that crosses its whole target to reach an anchor on its far
+    side.
+    """
+
+    def construct(self) -> None:
+        target = _target()
+        self.add(
+            target, Callout("far side", at=anchor(target, at=LEFT), offset=4 * RIGHT)
+        )
+        self.wait(0.25)
+
+
+class LeaderPastItsOutlineAnchor(Scene):
+    """A leader drawn on half a unit past its outline anchor, into its
+    target: deeper than a landing.
+    """
+
+    def construct(self) -> None:
+        target = _target()
+        callout = Callout("edge", at=anchor(target, at=LEFT), offset=3 * LEFT)
+        callout.clear_updaters()
+        callout.leader.put_between(callout.leader.points[0], 0.5 * LEFT)
+        self.add(target, callout)
+        self.wait(0.25)
+
+
+class LeaderToItsCentre(Scene):
+    """A leader entering its target once, to an anchor at its centre."""
+
+    def construct(self) -> None:
+        target = _target()
+        self.add(target, Callout("centre", at=anchor(target), offset=3 * LEFT))
+        self.wait(0.25)
+
+
+class LeaderOverAnotherObject(Scene):
+    """:class:`LeaderToItsCentre` with a second shape lying across the
+    leader, which is not its anchor's.
+    """
+
+    def construct(self) -> None:
+        target = _target()
+        other = Square(0.6, fill_opacity=1, color=RED_E, name="other").move_to(
+            1.7 * LEFT
+        )
+        self.add(target, other, Callout("centre", at=anchor(target), offset=3 * LEFT))
+        self.wait(0.25)
 
 
 class OverlappingCallouts(Scene):

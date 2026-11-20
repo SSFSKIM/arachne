@@ -14,22 +14,27 @@ The usual cause is the order of updaters: an annotation added to the scene
 before something whose own updater moves its target reads the target a
 frame late. An annotation that names nothing (an anchor the asset does not
 have, which the lint reports as ``annotation.anchor_unknown``) is not
-measured, nor one that neither follows its anchor nor has a leader.
+measured, nor one that neither follows its anchor nor has a leader. Nor is
+one whose anchor is on an object the scene does not hold at that instant:
+the record keeps no state of it, so no instant can say where it was (the
+annotation itself still follows it as it is, and is drawn so).
 
-It reads frames of the render's grid as the lint chooses its instants
-(:mod:`arachne.lint.instants`), at its own rate rather than the lint's:
+It reads every instant the lint reads (its sampled frames, or the frames
+on screen at the times the lint is asked ``at``:
+:attr:`~arachne.lint.frames.Frames.lint_instants`), and with them its own:
+the frames the lint would choose at
 :data:`~arachne.lint.codes.MOTION_REFERENCE_FPS`, the clock motion is
-measured on, so its verdict does not move with the rate a scene is linted
-at; with each play's first and last frame and the scene's end. Asked
-:meth:`~AnchoredRule.where` ``at`` times, it reads the frames on screen
-then. A scene with no attached annotation in its record is not read.
+measured on, so a lint at a low rate still reads an attachment at least
+that often. Asked :meth:`~AnchoredRule.where` ``at`` times, it reads the
+frames on screen then and no others. A scene with no attached annotation in
+its record is not read.
 """
 
 from __future__ import annotations
 
 __all__ = ["ALLOWED", "AnchoredRule", "anchored"]
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -50,6 +55,7 @@ if TYPE_CHECKING:
 
     from ..core import LintContext
     from ..frames import Frames
+    from ..instants import LintInstant
 
 #: How far, in pixels of the 1080-tall reference picture, an attachment may
 #: point from its anchor.
@@ -90,10 +96,14 @@ def _read(
 
     names = play.names if play is not None else record.final_names
     found: list[tuple[Mobject, Attached]] = []
+    reached: set[int] = set()
     for mob, state in record._walk(capture, capture.draw_list()):
+        reached.add(id(mob))
         attached = state.get("attached")
         if isinstance(mob, Annotation) and isinstance(attached, Attached):
             found.append((mob, attached))
+    # An anchor on what the scene does not hold has no state here.
+    found = [(m, a) for m, a in found if id(a.anchor.mobject) in reached]
     if not found:
         return ()
     camera = record._scene.renderer.camera
@@ -109,9 +119,7 @@ def _read(
                 configured_pixels=timeline.configured_pixels,
             )
         else:
-            # The anchored objects too, which the scene need not hold.
-            held = [attached.anchor.mobject for _, attached in found]
-            drawing.show(capture, [*capture.draw_list(), *capture.moving, *held])
+            drawing.show(capture, [*capture.draw_list(), *capture.moving])
             view = record_view(record)
         scale = THRESHOLD_HEIGHT / min(view.pixel_width, view.pixel_height)
         misses: list[_Miss] = []
@@ -174,14 +182,18 @@ class AnchoredRule:
     def _owner(self) -> tuple[str, int]:
         return ("anchored", id(self))
 
-    def _times(self, record: Record) -> Sequence[Fraction]:
-        from ..instants import lint_instants
+    def _times(
+        self, record: Record, lint_instants: Iterable[LintInstant]
+    ) -> list[Fraction]:
+        """The instants it reads: those it was asked ``at``; else the
+        instants the lint reads (``lint_instants``) and its own.
+        """
+        from ..instants import lint_instants as instants_of
 
-        if self.at is None:
-            instants = lint_instants(record, MOTION_REFERENCE_FPS)
-        else:
-            instants = lint_instants(record, at=self.at)
-        return [instant.t for instant in instants]
+        if self.at is not None:
+            return [i.t for i in instants_of(record, at=self.at)]
+        own = instants_of(record, MOTION_REFERENCE_FPS)
+        return sorted({i.t for i in (*lint_instants, *own)})
 
     def request_frames(self, frames: Frames) -> None:
         """Ask for the frames it reads: none for a scene with no attached
@@ -190,12 +202,12 @@ class AnchoredRule:
         record = frames.session.record
         if not _attached(record):
             return
-        frames.request(self._owner, self._times(record), _read)
+        frames.request(self._owner, self._times(record, frames.lint_instants), _read)
 
     def __call__(self, context: LintContext) -> list[Finding]:
         if not context.frames.answered(self._owner):
             return []
-        times = self._times(context.session.record)
+        times = self._times(context.session.record, context.frames.lint_instants)
         read = context.frames.result(self._owner)
         runs: dict[str, list[Any]] = {}
         done: list[Finding] = []

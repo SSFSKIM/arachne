@@ -157,7 +157,9 @@ describes it.
   ``at`` is ``"held+sampled"`` or a list of times, the frames on screen
   there. ``rules`` is ``"armed"`` (the temporal rules the scene armed) or a
   list of ``"hold_watch"`` and ``"departures"``, each armed from the scene's
-  start; ``[]`` runs the scene's own checks only. ``sample_fps`` (above 0)
+  start, ``"anchored"`` (annotations at their anchors) and
+  ``"diagram_clear"`` (a diagram's labels); ``[]`` runs the scene's own
+  checks only. ``sample_fps`` (above 0)
   is the rate the armed hold watch samples at, given with ``"armed"`` only.
   ``key_frames_dir`` writes the key frames there too, at the session's pixel
   size. A finding is an answer, never an error.
