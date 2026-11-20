@@ -1468,6 +1468,7 @@ def test_an_object_keys_by_all_of_its_state_or_is_a_marker():
 PURE_ENGINE_CACHES = {
     "arachne.camera.projection._cairo",
     "arachne.camera.projection._path_type",
+    "arachne.lint.parts._annotation_types",
     "arachne.lint.parts._text_types",
     "arachne.lint.parts._backdrop_type",
     "arachne.lint.parts._unit_types",

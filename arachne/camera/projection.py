@@ -56,6 +56,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cache
+from types import EllipsisType
 from typing import TYPE_CHECKING, Any, Literal
 from weakref import WeakKeyDictionary
 
@@ -192,13 +193,19 @@ def configured_home(pixel_width: int, pixel_height: int) -> tuple[float, float]:
     return width, width / (pixel_width / pixel_height)
 
 
-def record_view(record: Record) -> View:
+def record_view(
+    record: Record, *, frozen: tuple[float, float, float] | None | EllipsisType = ...
+) -> View:
     """The view of ``record``'s camera as it holds its values now (a
     capture shown), mapping paths around the centre the render froze, with
     the frame and pixel size the scene was executed under as configured.
+    ``frozen`` is that centre when the caller found it already
+    (:func:`render_mapping_centre`): a frame being drawn finds it so,
+    since finding it draws.
     """
     camera = record._scene.renderer.camera
-    frozen = render_mapping_centre(record)
+    if frozen is ...:
+        frozen = render_mapping_centre(record)
     return view_of(
         camera,
         mapping_centre=frozen if frozen is not None else camera.frame_center,

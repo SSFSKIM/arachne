@@ -54,7 +54,13 @@ from arachne_compare import Box, ChangedSet, Footprint, ObjectMap
 
 from arachne import config
 from arachne.camera.multi_camera import MultiCamera
-from arachne.camera.projection import draw_kind, member_box, pixel_box, record_view
+from arachne.camera.projection import (
+    draw_kind,
+    member_box,
+    pixel_box,
+    record_view,
+    render_mapping_centre,
+)
 from arachne.frame_ir.extract import FrameStream
 from arachne.frame_ir.painter import camera_path
 from arachne.mobject.mobject import Mobject
@@ -227,6 +233,9 @@ class _Filter:
         #: The nodes the capture dependencies of each member's holders
         #: reach, by member, found at the first capture.
         self._depends: dict[int, list[Mobject]] = {}
+        #: The centre the render froze, found before the frame is drawn:
+        #: finding it draws, which a frame being drawn reads nothing for.
+        self._frozen = render_mapping_centre(self.record) if watch else None
         if self.ids:
             _refuse_dependencies(self.record, self.capture, self.ids)
 
@@ -297,7 +306,7 @@ class _Filter:
             self.seen.camera = _CameraView(
                 CameraExtras.observe(camera, None, evaluate=False),
                 (
-                    _rounded(record_view(self.record)),
+                    _rounded(record_view(self.record, frozen=self._frozen)),
                     None if light is None else _rounded(light.get_center()),
                 ),
                 tuple(
@@ -316,7 +325,7 @@ class _Filter:
         states.
         """
         camera = self.camera
-        view = record_view(self.record)
+        view = record_view(self.record, frozen=self._frozen)
         painted: dict[int, list[Mobject]] = {}
         for leaf in leaves:
             owner = owners.get(id(leaf))
