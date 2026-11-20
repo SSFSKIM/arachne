@@ -140,7 +140,6 @@ extend-exclude = [
   "env",
   "build",
   "buck-out",
-  "media",
 ]
 fix = true
 

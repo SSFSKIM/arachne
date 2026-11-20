@@ -52,6 +52,13 @@ ROWS = (
     Capability(
         "layer.depth", "A layer placed at a declared depth, for the focus to blur."
     ),
+    Capability(
+        "media.video", "A clip's frame, placed as an object on a declared clock."
+    ),
+    Capability(
+        "media.sprite", "A sprite's drawing, placed as an object on a declared clock."
+    ),
+    Capability("media.raster_part", "A still that is a part of a rig."),
 )
 
 #: Every capability, by id, in the order the rows were added.

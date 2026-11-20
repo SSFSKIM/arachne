@@ -125,6 +125,18 @@ def _pad(mob: Mobject) -> Mobject:
     return mob
 
 
+def morph_refusal(start: Mobject, end: Mobject) -> ValueError:
+    """The error that refuses aligning ``start`` with ``end``, whose
+    :meth:`Mobject._morph_key` differ: a still, a clip or a sprite morphs
+    into nothing but itself.
+    """
+    return ValueError(
+        f"{start._morph_name()} cannot be transformed into {end._morph_name()}:"
+        " stills, clips and sprites do not morph. Fade one out and the other in"
+        " (FadeOut, FadeIn)."
+    )
+
+
 def is_alignment_padding(mob: Mobject) -> bool:
     """Whether ``mob`` was added by family alignment (``become``,
     ``Transform``) to pad the smaller family.
@@ -3498,7 +3510,15 @@ class Mobject:
         --------
         :class:`~.Transform`, :meth:`~.Mobject.become`, :meth:`~.VMobject.align_points`, :meth:`~.Mobject.get_family`
 
+        Each pair aligned, this one and every pair of submobjects below it,
+        must have equal :meth:`_morph_key`: a still, a clip or a sprite aligns
+        with nothing but a media object of its own asset, in either
+        direction, and anything else is a ``ValueError`` naming the fade
+        that replaces the morph.
+
         """
+        if self._morph_key() != mobject._morph_key():
+            raise morph_refusal(self, mobject)
         self.null_point_align(mobject)
         self.align_submobjects(mobject)
         if not skip_point_alignment:
@@ -3507,6 +3527,18 @@ class Mobject:
         for m1, m2 in zip(self.submobjects, mobject.submobjects, strict=True):
             m1.align_data(m2)
         return self
+
+    def _morph_key(self) -> str | None:
+        """What this mobject must share with another to be aligned with it,
+        and so morph into it: ``None`` for every mobject that morphs; a
+        media object gives its asset's digest.
+        """
+        return None
+
+    def _morph_name(self) -> str:
+        """This mobject as a refused morph names it."""
+        name = type(self).__name__
+        return f"{'an' if name[0] in 'AEIOU' else 'a'} {name}"
 
     def get_point_mobject(self, center: Point3DLike | None = None) -> Point:
         """The simplest :class:`~.Mobject` to be transformed to or from self.

@@ -1,0 +1,62 @@
+{
+  "manifest_version": "1.1",
+  "name": "stepper",
+  "version": 1,
+  "kind": "sprite",
+  "requires": [],
+  "size": {"width": 1.2, "height": 1.2},
+  "media": {
+    "pixels": [48, 48],
+    "alpha": true,
+    "rate": [12, 1],
+    "frames": [
+      {
+        "file": "frames/0000.png",
+        "digest": "sha256:43493f88b2b9af89ba931526ddbae24a0245146859d2778cc451fbf4f37354d7"
+      },
+      {
+        "file": "frames/0001.png",
+        "digest": "sha256:aa4c2f94b17df3e6ad80610368c0813e3f2b6de04c839e99a2aed241c04114b2"
+      },
+      {
+        "file": "frames/0002.png",
+        "digest": "sha256:f8e31be27b44c5a9e00bc3a914614d0252fcd8318d4202feecc21689b8a6d620"
+      },
+      {
+        "file": "frames/0003.png",
+        "digest": "sha256:9adeaa0522ceb1d84ebf4bd600f78a3067e05b8c8bbd94d541725bc6fc7e93ac"
+      },
+      {
+        "file": "frames/0004.png",
+        "digest": "sha256:1f529b417e51a919828811d12f402e89406ae2ded4b28f31ead6ed412b8848a9"
+      },
+      {
+        "file": "frames/0005.png",
+        "digest": "sha256:de2f931ce5ba4c9ea7174fad0379cec1f5c408de572151e87def148b0703ec8a"
+      },
+      {
+        "file": "frames/0006.png",
+        "digest": "sha256:8bb5bc46bc5c5c43efbb42fd7725176f4edec0e7870fdd9eb323a48d7b569175"
+      },
+      {
+        "file": "frames/0007.png",
+        "digest": "sha256:848c98caeba98830411467df6c17ecffd70dbd976eaae2ee8919040ec1b0520f"
+      }
+    ]
+  },
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:5d4adfdfe01a7d74d722ef44bba348b4d59fe1961f2b7c0599a3a550629e8889",
+    "results": [
+      {"name": "frames_exact", "pass": true},
+      {"name": "frames_uniform", "pass": true}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

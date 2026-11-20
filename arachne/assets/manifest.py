@@ -12,6 +12,19 @@ digits, ``_`` and ``-``. A member it does not know, in a document whose
 ``requires`` it satisfies, is kept and ignored. Geometry is in canvas units
 (the part files' user units), y down.
 
+The kind ``parts`` is a set of vector parts (a rig). The kinds ``still``,
+``clip`` and ``sprite``, from version 1.1, are media: frames of pixels, one
+PNG file each, described by the member ``media`` (:class:`Media`). A media
+asset has no canvas: its ``size`` is its natural width and height in scene
+units alone (:class:`Extent`). ``media.pixels`` is every frame's width and
+height in pixels; ``media.alpha`` whether any pixel may be less than
+opaque; ``media.rate`` frames per second as ``[numerator, denominator]``,
+positive integers (a sprite's a whole number dividing 60, so that every
+change of drawing falls on a tick of the scene's 60 Hz clock; a still has
+none); ``media.frames`` the frame files in order, each with its frame
+digest (:func:`arachne.mobject.media.frames.frame_digest`). A still has
+one frame.
+
 :func:`digest` is the asset's digest: ``sha256:`` and the hex SHA-256 of
 every file the manifest names, sorted by relative path, each as its path in
 UTF-8, a zero byte, its length as 8 bytes big-endian and its bytes; then of
@@ -28,19 +41,25 @@ __all__ = [
     "DEFAULT_UNIT",
     "DRIVER_KINDS",
     "FEATURES",
+    "FRAME_DIGEST",
     "KINDS",
     "MAJOR",
     "MANIFEST",
+    "MEDIA_KINDS",
     "NAME",
     "PROVENANCE",
+    "SPRITE_TICKS",
     "UNIT",
     "AnchorKey",
     "AnchorSpec",
     "DrawingSpec",
     "DriverSpec",
+    "Extent",
+    "FrameSpec",
     "Key",
     "Lattice",
     "Manifest",
+    "Media",
     "ParameterSpec",
     "PartSpec",
     "Size",
@@ -62,6 +81,7 @@ import posixpath
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from types import MappingProxyType
 from typing import Any, NoReturn
 
@@ -69,8 +89,10 @@ from typing import Any, NoReturn
 MANIFEST = "manifest.json"
 #: The major version of the manifest this reader reads.
 MAJOR = 1
+#: The kinds of media asset this reader reads: frames of pixels.
+MEDIA_KINDS = ("still", "clip", "sprite")
 #: The kinds of asset this reader reads.
-KINDS = ("parts",)
+KINDS = ("parts", *MEDIA_KINDS)
 #: The feature names a manifest may require that this reader knows: none in 1.0.
 FEATURES: frozenset[str] = frozenset()
 #: What a parameter can do to a part.
@@ -81,6 +103,10 @@ ANGLE_UNITS = ("deg", "rad")
 ATTACHMENTS = ("outline", "interior")
 #: The members ``provenance`` must hold; the engine does not interpret them.
 PROVENANCE = ("source_url", "author", "license", "credit_line", "retrieved_at")
+#: What a frame digest is: ``sha256:`` and 64 lower-case hex digits.
+FRAME_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+#: The scene's clock, in ticks a second: a sprite's rate divides it.
+SPRITE_TICKS = 60
 
 Point = tuple[float, float]
 
@@ -93,17 +119,47 @@ def refuse(code: str, what: str, **detail: Any) -> NoReturn:
 
 
 @dataclass(frozen=True)
-class Size:
-    """Where the canvas sits in a scene: ``scene_units_per_unit`` scene units
-    to a canvas unit, the canvas point ``origin`` at the scene's origin, y
-    flipped; ``width`` and ``height``, the natural size in scene units at the
-    default pose.
+class Extent:
+    """An asset's natural size in scene units: ``width`` and ``height``."""
+
+    width: float
+    height: float
+
+
+@dataclass(frozen=True)
+class Size(Extent):
+    """Where the canvas of an asset of the kind ``parts`` sits in a scene:
+    ``scene_units_per_unit`` scene units to a canvas unit, the canvas point
+    ``origin`` at the scene's origin, y flipped; ``width`` and ``height``,
+    the natural size in scene units at the default pose.
     """
 
     scene_units_per_unit: float
     origin: Point
-    width: float
-    height: float
+
+
+@dataclass(frozen=True)
+class FrameSpec:
+    """One frame of a media asset: its ``file``, and the frame digest of its
+    decoded pixels.
+    """
+
+    file: str
+    digest: str
+
+
+@dataclass(frozen=True)
+class Media:
+    """The frames of a media asset: their size in ``pixels`` (width,
+    height), whether any pixel may be less than opaque (``alpha``), their
+    ``rate`` in frames a second (``None`` for a still), and the ``frames``
+    in order.
+    """
+
+    pixels: tuple[int, int]
+    alpha: bool
+    rate: Fraction | None
+    frames: tuple[FrameSpec, ...]
 
 
 @dataclass(frozen=True)
@@ -239,7 +295,9 @@ class Manifest:
     version: int
     kind: str
     requires: tuple[str, ...]
-    size: Size
+    #: The declared ``size``: a :class:`Size` for the kind ``parts``, an
+    #: :class:`Extent` for a media kind, which has no canvas.
+    extent: Extent
     parts: tuple[PartSpec, ...]
     slots: tuple[SlotSpec, ...]
     parameters: tuple[ParameterSpec, ...]
@@ -247,11 +305,28 @@ class Manifest:
     checks: Mapping[str, Any] | None
     provenance: Mapping[str, Any]
     document: Mapping[str, Any]
+    #: The frames of a media kind; ``None`` for the kind ``parts``.
+    media: Media | None = None
+
+    @property
+    def size(self) -> Size:
+        """Where the canvas of an asset of the kind ``parts`` sits. A media
+        asset has none: asking it of one is a ``ValueError``.
+        """
+        if not isinstance(self.extent, Size):
+            raise ValueError(
+                f"the asset {self.name} is a {self.kind}, which has no canvas: a"
+                " rig is made of an asset of the kind parts, and a still, a clip"
+                " or a sprite is shown by a Still, a VideoMobject or a Sprite"
+            )
+        return self.extent
 
     def files(self) -> tuple[str, ...]:
         """Every file the manifest names, as written, in the order named,
         each once.
         """
+        if self.media is not None:
+            return tuple(dict.fromkeys(frame.file for frame in self.media.frames))
         named: list[str] = [part.file for part in self.parts]
         named += [d.file for slot in self.slots for d in slot.drawings]
         named += [
@@ -518,31 +593,41 @@ class _Reader:
             self.invalid("kind", f"{kind!r} is not a kind this reader knows")
         name = self.name(self.member(top, "name", ""), "name")
         number = self.integer(self.member(top, "version", ""), "version", 0)
-        size = self.size(self.member(top, "size", ""))
-        parts = tuple(
-            self.part(entry, f"parts[{i}]")
-            for i, entry in enumerate(
-                self.array(self.member(top, "parts", ""), "parts", empty=False)
+        media: Media | None = None
+        parts: tuple[PartSpec, ...] = ()
+        slots: tuple[SlotSpec, ...] = ()
+        parameters: tuple[ParameterSpec, ...] = ()
+        anchors: tuple[AnchorSpec, ...] = ()
+        extent: Extent
+        if kind in MEDIA_KINDS:
+            extent = self.media_size(self.member(top, "size", ""))
+            media = self.media(self.member(top, "media", ""), kind)
+        else:
+            extent = self.size(self.member(top, "size", ""))
+            parts = tuple(
+                self.part(entry, f"parts[{i}]")
+                for i, entry in enumerate(
+                    self.array(self.member(top, "parts", ""), "parts", empty=False)
+                )
             )
-        )
-        slots = tuple(
-            self.slot(entry, f"slots[{i}]")
-            for i, entry in enumerate(self.array(top.get("slots", []), "slots"))
-        )
-        placed = self.placed(parts, slots)
-        parameters = tuple(
-            self.parameter(entry, f"parameters[{i}]", parts, placed)
-            for i, entry in enumerate(
-                self.array(top.get("parameters", []), "parameters")
+            slots = tuple(
+                self.slot(entry, f"slots[{i}]")
+                for i, entry in enumerate(self.array(top.get("slots", []), "slots"))
             )
-        )
-        self.unique(parameters, "parameters")
-        shaped = self.shaped(parameters)
-        anchors = tuple(
-            self.anchor(entry, f"anchors[{i}]", placed, shaped)
-            for i, entry in enumerate(self.array(top.get("anchors", []), "anchors"))
-        )
-        self.unique(anchors, "anchors")
+            placed = self.placed(parts, slots)
+            parameters = tuple(
+                self.parameter(entry, f"parameters[{i}]", parts, placed)
+                for i, entry in enumerate(
+                    self.array(top.get("parameters", []), "parameters")
+                )
+            )
+            self.unique(parameters, "parameters")
+            shaped = self.shaped(parameters)
+            anchors = tuple(
+                self.anchor(entry, f"anchors[{i}]", placed, shaped)
+                for i, entry in enumerate(self.array(top.get("anchors", []), "anchors"))
+            )
+            self.unique(anchors, "anchors")
         checks = top.get("checks")
         if checks is not None:
             self.object(checks, "checks")
@@ -555,7 +640,7 @@ class _Reader:
             version=number,
             kind=kind,
             requires=requires,
-            size=size,
+            extent=extent,
             parts=parts,
             slots=slots,
             parameters=parameters,
@@ -563,6 +648,7 @@ class _Reader:
             checks=None if checks is None else frozen(checks),
             provenance=frozen(provenance),
             document=frozen(top),
+            media=media,
         )
 
     def size(self, value: Any) -> Size:
@@ -585,6 +671,93 @@ class _Reader:
         if number < 0:
             self.invalid(member, "it must be 0 or more")
         return number
+
+    # Media
+
+    def media_size(self, value: Any) -> Extent:
+        """A media asset's ``size``: its natural width and height, both above
+        0, and no canvas.
+        """
+        size = self.object(value, "size")
+        for canvas in ("scene_units_per_unit", "origin"):
+            if canvas in size:
+                self.invalid(
+                    f"size.{canvas}",
+                    "a media asset has no canvas: its size is its width and height"
+                    " alone",
+                )
+        return Extent(
+            width=self.positive(self.member(size, "width", "size"), "size.width"),
+            height=self.positive(self.member(size, "height", "size"), "size.height"),
+        )
+
+    def media(self, value: Any, kind: str) -> Media:
+        """The member ``media`` of an asset of the media kind ``kind``."""
+        entry = self.object(value, "media")
+        pixels = self.array(self.member(entry, "pixels", "media"), "media.pixels")
+        if len(pixels) != 2:
+            self.invalid("media.pixels", "it must be two integers, width and height")
+        width, height = (self.integer(p, "media.pixels", 1) for p in pixels)
+        alpha = self.member(entry, "alpha", "media")
+        if not isinstance(alpha, bool):
+            self.invalid("media.alpha", "it must be true or false")
+        rate = self.rate(entry, kind)
+        listed = self.array(self.member(entry, "frames", "media"), "media.frames")
+        if kind == "still" and len(listed) != 1:
+            self.invalid(
+                "media.frames", f"a still has one frame, and {len(listed)} are listed"
+            )
+        if not listed:
+            self.invalid("media.frames", f"a {kind} has one frame or more")
+        frames = tuple(
+            self.frame(item, f"media.frames[{i}]") for i, item in enumerate(listed)
+        )
+        digests: dict[str, str] = {}
+        for i, frame in enumerate(frames):
+            if digests.setdefault(normalised(frame.file), frame.digest) != frame.digest:
+                self.invalid(
+                    f"media.frames[{i}].digest",
+                    f"the file {frame.file} is listed again with another digest",
+                )
+        return Media(pixels=(width, height), alpha=alpha, rate=rate, frames=frames)
+
+    def rate(self, entry: Mapping[str, Any], kind: str) -> Fraction | None:
+        """A clip's or a sprite's frames a second, ``[numerator,
+        denominator]``, from the ``media`` member ``entry``; a still has
+        none, so it writes no ``rate`` at all (not even ``null``).
+        """
+        if kind == "still":
+            if "rate" in entry:
+                self.invalid("media.rate", "a still has one frame and no rate")
+            return None
+        if "rate" not in entry:
+            self.invalid("media.rate", "it is required and missing")
+        found = self.array(entry["rate"], "media.rate")
+        if len(found) != 2:
+            self.invalid(
+                "media.rate", "it must be two integers, numerator and denominator"
+            )
+        numerator, denominator = (self.integer(n, "media.rate", 1) for n in found)
+        rate = Fraction(numerator, denominator)
+        if kind == "sprite" and (
+            rate.denominator != 1 or SPRITE_TICKS % rate.numerator != 0
+        ):
+            self.invalid(
+                "media.rate",
+                f"a sprite's rate is a whole number of frames a second that divides"
+                f" {SPRITE_TICKS}, so every drawing changes on a tick; {rate} does not",
+            )
+        return rate
+
+    def frame(self, value: Any, at: str) -> FrameSpec:
+        entry = self.object(value, at)
+        file = self.text(self.member(entry, "file", at), f"{at}.file")
+        digest = self.text(self.member(entry, "digest", at), f"{at}.digest")
+        if FRAME_DIGEST.fullmatch(digest) is None:
+            self.invalid(
+                f"{at}.digest", "it must be sha256: and 64 lower-case hex digits"
+            )
+        return FrameSpec(file=file, digest=digest)
 
     def part(self, value: Any, at: str) -> PartSpec:
         entry = self.object(value, at)

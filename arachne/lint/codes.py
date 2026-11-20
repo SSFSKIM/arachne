@@ -348,6 +348,20 @@ _TABLE = (
         " whatever moves that with an updater), so its updater runs after theirs.",
         ("distance", "allowed", "anchor"),
     ),
+    Code(
+        "media.inexact",
+        "error",
+        "MediaInexact",
+        "a frame file of a still, clip, sprite or raster member is not in a form"
+        " the engine decodes exactly, or a decoded frame does not have the digest"
+        " its manifest lists; the form is checked as the asset loads, each frame's"
+        " digest each time a process decodes it, and the finding's reason says"
+        " which",
+        "Store each frame as a PNG of 8 bits per channel, in colour or colour with"
+        " alpha, and admit the asset again; a digest reason on an admitted asset"
+        " means this host decodes it otherwise and must not draw it.",
+        ("asset", "file", "reason", "expected", "found"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

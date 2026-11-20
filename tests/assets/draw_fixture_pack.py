@@ -31,9 +31,33 @@ Numbers are rounded to three decimals and files are written as the
 repository's hooks leave them (no trailing space, one final newline), so that
 drawing the pack again gives the committed files.
 
-Run as ``python tests/assets/draw_fixture_pack.py <directory> [<defects>]``;
-the committed pack is ``arachne/assets/fixtures``, and the defects are
-``tests/assets/defects``.
+Beside the six rigs, kept in a list of their own (:data:`MEDIA`), are three
+media assets, their frames drawn with NumPy alone, no font and no Cairo, so
+that the sequence gives the same pixels on every platform:
+
+- ``numbered-clip``: a clip, 96 x 54 pixels, 48 frames at 24 a second, with
+  alpha: a translucent band whose colour moves with the frame, an opaque
+  disc crossing it, an alpha ramp, and the frame's number stamped in binary
+  as a row of solid cells on an opaque strip in the upper left corner
+  (:func:`stamp_cells`), readable from a drawn frame without a font.
+- ``stepper``: a sprite, 48 x 48 pixels, 8 drawings at 12 a second, with
+  alpha: a block stepping down and across, each drawing stamped likewise.
+- ``swatch``: a still, 64 x 64 pixels: a translucent ramp.
+
+Three more media assets each carry one defect the frame checks must find,
+and nothing else they find (:data:`MEDIA_DEFECTS`): ``wrong-digest`` (a
+frame listed with another frame's digest: ``frames_exact``),
+``wrong-size`` (a frame of another size: ``frames_uniform``) and
+``translucent-opaque`` (a half-transparent pixel in an asset declared
+opaque: ``frames_uniform``). A frame file's compressed bytes move with the
+PNG encoder's compression library, so a media asset drawn again is compared
+with the committed one by its frame digests and its manifest, never by its
+files' bytes or its admission digest.
+
+Run as ``python tests/assets/draw_fixture_pack.py <directory> [<defects>
+[<media defects>]]``; the committed pack is ``arachne/assets/fixtures``, the
+defects are ``tests/assets/defects``, and the media defects
+``tests/media/broken``.
 """
 
 from __future__ import annotations
@@ -45,9 +69,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 
 from arachne import Circle, Polygon, Rectangle, RoundedRectangle, VMobject
 from arachne.assets.admission import AdmissionReport, admit
+from arachne.mobject.media.frames import frame_digest
 
 #: Every fixture asset's name, in the order drawn.
 NAMES = (
@@ -65,6 +91,35 @@ DEFECTS = {
     "loose-part": "detached_part",
     "stray-anchor": "anchor_off_part",
 }
+
+#: Every fixture media asset's name, in the order drawn: a list apart from
+#: :data:`NAMES`, the rigs.
+MEDIA = ("numbered-clip", "stepper", "swatch")
+
+#: Every planted media defect's name, and the one check it fails.
+MEDIA_DEFECTS = {
+    "wrong-digest": "frames_exact",
+    "wrong-size": "frames_uniform",
+    "translucent-opaque": "frames_uniform",
+}
+
+#: The test clip: its size in pixels, its frame count and its rate.
+CLIP_PIXELS = (96, 54)
+CLIP_FRAMES = 48
+CLIP_RATE = 24
+#: The sprite: its size in pixels, its drawing count and its rate.
+SPRITE_PIXELS = (48, 48)
+SPRITE_FRAMES = 8
+SPRITE_RATE = 12
+
+#: A stamp's cells: each this wide and tall, in pixels, the first this far
+#: from the frame's left and top edges, each the next's this far apart.
+STAMP_CELL = (10, 8)
+STAMP_AT = (2, 2)
+STAMP_PITCH = 12
+#: The opaque strip the cells stand on, and a set cell's colour.
+STAMP_STRIP = (32, 32, 32, 255)
+STAMP_SET = (255, 255, 255, 255)
 
 #: Canvas units to scene units, for every fixture.
 SCALE = 0.01
@@ -912,6 +967,152 @@ def record_checks(directory: Path) -> AdmissionReport:
     return report
 
 
+# Media
+
+
+def stamp_cells(bits: int) -> list[tuple[int, int, int, int]]:
+    """The cells of a stamp of ``bits`` bits, least significant first, each
+    as the pixel box ``x0, y0, x1, y1`` it fills (ends excluded).
+    """
+    (width, height), (x, y) = STAMP_CELL, STAMP_AT
+    return [
+        (x + i * STAMP_PITCH, y, x + i * STAMP_PITCH + width, y + height)
+        for i in range(bits)
+    ]
+
+
+def stamped(frame: np.ndarray, number: int, bits: int) -> np.ndarray:
+    """``frame`` with ``number`` stamped on it in ``bits`` cells."""
+    cells = stamp_cells(bits)
+    frame[: cells[-1][3] + STAMP_AT[1], : cells[-1][2] + STAMP_AT[0]] = STAMP_STRIP
+    for bit, (x0, y0, x1, y1) in enumerate(cells):
+        if number >> bit & 1:
+            frame[y0:y1, x0:x1] = STAMP_SET
+    return frame
+
+
+def clip_frame(number: int) -> np.ndarray:
+    """The test clip's frame ``number``."""
+    width, height = CLIP_PIXELS
+    frame = np.zeros((height, width, 4), dtype=np.uint8)
+    frame[16:38] = (40 + 4 * number, 150, 220 - 3 * number, 128)
+    rows, columns = np.mgrid[0:height, 0:width]
+    across = 8 + (80 * number) // (CLIP_FRAMES - 1)
+    frame[(columns - across) ** 2 + (rows - 30) ** 2 <= 49] = (250, 200, 40, 255)
+    frame[44:, :, :3] = (200, 60, 160)
+    frame[44:, :, 3] = (np.arange(width) * 255) // (width - 1)
+    return stamped(frame, number, 6)
+
+
+def sprite_frame(number: int) -> np.ndarray:
+    """The sprite's drawing ``number``."""
+    width, height = SPRITE_PIXELS
+    frame = np.zeros((height, width, 4), dtype=np.uint8)
+    top, left = 14 + 2 * number, 4 + 4 * number
+    frame[top : top + 14, left : left + 14] = (230, 120, 30, 255)
+    return stamped(frame, number, 3)
+
+
+def swatch_frame() -> np.ndarray:
+    """The still's one frame: a translucent ramp."""
+    rows, columns = np.mgrid[0:64, 0:64]
+    frame = np.empty((64, 64, 4), dtype=np.uint8)
+    frame[..., 0] = rows * 4
+    frame[..., 1] = 128
+    frame[..., 2] = 255 - rows * 4
+    frame[..., 3] = columns * 4 + 2
+    return frame
+
+
+def block_frame(width: int, height: int, at: int) -> np.ndarray:
+    """A small opaque block on a transparent frame, ``at`` pixels in."""
+    frame = np.zeros((height, width, 4), dtype=np.uint8)
+    frame[at : at + 6, at : at + 6] = (60, 160, 90, 255)
+    return frame
+
+
+def write_media(
+    root: Path,
+    name: str,
+    kind: str,
+    size: tuple[float, float],
+    frames: list[np.ndarray],
+    *,
+    alpha: bool = True,
+    rate: tuple[int, int] | None = None,
+    pixels: tuple[int, int] | None = None,
+    digests: list[str] | None = None,
+) -> Path:
+    """Write the media asset ``name``: each of ``frames`` as a PNG file under
+    ``frames/``, and its manifest, listing each frame's digest (or
+    ``digests``), the first frame's size (or ``pixels``) and ``rate``.
+    """
+    directory = root / name
+    (directory / "frames").mkdir(parents=True)
+    listed = []
+    for i, frame in enumerate(frames):
+        file = f"frames/{i:04d}.png"
+        Image.fromarray(frame).save(directory / file, format="PNG")
+        digest = frame_digest(frame) if digests is None else digests[i]
+        listed.append({"file": file, "digest": digest})
+    height, width = frames[0].shape[:2]
+    media: dict[str, Any] = {"pixels": list(pixels or (width, height)), "alpha": alpha}
+    if rate is not None:
+        media["rate"] = list(rate)
+    media["frames"] = listed
+    document = {
+        "manifest_version": "1.1",
+        "name": name,
+        "version": 1,
+        "kind": kind,
+        "requires": [],
+        "size": {"width": size[0], "height": size[1]},
+        "media": media,
+        "provenance": PROVENANCE,
+    }
+    (directory / "manifest.json").write_text(json_text(clean(document)) + "\n")
+    return directory
+
+
+def draw_media(root: Path) -> None:
+    """Draw every fixture media asset into ``root``, one directory each, and
+    admit it.
+    """
+    clip = [clip_frame(n) for n in range(CLIP_FRAMES)]
+    write_media(root, "numbered-clip", "clip", (3.2, 1.8), clip, rate=(CLIP_RATE, 1))
+    sprite = [sprite_frame(n) for n in range(SPRITE_FRAMES)]
+    write_media(root, "stepper", "sprite", (1.2, 1.2), sprite, rate=(SPRITE_RATE, 1))
+    write_media(root, "swatch", "still", (2, 2), [swatch_frame()])
+    for name in MEDIA:
+        report = record_checks(root / name)
+        if not report.passed:
+            raise AssertionError("\n".join(report.lines()))
+
+
+def draw_media_defects(root: Path) -> None:
+    """Draw every planted media defect into ``root``, one directory each, and
+    record what admission finds of it.
+    """
+    two = [block_frame(16, 16, 2), block_frame(16, 16, 8)]
+    write_media(
+        root,
+        "wrong-digest",
+        "clip",
+        (1, 1),
+        two,
+        rate=(12, 1),
+        digests=[frame_digest(two[0]), frame_digest(two[0])],
+    )
+    unlike = [block_frame(16, 16, 2), block_frame(16, 12, 4)]
+    write_media(root, "wrong-size", "clip", (1, 1), unlike, rate=(12, 1))
+    translucent = block_frame(16, 16, 4)
+    translucent[..., 3] = 255
+    translucent[0, 0, 3] = 128
+    write_media(root, "translucent-opaque", "still", (1, 1), [translucent], alpha=False)
+    for name in MEDIA_DEFECTS:
+        record_checks(root / name)
+
+
 def draw(root: Path) -> None:
     """Draw every fixture asset into ``root``, one directory each, and
     admit it.
@@ -941,5 +1142,8 @@ def draw_defects(root: Path) -> None:
 
 if __name__ == "__main__":
     draw(Path(sys.argv[1]))
+    draw_media(Path(sys.argv[1]))
     if len(sys.argv) > 2:
         draw_defects(Path(sys.argv[2]))
+    if len(sys.argv) > 3:
+        draw_media_defects(Path(sys.argv[3]))

@@ -274,7 +274,7 @@ def test_an_unknown_minor_version_with_nothing_required_loads(tmp_path):
             lambda d: d.update(manifest_version="1.7", requires=["mouth_sync"]),
             "requires",
         ),
-        (lambda d: d.update(kind="clip"), "kind"),
+        (lambda d: d.update(kind="no-such-kind"), "kind"),
     ],
 )
 def test_a_version_feature_or_kind_the_reader_does_not_know_is_refused(

@@ -100,7 +100,9 @@ def test_an_asset_with_an_unreadable_file_is_refused(tmp_path):
 
 
 def test_an_invalid_manifest_is_refused(tmp_path):
-    directory = edited(copied(tmp_path, "dial"), lambda d: d.update(kind="clip"))
+    directory = edited(
+        copied(tmp_path, "dial"), lambda d: d.update(kind="no-such-kind")
+    )
     data, line = _refusal(tmp_path, str(directory))
     detail = _assert_refused(data, "asset.manifest_invalid", line)
     assert detail["member"] == "kind"

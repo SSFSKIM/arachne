@@ -1,5 +1,5 @@
 """``python -m arachne.assets admit <directory> [--write]``: admit an asset
-by its geometry (:mod:`.admission`).
+by its geometry, or a media asset by its frames (:mod:`.admission`).
 
 It prints, one per line: ``asset: <name> <version> (<kind>) <digest>``;
 ``PASS <check>`` or ``FAIL <check>: <what is wrong>`` for each check, by
@@ -25,16 +25,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="python -m arachne.assets",
-        description="Admit an asset by its geometry.",
+        description="Admit an asset by its geometry, or a media asset by its frames.",
         epilog=(
             "Admission draws the asset at its default pose, at the lowest, middle"
             " and highest value of each parameter, and with each drawing of each"
             " slot, and fails a hole it opens inside the figure, a part that"
             " leaves its parent, and an anchor off its part. It judges shape"
-            " alone. The module's documentation (python -m pydoc"
-            " arachne.assets.admission) lists what the asset reader refuses and"
-            " the two forms it passes that are drawn otherwise than SVG draws"
-            " them."
+            " alone. A still, a clip or a sprite is admitted by its frames: each"
+            " must decode exactly, twice, to the digest its manifest lists, and"
+            " have the manifest's size, and no pixel less than opaque where the"
+            " manifest says the asset has no alpha. The module's documentation"
+            " (python -m pydoc arachne.assets.admission) lists what the asset"
+            " reader refuses and the two forms it passes that are drawn otherwise"
+            " than SVG draws them."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
