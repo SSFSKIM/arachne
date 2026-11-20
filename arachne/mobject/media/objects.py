@@ -32,7 +32,6 @@ from __future__ import annotations
 __all__ = ["Sprite", "Still", "VideoMobject"]
 
 import os
-from collections.abc import Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -45,6 +44,7 @@ from ...constants import DOWN, LEFT, RIGHT, UP
 from ...routing import declare
 from ...timeline.origins import ORIGINS
 from ...utils.bezier import interpolate
+from ..mobject import morph_refusal
 from ..types.image_mobject import AbstractImageMobject
 from ..values import FrozenPixels, adopt
 from . import frames
@@ -156,10 +156,6 @@ class MediaObject(AbstractImageMobject):
         super().fade(darkness, family)
         return self
 
-    def align_data(self, mobject: Mobject, skip_point_alignment: bool = False) -> Self:
-        self._same_picture(mobject)
-        return super().align_data(mobject, skip_point_alignment)
-
     def interpolate_color(
         self, mobject1: Mobject, mobject2: Mobject, alpha: float
     ) -> Self:
@@ -173,100 +169,20 @@ class MediaObject(AbstractImageMobject):
 
     def _same_picture(self, other: Mobject) -> MediaObject:
         """``other``, a media object of this object's asset; anything else is
-        a ``ValueError``: stills and clips do not morph.
+        refused as alignment refuses it.
         """
         if isinstance(other, MediaObject) and other._digest == self._digest:
             return other
-        raise _no_morph(self, other)
+        raise morph_refusal(self, other)
 
+    def _morph_key(self) -> str:
+        """The asset's digest: a media object aligns, and so is transformed,
+        only with media objects of its own asset.
+        """
+        return self._digest
 
-def _named(mobject: Mobject | None) -> str:
-    if mobject is None:
-        return "a point that pads a group"
-    name = type(mobject).__name__
-    named = f"{'an' if name[0] in 'AEIOU' else 'a'} {name}"
-    if isinstance(mobject, MediaObject):
-        return f"{named} of the asset {mobject.asset.name}"
-    return named
-
-
-def _no_morph(start: Mobject | None, end: Mobject | None) -> ValueError:
-    return ValueError(
-        f"{_named(start)} cannot be transformed into {_named(end)}: stills,"
-        " clips and sprites do not morph. Fade one out and the other in"
-        " (FadeOut, FadeIn)."
-    )
-
-
-def refuse_morph(start: Mobject, end: Mobject) -> None:
-    """Refuse a transform of ``start`` into ``end`` that pairs a media
-    object with anything but a media object of its own asset, in either
-    direction, before anything is aligned or suspended. The pairs are the
-    ones :meth:`~.Mobject.align_data` would make. Families that hold no
-    media object are not walked, so other transforms are untouched.
-    """
-    if not any(
-        isinstance(member, MediaObject)
-        for root in (start, end)
-        for member in root.get_family()
-    ):
-        return
-    for a, b in _aligned_pairs(start, end):
-        if isinstance(a, MediaObject) and isinstance(b, MediaObject):
-            if a._digest != b._digest:
-                raise _no_morph(a, b)
-        elif isinstance(a, MediaObject) or isinstance(b, MediaObject):
-            raise _no_morph(a, b)
-
-
-_Member = tuple["Mobject | None", bool]
-
-
-def _aligned_pairs(
-    start: Mobject | None,
-    end: Mobject | None,
-    start_leaf: bool = False,
-    end_leaf: bool = False,
-) -> Iterator[tuple[Mobject | None, Mobject | None]]:
-    """The pairs of members :meth:`~.Mobject.align_data` aligns, ``start``
-    and ``end`` first, worked out without changing either. A member with no
-    points aligned to one with points takes that one's copy, with no
-    submobjects (a ``leaf``), as its last submobject (``null_point_align``);
-    the shorter list of submobjects is then padded by repeating its members,
-    or with points (``None``) when it has none (``align_submobjects``).
-    """
-    yield start, end
-    subs_a = _members(start, start_leaf)
-    subs_b = _members(end, end_leaf)
-    points_a = start is None or start.has_points()
-    points_b = end is None or end.has_points()
-    if not points_a and points_b:
-        subs_b.append((end, True))
-    elif points_a and not points_b:
-        subs_a.append((start, True))
-    length = max(len(subs_a), len(subs_b))
-    for (a, leaf_a), (b, leaf_b) in zip(
-        _padded(subs_a, length), _padded(subs_b, length), strict=True
-    ):
-        yield from _aligned_pairs(a, b, leaf_a, leaf_b)
-
-
-def _members(mobject: Mobject | None, leaf: bool) -> list[_Member]:
-    if mobject is None or leaf:
-        return []
-    return [(member, False) for member in mobject.submobjects]
-
-
-def _padded(members: list[_Member], length: int) -> list[_Member]:
-    """``members`` padded to ``length`` as ``add_n_more_submobjects`` pads
-    them.
-    """
-    count = len(members)
-    if count == length:
-        return members
-    if count == 0:
-        return [(None, True)] * length
-    return [members[index] for index in (np.arange(length) * count) // length]
+    def _morph_name(self) -> str:
+        return f"{super()._morph_name()} of the asset {self._asset.name}"
 
 
 class Still(MediaObject):

@@ -206,6 +206,37 @@ def test_no_object_morphs_into_a_media_object_and_nothing_is_touched_first():
         assert len(end.get_family()) == len(end.submobjects) + 1
 
 
+def test_a_group_held_twice_is_checked_as_alignment_pads_it():
+    """Alignment pads a group's own list of submobjects in place, so a group
+    held in two places of one family is aligned the second time as the first
+    left it. Each pair is checked as alignment makes it: the second pairs an
+    image with a clip, though the group's members as they stood before the
+    transform would pair image with image and clip with clip both times.
+    """
+    clip = VideoMobject("fixture:numbered-clip")
+    pixels = np.array(clip.get_pixel_array())
+
+    def image() -> ImageMobject:
+        return ImageMobject(pixels)
+
+    shared = Group(image(), clip)
+    start = Group(Group(shared), Group(shared))
+    end = Group(
+        Group(Group(image(), image(), clip.copy())),
+        Group(Group(image(), image(), clip.copy(), clip.copy())),
+    )
+    start.add_updater(lambda mobject, dt: None)
+    with pytest.raises(
+        ValueError,
+        match=r"an ImageMobject cannot be transformed into a VideoMobject.*"
+        r"\(FadeOut, FadeIn\)",
+    ):
+        Transform(start, end).begin()
+    # Refused while aligning, which Transform.begin does before
+    # Animation.begin suspends updaters.
+    assert not start.updating_suspended
+
+
 def test_importing_arachne_decodes_no_frame_and_opens_no_asset():
     code = """
 import json, sys
