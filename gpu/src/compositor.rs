@@ -219,12 +219,7 @@ impl Compositor {
         let blur = pipeline(&device, &effects, "blur_pass", WIDE);
         let finish = pipeline(&device, &effects, "finish_pass", FORMAT);
         let level = Level::new(&device, width, height);
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("readback"),
-            size: readback_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback = readback_buffer(&device, readback_size);
         Ok(Compositor {
             device,
             queue: opened.queue,
@@ -410,11 +405,41 @@ impl Compositor {
     /// buffer are one frame's at a time.
     pub fn draw(&mut self, frame: &Frame) -> Result<Vec<u8>, DrawError> {
         let stack = self.prepare(frame)?;
+        let submission = self.submit_stack(&stack, &self.readback);
+        self.collect(&self.readback, submission)
+    }
+
+    /// Checks and submits the frame as [`Compositor::draw`] does, copying it into `buffer` (one
+    /// of [`Compositor::readback_buffer`]'s) without waiting: [`Compositor::collect`] takes it
+    /// out. For the read-back benchmark, which copies one frame out while the next draws; the
+    /// public drawing call stays `draw`.
+    #[cfg(any(test, feature = "bench"))]
+    pub(crate) fn submit(
+        &mut self,
+        frame: &Frame,
+        buffer: &wgpu::Buffer,
+    ) -> Result<wgpu::SubmissionIndex, DrawError> {
+        let stack = self.prepare(frame)?;
+        Ok(self.submit_stack(&stack, buffer))
+    }
+
+    /// A buffer one frame can be copied into and read back from, apart from the compositor's own.
+    #[cfg(any(test, feature = "bench"))]
+    pub(crate) fn readback_buffer(&self) -> wgpu::Buffer {
+        readback_buffer(
+            &self.device,
+            u64::from(self.padded_row) * u64::from(self.height),
+        )
+    }
+
+    /// Records a planned stack's passes and the copy of its frame into `buffer`, and submits them.
+    fn submit_stack(&self, stack: &Stack, buffer: &wgpu::Buffer) -> wgpu::SubmissionIndex {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let drawn = self.encode_stack(&mut encoder, &stack, 0);
-        self.read_back(encoder, drawn)
+        let drawn = self.encode_stack(&mut encoder, stack, 0);
+        self.copy_out(&mut encoder, drawn, buffer);
+        self.queue.submit(Some(encoder.finish()))
     }
 
     /// One footprint per layer that names an object, in the frame's order: the pixels the layer
@@ -700,12 +725,24 @@ impl Compositor {
         pass.draw(0..3, 0..1);
     }
 
-    /// Copies the frame out: to a staging buffer, mapped, waited for, rows copied out.
+    /// Copies the frame out: to the read-back buffer, mapped, waited for, rows copied out.
     fn read_back(
         &self,
         mut encoder: wgpu::CommandEncoder,
         source: &Texture,
     ) -> Result<Vec<u8>, DrawError> {
+        self.copy_out(&mut encoder, source, &self.readback);
+        let submission = self.queue.submit(Some(encoder.finish()));
+        self.collect(&self.readback, submission)
+    }
+
+    /// Records the copy of a frame-sized texture into a read-back buffer.
+    fn copy_out(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &Texture,
+        buffer: &wgpu::Buffer,
+    ) {
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &source.texture,
@@ -714,7 +751,7 @@ impl Compositor {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &self.readback,
+                buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(self.padded_row),
@@ -723,14 +760,25 @@ impl Compositor {
             },
             extent(self.width, self.height),
         );
-        self.queue.submit(Some(encoder.finish()));
-        let slice = self.readback.slice(..);
+    }
+
+    /// Waits for `submission`, which copied a frame into `buffer`, then maps the buffer and copies
+    /// the frame's rows out: tight RGBA8 rows, top first.
+    pub(crate) fn collect(
+        &self,
+        buffer: &wgpu::Buffer,
+        submission: wgpu::SubmissionIndex,
+    ) -> Result<Vec<u8>, DrawError> {
+        let slice = buffer.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
         self.device
-            .poll(wgpu::PollType::wait_indefinitely())
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            })
             .map_err(|e| DrawError::Device(e.to_string()))?;
         receiver
             .recv()
@@ -747,9 +795,19 @@ impl Compositor {
                 rgba.extend_from_slice(&view[start..start + row]);
             }
         }
-        self.readback.unmap();
+        buffer.unmap();
         Ok(rgba)
     }
+}
+
+/// A buffer of `size` bytes a frame is copied into and mapped for reading.
+fn readback_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback"),
+        size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    })
 }
 
 /// A frame's read-back row (padded to the copy alignment) and buffer size, once its sides are

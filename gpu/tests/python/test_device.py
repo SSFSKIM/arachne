@@ -14,6 +14,7 @@ from pathlib import Path
 import arachne_gpu
 import pytest
 from conftest import MODE, launch_mode
+from gpu_helpers import SIZE, drawing_size
 
 GPU = Path(__file__).resolve().parents[2]
 REPOSITORY = GPU.parent
@@ -124,11 +125,32 @@ def sources(*roots: Path) -> list[Path]:
     return found
 
 
-def test_no_library_code_reads_the_launch_mode():
-    library = sources(GPU / "src", GPU / "python", REPOSITORY / "arachne") + [
-        GPU / "build.rs"
+def test_the_tests_draw_at_the_runs_size_or_at_480_x_270():
+    assert drawing_size({}) == (480, 270)
+    assert drawing_size({SIZE: "1920x1080"}) == (1920, 1080)
+    for wrong in (
+        "1920",
+        "1920x",
+        "x1080",
+        "1920 x 1080",
+        "479x270",
+        "480x269",
+        "1000x270",
+        "480x1000",
+    ):
+        with pytest.raises(RuntimeError):
+            drawing_size({SIZE: wrong})
+
+
+def test_no_library_code_reads_the_launch_mode_or_the_drawing_size():
+    library = sources(
+        GPU / "src", GPU / "python", GPU / "examples", REPOSITORY / "arachne"
+    ) + [GPU / "build.rs"]
+    readers = [
+        str(p)
+        for p in library
+        if MODE in (text := p.read_text(errors="replace")) or SIZE in text
     ]
-    readers = [str(p) for p in library if MODE in p.read_text(errors="replace")]
     assert readers == []
 
 

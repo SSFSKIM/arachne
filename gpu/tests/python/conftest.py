@@ -6,7 +6,8 @@
   ``adapter``, ``backend``, ``driver`` and ``wgpu``): the ordinary door; every compositor is checked
   to be on no software adapter and at that pin.
 
-With no mode set every drawing test fails. Test code is the only reader of the mode.
+With no mode set every drawing test fails. Test code is the only reader of the mode, and of the
+size frame-sized tests draw at (``gpu_helpers.drawing_size``).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from collections.abc import Callable, Mapping
 
 import arachne_gpu
 import pytest
+from gpu_helpers import H, W
 
 MODE = "ARACHNE_GPU_TEST_MODE"
 PIN = "ARACHNE_GPU_TEST_PIN"
@@ -80,3 +82,4 @@ def adapter_line(adapter: dict) -> str:
 def pytest_terminal_summary(terminalreporter):
     for line in sorted({adapter_line(a) for a in _drew_on}):
         terminalreporter.write_line(line)
+    terminalreporter.write_line(f"SIZE: {W}x{H}")

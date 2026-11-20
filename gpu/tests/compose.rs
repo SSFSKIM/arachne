@@ -5,10 +5,8 @@ mod common;
 use arachne_gpu::{
     DrawError, Frame, Layer, NEAREST, image_key, painted_from_straight, painted_key,
 };
-use common::{compositor, flat, mul_un8, painted_picture};
+use common::{compositor, flat, mul_un8, painted_picture, size};
 
-const W: u32 = 480;
-const H: u32 = 270;
 const CLEAR: [u8; 4] = [0, 0, 0, 0];
 
 fn frame(background: [u8; 4], layers: Vec<Layer>) -> Frame {
@@ -39,10 +37,11 @@ fn max_difference(a: &[u8], b: &[u8]) -> u8 {
 
 #[test]
 fn a_painted_picture_alone_comes_back_with_its_bytes() {
-    let mut c = compositor(W, H);
-    let picture = painted_picture(W, H, 7);
-    let key = painted_key(W, H, &picture);
-    c.upload_painted(key, W, H, &picture).unwrap();
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let picture = painted_picture(w, h, 7);
+    let key = painted_key(w, h, &picture);
+    c.upload_painted(key, w, h, &picture).unwrap();
     let f = frame(CLEAR, vec![Layer::picture(key)]);
     let first = c.draw(&f).unwrap();
     assert!(first == picture, "a picture passed through changed");
@@ -54,13 +53,14 @@ fn a_painted_picture_alone_comes_back_with_its_bytes() {
 
 #[test]
 fn an_opaque_image_comes_back_with_its_bytes() {
-    let mut c = compositor(W, H);
-    let mut image = painted_picture(W, H, 11);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let mut image = painted_picture(w, h, 11);
     for pixel in image.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
-    let key = image_key(W, H, &image);
-    c.upload_image(key, W, H, &image).unwrap();
+    let key = image_key(w, h, &image);
+    c.upload_image(key, w, h, &image).unwrap();
     assert!(
         c.draw(&frame([9, 8, 7, 255], vec![Layer::picture(key)]))
             .unwrap()
@@ -100,34 +100,36 @@ fn a_straight_image_is_painted_exactly_for_every_colour_and_alpha() {
 
 #[test]
 fn a_key_must_be_its_bytes_key_of_its_own_kind() {
-    let mut c = compositor(W, H);
-    let image = painted_picture(W, H, 3);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let image = painted_picture(w, h, 3);
     let wrong = [
-        painted_key(W, H, &image),
-        image_key(W, H, &painted_picture(W, H, 4)),
+        painted_key(w, h, &image),
+        image_key(w, h, &painted_picture(w, h, 4)),
     ];
     for key in wrong {
         assert!(matches!(
-            c.upload_image(key, W, H, &image),
+            c.upload_image(key, w, h, &image),
             Err(DrawError::Invalid(_))
         ));
     }
     assert!(matches!(
-        c.upload_painted(image_key(W, H, &image), W, H, &image),
+        c.upload_painted(image_key(w, h, &image), w, h, &image),
         Err(DrawError::Invalid(_))
     ));
 }
 
 #[test]
 fn an_image_and_a_painted_picture_of_equal_bytes_are_two_textures() {
-    let mut c = compositor(W, H);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
     // Half-transparent, so painting changes the values.
-    let bytes = flat(W, H, [200, 100, 50, 128]);
-    let image = image_key(W, H, &bytes);
-    let painted = painted_key(W, H, &bytes);
+    let bytes = flat(w, h, [200, 100, 50, 128]);
+    let image = image_key(w, h, &bytes);
+    let painted = painted_key(w, h, &bytes);
     assert_ne!(image, painted);
-    c.upload_image(image, W, H, &bytes).unwrap();
-    c.upload_painted(painted, W, H, &bytes).unwrap();
+    c.upload_image(image, w, h, &bytes).unwrap();
+    c.upload_painted(painted, w, h, &bytes).unwrap();
     let from_image = c.draw(&frame(CLEAR, vec![Layer::picture(image)])).unwrap();
     let from_painted = c
         .draw(&frame(CLEAR, vec![Layer::picture(painted)]))
@@ -145,14 +147,15 @@ fn an_image_and_a_painted_picture_of_equal_bytes_are_two_textures() {
 
 #[test]
 fn two_half_transparent_pictures_stack_over_in_their_order() {
-    let mut c = compositor(W, H);
-    let a = painted_picture(W, H, 21);
-    let b = painted_picture(W, H, 22);
-    let (ka, kb) = (painted_key(W, H, &a), painted_key(W, H, &b));
-    c.upload_painted(ka, W, H, &a).unwrap();
-    c.upload_painted(kb, W, H, &b).unwrap();
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let a = painted_picture(w, h, 21);
+    let b = painted_picture(w, h, 22);
+    let (ka, kb) = (painted_key(w, h, &a), painted_key(w, h, &b));
+    c.upload_painted(ka, w, h, &a).unwrap();
+    c.upload_painted(kb, w, h, &b).unwrap();
     let background = [30, 60, 90, 255];
-    let base = flat(W, H, background);
+    let base = flat(w, h, background);
     let ab = c
         .draw(&frame(
             background,
@@ -172,10 +175,11 @@ fn two_half_transparent_pictures_stack_over_in_their_order() {
 
 #[test]
 fn a_quad_at_integer_corners_shows_its_texture_there_and_the_layer_below_elsewhere() {
-    let mut c = compositor(W, H);
-    let below = painted_picture(W, H, 31);
-    let kb = painted_key(W, H, &below);
-    c.upload_painted(kb, W, H, &below).unwrap();
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let below = painted_picture(w, h, 31);
+    let kb = painted_key(w, h, &below);
+    c.upload_painted(kb, w, h, &below).unwrap();
     let (tw, th) = (40u32, 30u32);
     let mut texture = painted_picture(tw, th, 32);
     for pixel in texture.as_chunks_mut::<4>().0 {
@@ -198,9 +202,9 @@ fn a_quad_at_integer_corners_shows_its_texture_there_and_the_layer_below_elsewhe
                 vec![Layer::picture(kb), Layer::quad(kt, corners, NEAREST)],
             ))
             .unwrap();
-        for y in 0..H {
-            for x in 0..W {
-                let at = ((y * W + x) * 4) as usize;
+        for y in 0..h {
+            for x in 0..w {
+                let at = ((y * w + x) * 4) as usize;
                 let inside = (x0..x1).contains(&x) && (y0..y1).contains(&y);
                 let expected = if inside {
                     let t = (((y - y0) / scale * tw + (x - x0) / scale) * 4) as usize;
@@ -220,12 +224,13 @@ fn a_quad_at_integer_corners_shows_its_texture_there_and_the_layer_below_elsewhe
 
 #[test]
 fn a_layers_opacity_scales_it_and_zero_leaves_the_frame_as_without_it() {
-    let mut c = compositor(W, H);
-    let below = painted_picture(W, H, 41);
-    let top = painted_picture(W, H, 42);
-    let (kb, kt) = (painted_key(W, H, &below), painted_key(W, H, &top));
-    c.upload_painted(kb, W, H, &below).unwrap();
-    c.upload_painted(kt, W, H, &top).unwrap();
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let below = painted_picture(w, h, 41);
+    let top = painted_picture(w, h, 42);
+    let (kb, kt) = (painted_key(w, h, &below), painted_key(w, h, &top));
+    c.upload_painted(kb, w, h, &below).unwrap();
+    c.upload_painted(kt, w, h, &top).unwrap();
     let background = [12, 34, 56, 255];
     let without = c
         .draw(&frame(background, vec![Layer::picture(kb)]))
@@ -249,7 +254,8 @@ fn a_layers_opacity_scales_it_and_zero_leaves_the_frame_as_without_it() {
 
 #[test]
 fn a_resampling_this_build_does_not_draw_refuses_the_frame_whole() {
-    let mut c = compositor(W, H);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
     let texture = flat(8, 8, [255, 0, 0, 255]);
     let key = painted_key(8, 8, &texture);
     c.upload_painted(key, 8, 8, &texture).unwrap();
@@ -276,8 +282,9 @@ fn picture_and_quad(
     texture: (&[u8], u32, u32),
     corners: [[f64; 2]; 4],
 ) -> Result<Vec<u8>, DrawError> {
-    let kb = painted_key(W, H, below);
-    c.upload_painted(kb, W, H, below).unwrap();
+    let (w, h) = size();
+    let kb = painted_key(w, h, below);
+    c.upload_painted(kb, w, h, below).unwrap();
     let (pixels, tw, th) = texture;
     let kt = painted_key(tw, th, pixels);
     c.upload_painted(kt, tw, th, pixels).unwrap();
@@ -289,10 +296,11 @@ fn picture_and_quad(
 
 #[test]
 fn a_sheared_quad_shows_the_texel_under_each_pixel_centre() {
+    let (w, h) = size();
     // A parallelogram: its texel coordinates at pixel centres stay at least 0.05 from a texel
     // boundary, so the nearest texel is the same whatever the float rounding.
-    let mut c = compositor(W, H);
-    let below = painted_picture(W, H, 51);
+    let mut c = compositor(w, h);
+    let below = painted_picture(w, h, 51);
     let (tw, th) = (40u32, 30u32);
     let mut texture = painted_picture(tw, th, 52);
     for pixel in texture.as_chunks_mut::<4>().0 {
@@ -307,12 +315,12 @@ fn a_sheared_quad_shows_the_texel_under_each_pixel_centre() {
     );
     let det = e1[0] * e2[1] - e2[0] * e1[1];
     let mut inside = 0;
-    for y in 0..H {
-        for x in 0..W {
+    for y in 0..h {
+        for x in 0..w {
             let (px, py) = (f64::from(x) + 0.5 - ul[0], f64::from(y) + 0.5 - ul[1]);
             let u = (px * e2[1] - e2[0] * py) / det * f64::from(tw);
             let v = (e1[0] * py - px * e1[1]) / det * f64::from(th);
-            let at = ((y * W + x) * 4) as usize;
+            let at = ((y * w + x) * 4) as usize;
             let expected = if (0.0..f64::from(tw)).contains(&u) && (0.0..f64::from(th)).contains(&v)
             {
                 inside += 1;
@@ -329,17 +337,18 @@ fn a_sheared_quad_shows_the_texel_under_each_pixel_centre() {
 
 #[test]
 fn a_perspective_quad_covers_its_outline() {
+    let (w, h) = size();
     // A trapezoid, placed by a projective map: every pixel centre clearly inside it shows the
     // texture, every one clearly outside the picture below.
-    let mut c = compositor(W, H);
-    let below = painted_picture(W, H, 61);
+    let mut c = compositor(w, h);
+    let below = painted_picture(w, h, 61);
     let texture = flat(16, 16, [10, 200, 30, 255]);
     let (ul, ur, ll, lr) = ([300.0, 40.0], [380.0, 40.0], [270.0, 140.0], [410.0, 140.0]);
     let drawn = picture_and_quad(&mut c, &below, (&texture, 16, 16), [ul, ur, ll, lr]).unwrap();
     let outline = [ul, ur, lr, ll];
     let mut counted = [0, 0];
-    for y in 0..H {
-        for x in 0..W {
+    for y in 0..h {
+        for x in 0..w {
             let p = [f64::from(x) + 0.5, f64::from(y) + 0.5];
             // The signed distance to each edge, positive inside (the outline runs clockwise on
             // screen, y down).
@@ -350,7 +359,7 @@ fn a_perspective_quad_covers_its_outline() {
                     ((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / -(dx * dx + dy * dy).sqrt()
                 })
                 .fold(f64::INFINITY, f64::min);
-            let at = ((y * W + x) * 4) as usize;
+            let at = ((y * w + x) * 4) as usize;
             if nearest > 0.01 {
                 counted[0] += 1;
                 assert_eq!(
@@ -375,8 +384,9 @@ fn a_perspective_quad_covers_its_outline() {
 
 #[test]
 fn a_quad_of_area_with_no_placement_refuses_the_frame_and_one_of_no_area_draws_nothing() {
-    let mut c = compositor(W, H);
-    let below = painted_picture(W, H, 71);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let below = painted_picture(w, h, 71);
     let texture = flat(8, 8, [255, 0, 0, 255]);
     // Upper left, upper right and lower right on one line, the lower left off it: an outline
     // with area, onto which no projective map takes a square.
@@ -393,8 +403,9 @@ fn a_quad_of_area_with_no_placement_refuses_the_frame_and_one_of_no_area_draws_n
 
 #[test]
 fn a_crossed_or_concave_quad_refuses_the_frame() {
-    let mut c = compositor(W, H);
-    let below = painted_picture(W, H, 72);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let below = painted_picture(w, h, 72);
     let texture = flat(8, 8, [255, 0, 0, 255]);
     let bow_tie = [
         [100.0, 100.0],

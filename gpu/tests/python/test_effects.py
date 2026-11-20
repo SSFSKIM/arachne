@@ -177,5 +177,7 @@ def test_an_effect_out_of_its_range_raises(make_compositor):
         compositor.draw(
             Frame(CLEAR, [Layer(Picture(key))], focus=Focus(depth=0.0, aperture=-1.0))
         )
+    # A sigma that reaches past the frame's longer side: 161 reaches 483 px, past 480.
+    sigma = max(W, H) // 3 + 1
     with pytest.raises(Unsupported):
-        compositor.draw(Frame(CLEAR, [Layer(Picture(key), blur=Blur(200.0))]))
+        compositor.draw(Frame(CLEAR, [Layer(Picture(key), blur=Blur(float(sigma)))]))

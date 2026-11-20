@@ -23,6 +23,10 @@
 //! fails with [`OpenError::NoGpu`] otherwise; the one door to a software adapter is
 //! [`testing::software_compositor`], for tests.
 
+/// The frame set and the read-back benchmark: tools for measuring this build on a GPU host,
+/// built with the `bench` feature and never part of the wheel.
+#[cfg(any(test, feature = "bench"))]
+pub mod bench;
 pub mod composite;
 mod compositor;
 mod device;
