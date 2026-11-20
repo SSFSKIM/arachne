@@ -79,7 +79,24 @@ def adapter_line(adapter: dict) -> str:
     )
 
 
+#: The adapter lines xdist's workers drew on, as they handed them to the controller.
+_workers_drew_on: set[str] = set()
+WORKER_OUTPUT = "arachne_gpu_drew_on"
+
+
+def pytest_sessionfinish(session):
+    # An xdist worker hands the adapters it drew on to the controller, whose summary prints them.
+    output = getattr(session.config, "workeroutput", None)
+    if output is not None:
+        output[WORKER_OUTPUT] = sorted({adapter_line(a) for a in _drew_on})
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):
+    _workers_drew_on.update(getattr(node, "workeroutput", {}).get(WORKER_OUTPUT, []))
+
+
 def pytest_terminal_summary(terminalreporter):
-    for line in sorted({adapter_line(a) for a in _drew_on}):
+    for line in sorted({adapter_line(a) for a in _drew_on} | _workers_drew_on):
         terminalreporter.write_line(line)
     terminalreporter.write_line(f"SIZE: {W}x{H}")
