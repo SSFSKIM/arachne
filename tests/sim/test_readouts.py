@@ -466,6 +466,31 @@ def test_a_readout_faded_in_over_a_moving_body_is_stale_in_a_forward_lint(opened
     assert finding.detail["tick"] == 12
 
 
+def test_a_stale_readout_is_reported_to_its_world_s_last_frame_not_after(opened):
+    """At the last frame its world is in the scene (tick 41, its stay's last
+    row, before a removal at 0.69 s between ticks) the held readout is
+    stale; at the first frame after the removal it is not.
+    """
+    session = opened("HeldOverAFallThenLeft", 60)
+    (occurrence,) = session.record.bakes.occurrences
+    assert occurrence.last_tick == 41
+    last = Fraction(41, 60)
+    found = [
+        f
+        for f in lint(session, rules=(), at=[last]).findings
+        if f.code == "sim.readout_stale"
+    ]
+    assert [(f.t_start, f.detail["tick"], f.detail["scene_tick"]) for f in found] == [
+        (last, 12, 41)
+    ]
+    after = [
+        f
+        for f in lint(session, rules=(), at=[Fraction(42, 60)]).findings
+        if f.code == "sim.readout_stale"
+    ]
+    assert after == []
+
+
 def test_a_readout_added_over_a_moving_body_is_not_stale(opened):
     assert _stale(opened("AddedOverAFall")) == []
 

@@ -220,12 +220,18 @@ def test_a_body_back_on_screen_after_its_world_left_reads_its_stay_s_last_row(
 
 
 @pytest.mark.parametrize(
-    "scene", ["GroupBackAfterItsWorld", "GroupBackAfterItsWorldUnmoved"]
+    "scene",
+    [
+        "GroupBackAfterItsWorld",
+        "GroupBackAfterItsWorldUnmoved",
+        "DotWithAChildBackAfterItsWorld",
+    ],
 )
 def test_a_group_body_after_its_world_left_is_unreadable(opened, scene):
-    """A body drawn by a group, past its stay, is unreadable: one of its dots
-    moved, it no longer shows the stay's last row; unmoved, its drawing is
-    its members', which its own capture does not hold.
+    """A body drawn by its submobjects too (a group, or a dot with a dot of
+    its own), past its stay, is unreadable: one of its dots moved, it no
+    longer shows the stay's last row; unmoved, its drawing is also its
+    members', which its own capture does not hold.
     """
     session = opened(scene)
     (body,) = _bodies(session)

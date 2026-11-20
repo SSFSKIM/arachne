@@ -133,6 +133,25 @@ class FadedInOffTheTickGrid(Scene):
         self.play(FadeIn(reading), run_time=0.49)
 
 
+class HeldOverAFallThenLeft(Scene):
+    """A readout of a falling point held by hand (its updating suspended)
+    while the point falls, until its world is removed at 0.69 s, off the
+    tick grid; a wait after.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.2)
+        reading = world.readout(ball, "velocity", part="y")
+        reading.suspend_updating()
+        self.add(reading)
+        self.wait(0.49)
+        self.remove(world)
+        self.wait(0.3)
+
+
 class AddedOverAFall(Scene):
     """The twin of :class:`FadedInOverAFall`: the readout added."""
 

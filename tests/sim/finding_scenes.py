@@ -224,6 +224,29 @@ class HeldThenBack(Scene):
         self.wait(0.5)
 
 
+class DotWithAChildBackAfterItsWorld(GroupBackAfterItsWorld):
+    """As :class:`GroupBackAfterItsWorldUnmoved`, the body a dot with a
+    smaller dot of its own: drawn by its points and its child's.
+    """
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2)
+        dot.add(Dot(UP * 2 + RIGHT * 0.3, radius=0.05))
+        world.body(dot, shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
 class ShownAfterItsWorld(Scene):
     """A falling point's mobject shown on its own after its world left the
     scene, and moved there: no bake holds its quantities then.
