@@ -2,13 +2,11 @@
 what is true has moved on, still writes: the hold keeps it as true, and
 the next boundary shows it.
 
-A scene driver writes against what is true: it runs, and reads, after the
-clock has put back what is true, so a value equal to the one on display is
-a write like any other (a small whole number, which Python shares, as much
-as a new one). An animation writes before the clock runs, onto the drawing
-on display, and may write the very object that drawing holds (a value
-shared with a copy of the mobject made before the play): that is a write
-too.
+Every writer writes onto what is true, which the clock puts back before a
+play's animations write: a scene driver (a small whole number, which Python
+shares, as much as a new one, and a program it reads), an animation's
+interpolation (points shared with a copy made as the play began) and the
+methods a move replays as it ends (a z-index, an opacity set to a literal).
 """
 
 from __future__ import annotations

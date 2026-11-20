@@ -43,22 +43,28 @@ the illustration entered the scene, its family changed members, or the
 instant crossed a boundary ``k / r``, shown becomes true; shown is
 installed, with the boil of the instant's boil step added.
 
-What writes the family is told from what was left in place by object
-identity, so no writer may hold an object that the drawing on display
-holds. The writers the clock runs itself (the scene drivers and the pose
-settle) run after it has put back what is true, so they read what is true
-and a value they write is a write even when it is the one on display (a
-small number, which Python shares). The animations write before the clock
-runs, onto the drawing on display, and may write a value they share with
-it (a copy made as the play began shares the mobject's values): while
-shown is not true, the family holds shown through values of the clock's
-own, equal to shown's, which no writer holds. When a play ends
-the restorer installs true, so the scene's code and the next play's
-animations start from what is true; at a play's first instant the clock
-then installs shown again. So at any frame rate the drawing on display at
-``t`` is true as it was at the last boundary at or before ``t`` (or at the
-instant the illustration entered the scene, or changed members, if that is
-later): a function of the instant.
+Every writer writes onto what is true, and reads it. Before a play's
+animations write, at each evaluated instant and as the play ends, the
+clock puts back what is true in every family in the scene (it registers
+itself in :data:`~arachne.timeline.hooks.BEFORE_ANIMATIONS`); the
+animations, the mobjects' updaters, the scene drivers and the pose settle
+then write onto it, and the hold tells what they wrote from what is true
+by object identity. Writing the value that is true, whatever object it is
+(a small number, which Python shares), changes nothing, so no write is
+lost, of any type, though the drawing on display holds the same value.
+
+When a play ends the restorer installs true, so the scene's code and the
+next play's animations start from what is true; at a play's first instant
+the clock then installs shown again. So at any frame rate the drawing on
+display at ``t`` is true as it was at the last boundary at or before ``t``
+(or at the instant the illustration entered the scene, or changed
+members, if that is later): a function of the instant.
+
+A scene with the clock ticks every play: the clock is a scene updater,
+and a scene updater makes a play ticked
+(:func:`arachne.timeline.admission.admit`), so no play of it is drawn
+from an earlier capture by interpolating its animations, which would run
+no clock.
 
 An off-grid play end keeps the drawing on display until the next boundary,
 inside whatever play or wait holds it; if the scene ends first, no
@@ -161,6 +167,7 @@ import numpy as np
 from .. import quantities
 from ..mobject.values import FrozenPoints, adopt
 from ..quantities import At, Quantity
+from ..timeline.hooks import BEFORE_ANIMATIONS
 from ..timeline.record import NodeState
 
 if TYPE_CHECKING:
@@ -485,13 +492,20 @@ _State = dict[int, tuple["Mobject", NodeState]]
 
 def _capture(members: list[Mobject], previous: _State | None = None) -> _State:
     """Each of ``members``' states now, by id: a previous state itself where
-    nothing changed.
+    nothing changed, and ``previous`` itself when nothing in the family did
+    (the same members, in its order, each in the state it held), so that a
+    family held still keeps one state.
     """
     captured: _State = {}
+    same = previous is not None and len(previous) == len(members)
     for member in members:
         before = previous.get(id(member)) if previous is not None else None
         state = NodeState.of(member, before[1] if before is not None else None)
+        if before is None or before[0] is not member or before[1] is not state:
+            same = False
         captured[id(member)] = (member, state)
+    if same and previous is not None and list(previous) == list(captured):
+        return previous
     return captured
 
 
@@ -517,9 +531,6 @@ class Illustration:
         self.step = timing.step(now)
         #: Whether the root was in the scene at the last instant.
         self.present: bool | None = None
-        #: The drawing on display as the family holds it while it is not
-        #: true (:func:`_private`), and the shown state it was made from.
-        self._display: tuple[_State, _State] | None = None
 
     # The true state
 
@@ -580,97 +591,18 @@ class Illustration:
         if boil is None and self.shown is self.true:
             return members
         true = self.true
-        display = self.display()
-        for member, state in display.values():
+        for member, state in self.shown.values():
             if not state.matches(member.__dict__):
                 state.install(member)
                 _keep_running(member, true[id(member)][1])
         if boil is not None:
-            _boiled(display, boil, boil.step(now))
+            _boiled(self.shown, boil, boil.step(now))
         # A state shown from before a member was armed holds its updaters
         # in a list of another kind.
         for member in members:
             _arm(member)
-        self.installed = _capture([m for m, _ in display.values()], display)
+        self.installed = _capture([m for m, _ in self.shown.values()], self.shown)
         return members
-
-    def display(self) -> _State:
-        """What the family holds to show ``shown``: ``shown`` itself when it
-        is true, else ``shown`` with its values private (:func:`_private`),
-        made once for each drawing shown.
-        """
-        shown = self.shown
-        if shown is self.true:
-            return shown
-        made = self._display
-        if made is None or made[0] is not shown:
-            memo: dict[int, tuple[Any, Any]] = {}
-            private = {
-                key: (member, _private(state, memo))
-                for key, (member, state) in shown.items()
-            }
-            made = self._display = (shown, private)
-        return made[1]
-
-
-def _private(state: NodeState, memo: dict[int, tuple[Any, Any]]) -> NodeState:
-    """``state``, each of its values an equal value no writer holds: an
-    animation writes onto the drawing on display, and a value it writes may
-    be the very object that drawing holds (shared with a copy made before
-    the play), which only an object of the clock's own can tell from a
-    value left in place. A value that occurs more than once in the family
-    is the same private value at each place (``memo``, by the value's id),
-    so what the family holds of itself stays as it was (a placement's
-    computed points, a rig's record of what it was settled from).
-    """
-    values = tuple(_private_value(value, memo) for value in state.values)
-    if all(a is b for a, b in zip(values, state.values, strict=True)):
-        return state
-    private = NodeState.__new__(NodeState)
-    private.keys = state.keys
-    private.values = values
-    private.submobjects = state.submobjects
-    private.updaters = state.updaters
-    return private
-
-
-def _private_value(value: Any, memo: dict[int, tuple[Any, Any]]) -> Any:
-    """An equal value no writer holds, for an array, a paint, a placement
-    or a tuple holding one; ``value`` itself for anything else. A number, a
-    string, ``None`` and the like have no other object equal to them: no
-    engine animation writes one between two drawings (it writes points,
-    paints, pixels and a rig's values, and a number it computes is a new
-    object), and a scene driver writes onto what is true.
-    """
-    from ..mobject.placement import Placement
-    from ..mobject.values import FrozenArray, Paint
-
-    held = memo.get(id(value))
-    if held is not None:
-        return held[1]
-    private: Any
-    if isinstance(value, FrozenArray):
-        private = value.view(type(value))
-    elif type(value) is Paint:
-        private = object.__new__(Paint)
-        private.__dict__.update(value.__dict__)
-    elif type(value) is Placement:
-        private = object.__new__(Placement)
-        for name in Placement.__slots__:
-            setattr(private, name, getattr(value, name))
-        if value._points is not None:
-            private._points = _private_value(value._points, memo)
-        private._bounds = dict(value._bounds)
-    elif type(value) is tuple:
-        items = tuple(_private_value(item, memo) for item in value)
-        if all(a is b for a, b in zip(items, value, strict=True)):
-            return value
-        private = items
-    else:
-        return value
-    # The value is kept with it, so that its id names no other value.
-    memo[id(value)] = (value, private)
-    return private
 
 
 def _keep_running(member: Mobject, truth: NodeState) -> None:
@@ -1167,6 +1099,16 @@ class TimingClock:
         """Whether ``mobject`` holds the restorer this clock gave it."""
         return self._armed.get(id(mobject)) is mobject
 
+    def put_back_true(self) -> None:
+        """Before the play's animations write, at each instant and as the
+        play ends: have every family in the scene hold what is true, so
+        that every writer writes onto it and reads it
+        (:data:`~arachne.timeline.hooks.BEFORE_ANIMATIONS`).
+        """
+        for illustration in self.illustrations:
+            if illustration.present:
+                illustration.restore()
+
     def end_play(self) -> None:
         """A play's end: have every family in the scene hold what is true,
         and take the restorer out of every member it was given to.
@@ -1247,21 +1189,16 @@ class TimingClock:
         self._last_in(scene)
         from .motion import pose_settle
 
-        settle = pose_settle(scene)
-        rigs = settle.rigs if settle is not None else ()
-        if self.drivers or rigs:
-            # The drivers and the pose settle read and write what is true,
-            # not the drawing on display: a value one of them writes that
-            # is the one on display is a write all the same.
-            for illustration in self.illustrations:
-                if illustration.present:
-                    illustration.restore()
+        # The scene's animations, its mobjects' updaters, and now its
+        # drivers and its pose settle write onto what is true: the clock put
+        # it back before the animations wrote (:meth:`put_back_true`).
         for driver in self.drivers:
             driver()
+        settle = pose_settle(scene)
         posed: frozenset[int] = frozenset()
         if settle is not None:
             settle()
-            posed = frozenset(map(id, rigs))
+            posed = frozenset(map(id, settle.rigs))
         family = [m for top in scene.mobjects for m in top.get_family()]
         self._adopt_copies(scene, family)
         declared = self.declared()
@@ -1375,6 +1312,16 @@ def clock_of(scene: Scene) -> TimingClock | None:
     return held() if held is not None else None
 
 
+def _put_back_true(scene: Scene) -> None:
+    """Before ``scene``'s animations write: its clock puts back what is
+    true. A plain function, so the hook's registry holds nothing of the
+    scene.
+    """
+    clock = clock_of(scene)
+    if clock is not None:
+        clock.put_back_true()
+
+
 def _running_scene() -> Scene | None:
     from ..timeline.recorder import running
 
@@ -1411,5 +1358,6 @@ def set_timing(
         clock.check(scene, root)
         clock.take_over(scene)
         _CLOCKS[scene] = weakref.ref(clock)
+        BEFORE_ANIMATIONS[scene] = _put_back_true
         scene.add_updater(clock.updater)
     clock.declare(scene, root, timing)

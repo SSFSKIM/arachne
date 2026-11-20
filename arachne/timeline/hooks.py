@@ -41,10 +41,13 @@ __all__ = [
     "update_self",
 ]
 
+import weakref
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from arachne.scene.scene import Scene
 
     from .events import EventPlan
@@ -141,6 +144,24 @@ class FrameInstant:
                 )
 
 
+#: Engine work a scene runs before its play's animations write, by scene:
+#: at each evaluated instant, before the animations and every updater, and
+#: as the play ends, before the animations finish; called with the scene,
+#: and holding nothing of it, so the scene goes when nothing else holds it.
+#: Registered only by the stepped-timing clock (:mod:`arachne.assets.timing`),
+#: which puts back what is true there; a scene with none does one lookup.
+BEFORE_ANIMATIONS: weakref.WeakKeyDictionary[Scene, Callable[[Scene], None]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def before_animations(scene: Scene) -> None:
+    """Run ``scene``'s engine work before its animations write, if any."""
+    run = BEFORE_ANIMATIONS.get(scene)
+    if run is not None:
+        run(scene)
+
+
 def animate(
     scene: Scene, plan: EventPlan, start: Fraction, instant: Fraction, dt: float
 ) -> None:
@@ -149,6 +170,7 @@ def animate(
     CE, then the composition events.
     """
     plan.begin_instant(instant)
+    before_animations(scene)
     local = instant - start
     for animation in scene.animations or []:
         animation.update_mobjects(dt)

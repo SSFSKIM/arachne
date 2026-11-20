@@ -56,7 +56,6 @@ from arachne import (
     set_timing,
 )
 from arachne.assets import timing
-from arachne.mobject.media import media_driver
 from arachne.utils.rate_functions import linear
 
 #: The drawings a second every declared rig here is held to.
@@ -637,8 +636,6 @@ class _Sprited(Scene):
     """
 
     def construct(self) -> None:
-        # The media driver is a scene driver: the clock takes it over.
-        timing.register_driver(media_driver)
         sprite = Sprite("fixture:stepper")
         self.add(sprite)
         set_timing(sprite, SLOW)
@@ -725,6 +722,20 @@ class PicturesShownInTurn(Scene):
         self.wait(0.4)
         self.play(ShowIncreasingSubsets(pictures, rate_func=linear), run_time=0.2)
         self.wait(0.5)
+
+
+class MovedThenStill(Scene):
+    """A declared square at rest through a wait, moved by the scene's code
+    between two boundaries, then at rest through another wait.
+    """
+
+    def construct(self) -> None:
+        square = Square()
+        self.add(square)
+        set_timing(square, SLOW)
+        self.wait(0.4)
+        square.shift(RIGHT)
+        self.wait(1)
 
 
 # Refused
