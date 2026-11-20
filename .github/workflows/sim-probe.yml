@@ -1,0 +1,58 @@
+# Runs the simulation crate's determinism probe (sim/examples/probe) on hosted Linux x86-64,
+# Windows x86-64 and macOS arm64 runners, then compares the outputs: the two x86-64 systems must
+# agree on every world and case; whether arm64 agrees is recorded and binds nothing. It builds the
+# crate and its probe only, never the engine. Runs on every pull request touching sim/ and on
+# every ci/ branch whose commits touch it.
+name: sim-probe
+on:
+  pull_request:
+    paths: ['sim/**', '.github/workflows/sim-probe.yml']
+  push:
+    branches: ['ci/**']
+    paths: ['sim/**', '.github/workflows/sim-probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    name: probe (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: linux-x86_64
+            runner: ubuntu-latest
+          - system: windows-x86_64
+            runner: windows-latest
+          - system: macos-arm64
+            runner: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: The probe
+        shell: bash
+        run: bash sim/ci/probe.sh "${{ matrix.system }}" "probe-${{ matrix.system }}.txt"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: probe-${{ matrix.system }}
+          path: |
+            sim/probe-${{ matrix.system }}.txt
+            sim/imports-${{ matrix.system }}.txt
+          if-no-files-found: error
+  compare:
+    needs: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: probe-*
+          merge-multiple: true
+          path: outputs
+      - name: Three systems side by side
+        run: python3 sim/ci/compare_probes.py outputs

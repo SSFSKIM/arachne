@@ -573,7 +573,7 @@ def _restored_frame(drawing: Drawing, resolved: _Resolved) -> PixelArray:
     targets = list(capture.moving) or roots
     drawing.show(capture, [*roots, *targets])
     prepare(drawing)
-    camera.reset()
-    camera.capture_mobjects(static_list(camera, roots, capture.moving))
-    camera.capture_mobjects(targets)
-    return camera.pixel_array.copy()
+    drawing.reset()
+    drawing.capture(static_list(camera, roots, capture.moving))
+    drawing.capture(targets)
+    return drawing.pixels()

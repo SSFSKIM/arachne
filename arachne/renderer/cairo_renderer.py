@@ -12,6 +12,7 @@ from arachne.utils.hashing import get_hash_from_play_call
 from .. import config, logger
 from .._config.video_encoder import video_encoder_fingerprint, with_thread_share
 from ..camera.camera import Camera
+from ..compose.guard import check_render
 from ..mobject.mobject import Mobject, _AnimationBuilder
 from ..scene.scene_file_writer import SceneFileWriter, uncached_key
 from ..timeline.clock import TICK_RATE, exact, frames_in
@@ -152,6 +153,8 @@ class CairoRenderer:
         self._scene: weakref.ref[Scene] | None = None
         self.drawn_by: tuple[workers.WorkerReport, ...] = ()
         self.worker_fallback: str | None = None
+        #: Why a play of this execution was drawn as it ran, once one was.
+        self._live: str | None = None
 
     def renew(self) -> None:
         """Start afresh for another execution of the scene: a new camera of
@@ -266,6 +269,7 @@ class CairoRenderer:
             self._draw_here(
                 scene, f"play {self.num_plays} is drawn as it runs ({refusal})"
             )
+            self._live = self._live or refusal
             self._play_live(scene, skipped, cache_key, fps)
             return
         manager = scene.manager
@@ -275,9 +279,13 @@ class CairoRenderer:
             self._draw_here(
                 scene, f"play {self.num_plays} is drawn as it runs ({UNREPEATABLE})"
             )
+            self._live = self._live or UNREPEATABLE
             self._play_live(scene, skipped, cache_key, fps, UNREPEATABLE)
             return
         play = timeline.play(skipped=skipped, cache_key=cache_key)
+        if timeline.draws:
+            # Before anything of the play is looked up or drawn.
+            self._refuse(timeline.ensure_record())
 
         frames = frames_in(play.start, play.end, fps)
         if not frames:
@@ -366,6 +374,9 @@ class CairoRenderer:
         live = None
         opened = False
         if draw:
+            # What the scene's code found so far refuses the frames before
+            # one is written.
+            self._refuse_found(timeline.ensure_record())
             # The play's segment opens at its first frame: a stop condition
             # can end the play before the frame grid reaches it, and then it
             # has no segment, like a frameless play drawn from the record.
@@ -384,10 +395,17 @@ class CairoRenderer:
                     )
                 self.file_writer.write_frame(pixels, repeat=repeat)
 
-            live = LiveFrames(scene, fps, write)
+            def check() -> None:
+                # Each capture of the play, before anything of it is painted:
+                # what the scene's code found first, as at every other point.
+                self._refuse(timeline.ensure_record())
+
+            live = LiveFrames(scene, fps, write, check=check)
         play = timeline.play(
             skipped=skipped, cache_key=cache_key, live=live, live_reason=reason
         )
+        if timeline.draws:
+            self._refuse(timeline.ensure_record())
         if opened:
             self.file_writer.end_animation(True)
         else:
@@ -436,6 +454,7 @@ class CairoRenderer:
         default the play being run.
         """
         record = scene._arachne_timeline.ensure_record()
+        self._refuse_found(record)
         if number is None:
             number = self.num_plays
         self.file_writer.begin_animation(True, animation_index=number)
@@ -851,7 +870,20 @@ class CairoRenderer:
             self.skip_animations = True
             raise EndSceneEarlyException()
 
+    def check_finished(self, scene: Scene) -> None:
+        """Refuse a render of its scene as its script ends, before anything
+        else of its end (:meth:`_refuse`): for what its code found, and for
+        a GPU-only capability in any capture, its final one included.
+        """
+        timeline = scene._arachne_timeline
+        if timeline.draws and timeline.record is not None:
+            # What the scene's code found, after its last play too.
+            self._refuse(timeline.record)
+
     def scene_finished(self, scene: Scene) -> None:
+        # The scene as its script left it, before its last frame is drawn
+        # (by the render's workers too) and anything is assembled.
+        self.check_finished(scene)
         if self._deferred is not None:
             self._draw_deferred(scene)
         output = self.file_writer.output_spec
@@ -866,6 +898,28 @@ class CairoRenderer:
             if self.num_plays:
                 self._draw_final(scene)
             self.file_writer.save_image(self.get_frame())
+
+    def _refuse(self, record: Any) -> None:
+        """Refuse a render as far as its scene has run: for what its code
+        found that refuses drawing it (:meth:`_refuse_found`), the scene's
+        own error on every host, first; then for a GPU-only capability
+        (:func:`.compose.guard.check_render`).
+        """
+        self._refuse_found(record)
+        check_render(record, self._live)
+
+    @staticmethod
+    def _refuse_found(record: Any) -> None:
+        """Raise what the scene's code found for the lint that refuses
+        drawing (:func:`~arachne.lint.raised.found`), in a run that writes
+        files. A run that writes none (a session's, and the forward runs
+        that answer its states and lint) draws on: a session refuses a
+        request for pictures itself.
+        """
+        if record.bridge.calls and not config.dry_run:
+            from ..lint.raised import refuse_drawing
+
+            refuse_drawing(record)
 
     def _draw_final(self, scene: Scene) -> None:
         """Draw the scene as its script left it into the camera: from the

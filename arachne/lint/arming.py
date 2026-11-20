@@ -9,7 +9,9 @@ rather than asked at times::
 
 Nothing arms them unasked: a scene arms them by calling
 :func:`.bridge.arm`, and :func:`armed` gives the rules it armed, which
-``lint(session, rules="armed")`` runs. A rule that samples frames of its
+``lint(session, rules="armed")`` runs. What a scene holds arms the rules
+that measure it: an attached annotation, the rule ``anchored``; an engine
+diagram, ``diagram_clear``. A rule that samples frames of its
 own says which (``reads``); they are read with the lint's other frames,
 from the record or the lint's one forward run (:mod:`.frames`). Between
 frames an armed rule reads the states its execution keeps
@@ -202,16 +204,26 @@ def armed(
     """The temporal rules ``record``'s scene armed: the hold watch, sampling
     at ``sample_fps`` (:attr:`ArmedRule.sample_fps`), and the departure
     sweep, each armed from the scene's first :func:`.bridge.arm` on; none
-    for a scene that never armed. The motion rule the scene armed is not
-    among them: the lint runs it unasked (:class:`.bridge.Checks`).
+    for a scene that never armed. Then the rules what the record holds
+    arms, armed or not: ``anchored`` for an attached annotation,
+    ``diagram_clear`` for an engine diagram. The motion rule the scene armed
+    is not among them: the lint runs it unasked (:class:`.bridge.Checks`).
     """
     from .departures import departures
+    from .rules import anchored, diagram_clear
+    from .rules.anchored import holds_attached
+    from .rules.diagram_clear import diagram_ids
     from .watch import hold_watch
 
+    rules: list[Rule] = []
     since = next((call.t for call in record.bridge.calls if call.kind == "arm"), None)
-    if since is None:
-        return ()
-    return (
-        hold_watch.where(since=since, sample_fps=sample_fps),
-        departures.where(since=since),
-    )
+    if since is not None:
+        rules += [
+            hold_watch.where(since=since, sample_fps=sample_fps),
+            departures.where(since=since),
+        ]
+    if holds_attached(record):
+        rules.append(anchored)
+    if diagram_ids(record):
+        rules.append(diagram_clear)
+    return tuple(rules)

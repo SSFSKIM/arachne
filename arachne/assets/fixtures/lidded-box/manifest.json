@@ -1,0 +1,66 @@
+{
+  "manifest_version": "1.0",
+  "name": "lidded-box",
+  "version": 1,
+  "kind": "parts",
+  "requires": [],
+  "size": {
+    "scene_units_per_unit": 0.01,
+    "origin": [200, 184],
+    "width": 2.08,
+    "height": 1.52
+  },
+  "parts": [
+    {
+      "name": "body",
+      "file": "lidded-box.svg",
+      "element": "body",
+      "parent": null,
+      "pivot": [200, 260],
+      "order": 0
+    },
+    {
+      "name": "lid",
+      "file": "lidded-box.svg",
+      "element": "lid",
+      "parent": "body",
+      "pivot": [100, 140],
+      "order": 1
+    }
+  ],
+  "slots": [],
+  "parameters": [
+    {
+      "name": "lid_open",
+      "min": 0,
+      "max": 110,
+      "default": 0,
+      "unit": "deg",
+      "drives": [
+        {
+          "part": "lid",
+          "kind": "rotate",
+          "unit": "deg",
+          "keys": [{"at": 0, "value": 0}, {"at": 110, "value": 110}]
+        }
+      ]
+    }
+  ],
+  "anchors": [{"name": "knob", "part": "lid", "attach": "outline", "at": [200, 108]}],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:3c483b089b3d189474cba0afd85b7b47f065c30b1e737b9377f4192a521785c7",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

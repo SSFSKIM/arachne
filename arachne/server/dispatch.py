@@ -40,11 +40,15 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from .. import api_json
+from ..compose.session import Refusals
+from ..compose.stack import Unsupported as StackUnsupported
 from ..constants import QUALITIES
 from ..errors import SceneError, explain, message_of
 from ..frame_ir.cairo_painter import Unsupported
 from ..lint.exempt import Exemptions
 from ..lint.instants import DEFAULT as LINT_AT
+from ..lint.raised import RaisedFinding
+from ..routing import GpuLive, GpuRequired
 from ..session import Session
 from ..timeline.execution import Incomparable
 from ..timeline.hooks import SceneHookRefused
@@ -210,11 +214,19 @@ def deadline(params: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
 
 
 def _rules(name: str, value: Any) -> Any:
-    """``"armed"``, or the rules a list names, each armed from the start."""
+    """``"armed"``, or the rules a list names: the temporal ones each armed
+    from the start, and the annotation and diagram rules.
+    """
     from ..lint.departures import departures
+    from ..lint.rules import anchored, diagram_clear
     from ..lint.watch import hold_watch
 
-    named = {"hold_watch": hold_watch, "departures": departures}
+    named = {
+        "hold_watch": hold_watch,
+        "departures": departures,
+        "anchored": anchored,
+        "diagram_clear": diagram_clear,
+    }
     if value == "armed":
         return value
     if not isinstance(value, list) or not all(
@@ -241,6 +253,44 @@ def _ids(name: str, value: Any) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(e, str) for e in value):
         raise _invalid(f"{name} is a list of stable ids.")
     return value
+
+
+#: What a probe of a query's ``value_at`` may name.
+_PROBE_FIELDS = frozenset({"id", "channel", "position", "space"})
+
+
+def _probes(name: str, value: Any) -> list[Any]:
+    """Points to read: each ``{id, channel, position, space}``, ``position``
+    one to three numbers in ``space``, ``"scene"`` (the default) or ``"grid"``.
+    """
+    from ..quantities import PointProbe
+
+    shape = (
+        f"{name} is a list of {{id, channel, position, space}}: a stable id, a"
+        " channel's name, one to three numbers, and 'scene' or 'grid'."
+    )
+    if not isinstance(value, list):
+        raise _invalid(shape)
+    found = []
+    for each in value:
+        if not isinstance(each, dict) or not set(each) <= _PROBE_FIELDS:
+            raise _invalid(shape)
+        node_id, channel = each.get("id"), each.get("channel")
+        position, space = each.get("position"), each.get("space", "scene")
+        if (
+            not isinstance(node_id, str)
+            or not isinstance(channel, str)
+            or not isinstance(position, list)
+            or not 1 <= len(position) <= 3
+            or space not in ("scene", "grid")
+        ):
+            raise _invalid(shape)
+        found.append(
+            PointProbe(
+                node_id, channel, tuple(number(name, v) for v in position), space
+            )
+        )
+    return found
 
 
 @dataclass(frozen=True)
@@ -350,6 +400,16 @@ class Dispatcher:
         if self._opened is None:
             return None
         return self._opened[0], self._opened[1], dict(self._config)
+
+    def refusals(self) -> Refusals:
+        """Why the session held is refused pictures and renders: its own
+        (from its record and route), or as its stored manifest keeps them,
+        without executing it.
+        """
+        if self.session is not None:
+            return Refusals.of(self.session)
+        assert self.stored is not None
+        return Refusals.stored(self.stored)
 
     def live(self) -> Session:
         """The session, executed: a session opened from the store is
@@ -510,9 +570,17 @@ class Dispatcher:
         summary of the session's execution at the render's frame rate and
         pixel aspect: the store's, kept as it executed, else the session's
         own when it was executed so. ``workers`` draw it (by default, as the
-        session's configuration says): above 1, in a process of its own.
+        session's configuration says): above 1, in a process of its own. A
+        scene whose code found what refuses drawing it, or on the ``gpu``
+        route, is refused before anything of it runs
+        (:meth:`.compose.session.Refusals.refuse_render`).
         """
         assert self._opened is not None
+        # Refused before anything of it runs: for what the scene's code found
+        # that refuses drawing it (every render of it, the plays before the
+        # finding too), then for its gpu route. Read from the session's whole
+        # record and route, or from what the store kept of them.
+        self.refusals().refuse_render()
         file, scene, _ = self._opened
         config = {**self._config, **rendering.quality_options(quality)}
         key = self._execution_key(config)
@@ -626,42 +694,48 @@ def _changed(file: str, read: tuple[tuple[str, str], ...]) -> bool:
 #: a scene hook a play can't honour (``SceneHookRefused``), a record that
 #: answers no instant (``RecordRefused``), an instant it can't answer
 #: (``Unavailable``, ``Unrestorable`` among them), a frame the drawer does
-#: not draw (``Unsupported``, ``render.unsupported``) and two executions that
-#: can't be compared (``Incomparable``).
+#: not draw (``Unsupported``, ``render.unsupported``), two executions that
+#: can't be compared (``Incomparable``), a scene holding a GPU-only
+#: capability on a host with no GPU (``GpuRequired``, ``render.gpu_required``)
+#: or drawn as it runs (``GpuLive``, ``render.gpu_live``), and a finding
+#: raised while the scene's code ran (``RaisedFinding``), whose answer
+#: carries the finding; and a frame a GPU stack does not draw
+#: (``Unsupported`` of :mod:`arachne.compose.stack`, ``render.unsupported``).
 REFUSALS: tuple[type[Exception], ...] = (
     SceneHookRefused,
     RecordRefused,
     Unavailable,
     Unsupported,
     Incomparable,
+    GpuRequired,
+    GpuLive,
+    RaisedFinding,
+    StackUnsupported,
 )
 
 
 def _error_answer(error: BaseException, scene_file: str | None) -> RpcError | None:
-    """``error``'s answer: the engine's refusal; else what the scene's code
-    raised, explained, as the session explained it or, for an execution it
-    did not explain (a forward run's), by the frames of the scene's own
-    code ``error`` went through (of ``scene_file``, the session's); else,
-    for an :class:`Exception`, an internal error. ``None``: none of these, so
-    not the server's to answer.
+    """``error``'s answer: the engine's refusal, with the finding whole for
+    a raised one, at the line of ``scene_file`` it went through; else what
+    the scene's code raised, explained, as the session explained it or, for
+    an execution it did not explain (a forward run's), by the frames of the
+    scene's own code ``error`` went through (of ``scene_file``, the
+    session's); else, for an :class:`Exception`, an internal error.
+    ``None``: none of these, so not the server's to answer.
     """
     kind = type(error).__name__
     if isinstance(error, REFUSALS):
         reason = getattr(error, "reason", None) or getattr(error, "code", None)
         message = message_of(error)
-        return RpcError(
-            REFUSED,
-            f"{kind}: {message}",
-            {
-                "type": kind,
-                "message": message,
-                "reason": reason if isinstance(reason, str) else None,
-            },
-        )
-    explained = getattr(error, "scene_error", None)
-    if explained is None and scene_file is not None:
-        found = explain(error, scene_file)
-        explained = found if found.frames else None
+        data: dict[str, Any] = {
+            "type": kind,
+            "message": message,
+            "reason": reason if isinstance(reason, str) else None,
+        }
+        if isinstance(error, RaisedFinding):
+            data["finding"] = error.finding(_scene_line(error, scene_file))
+        return RpcError(REFUSED, f"{kind}: {message}", data)
+    explained = _explained(error, scene_file)
     if isinstance(explained, SceneError):
         message = (
             f"{explained.cls}: {explained.message}"
@@ -672,6 +746,25 @@ def _error_answer(error: BaseException, scene_file: str | None) -> RpcError | No
     if not isinstance(error, Exception):
         return None
     return internal_error(error)
+
+
+def _explained(error: BaseException, scene_file: str | None) -> SceneError | None:
+    """``error`` explained: as the session explained it, else by the frames
+    of ``scene_file``'s code it went through, if any.
+    """
+    explained = getattr(error, "scene_error", None)
+    if explained is None and scene_file is not None:
+        found = explain(error, scene_file)
+        explained = found if found.frames else None
+    return explained if isinstance(explained, SceneError) else None
+
+
+def _scene_line(error: BaseException, scene_file: str | None) -> int | None:
+    """The innermost line of the scene file ``error`` went through, found as
+    a scene error's is; ``None`` when it went through none.
+    """
+    explained = _explained(error, scene_file)
+    return None if explained is None else explained.line
 
 
 def internal_error(error: BaseException) -> RpcError:
@@ -782,7 +875,10 @@ def _lint(server: Dispatcher, params: Params) -> dict[str, Any]:
     # Key frames are files the store does not keep.
     session = server.live()
     forms = answer(session)
-    forms["key_frames"] = api_json.key_frames(session.key_frames(out_dir))
+    # Drawings beside a lint, which answers on every host: a picture this
+    # host can't draw carries its refusal in place of its file.
+    drawn = session.key_frames(out_dir, keep_refusals=True)
+    forms["key_frames"] = api_json.key_frames(drawn)
     server.linted()
     return server.answer(**forms)
 
@@ -814,14 +910,22 @@ def _query(server: Dispatcher, params: Params) -> dict[str, Any]:
     t = params.get("t", instant)
     what = params.get("what", _answers)
     ids = params.get("ids", _ids, [])
+    probes = params.get("probes", _probes, [])
     if "bbox" in what and not ids:
         raise _invalid("A query's bbox needs ids, the mobjects to box.")
+    if "value_at" in what and not probes:
+        raise _invalid("A query's value_at needs probes, the points to read.")
     params.done()
-    return server.kept(
-        "query",
-        params.given,
-        lambda session: {"query": api_json.query(session.query(t), what, ids=ids)},
-    )
+
+    def answer(session: Session) -> dict[str, Any]:
+        from ..quantities import point_answers
+
+        measured = any(name != "value_at" for name in what)
+        found = session.query(t) if measured else None
+        points = point_answers(session, t, probes) if "value_at" in what else None
+        return {"query": api_json.query(found, what, ids=ids, points=points)}
+
+    return server.kept("query", params.given, answer)
 
 
 def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
@@ -832,7 +936,17 @@ def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
     # The answer is the same picture wherever it is written.
     asked = {name: value for name, value in params.given.items() if name != "path"}
     store, stored = server.store, server.stored
-    if server.session is None and store is not None and stored is not None:
+    if server.session is None and stored is not None:
+        # What the scene's code found that refuses drawing it, and what this
+        # host can't draw, are refused from the manifest, before the scene
+        # executes.
+        server.refusals().refuse_here()
+    if (
+        server.session is None
+        and store is not None
+        and stored is not None
+        and stored.route == "cpu"
+    ):
         found_form = store.answer(stored, "frame", asked)
         picture = store.answer_file(stored, "frame", asked)
         if found_form is not None and picture is not None:
@@ -844,7 +958,10 @@ def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     found.frame.save(path, format="PNG")
     form = api_json.frame(found, path)
-    server.keep("frame", asked, {"frame": form}, path.read_bytes())
+    if found.renderer is None:
+        # A picture drawn on the GPU is drawn anew each time it is asked
+        # for, by a session that checks the route and the device.
+        server.keep("frame", asked, {"frame": form}, path.read_bytes())
     return server.answer(frame=form)
 
 

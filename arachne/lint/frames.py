@@ -53,6 +53,8 @@ if TYPE_CHECKING:
     from arachne.session import Session
     from arachne.timeline.record import Capture, PlayRecord, Record
 
+    from .instants import LintInstant
+
 T = TypeVar("T")
 
 #: A reader of one frame: ``read(record, t, play, capture, live)``. With
@@ -75,8 +77,11 @@ class _Request:
 class Frames:
     """One lint's frames of ``session``, every request read together."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self, session: Session, *, lint_instants: tuple[LintInstant, ...] = ()
+    ) -> None:
         self.session = session
+        self._lint_instants = tuple(lint_instants)
         self._requests: dict[Hashable, _Request] = {}
         #: The owners that need a forward run, when one runs, to the end.
         self._complete: set[Hashable] = set()
@@ -88,6 +93,13 @@ class Frames:
         self.forward: Record | None = None
         #: The parts this lint's readers built, shared between them.
         self.parts = PartsCache()
+
+    @property
+    def lint_instants(self) -> tuple[LintInstant, ...]:
+        """The instants the lint reads (none outside a lint), for a reader
+        that opts to read at them too; no request reads them by itself.
+        """
+        return self._lint_instants
 
     def request(
         self,

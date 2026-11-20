@@ -555,6 +555,8 @@ def _box(
     lows: list[np.ndarray] = []
     highs: list[np.ndarray] = []
     for member in mob.family_members_with_points():
+        if getattr(type(member), "_scaffold", False):
+            continue
         found = (
             _ink_box(camera, view, member, home=home)
             if ink

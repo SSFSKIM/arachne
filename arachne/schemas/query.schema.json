@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Arachne query",
-  "description": "Numbers about the frame on screen at an instant, measured as the lint measures it: the answers asked for, each under its name. Boxes of the picture (frame, a thing's box, bbox) are in home-frame units: scene units of the frame the configuration describes, centred, y up. A finding's boxes are a report's. A field added is a minor version, a field changed or removed a major one.",
+  "description": "Numbers about the frame on screen at an instant, measured as the lint measures it, and values at points read at the instant itself: the answers asked for, each under its name. Boxes of the picture (frame, a thing's box, bbox) are in home-frame units: scene units of the frame the configuration describes, centred, y up. A finding's boxes are a report's. A field added is a minor version, a field changed or removed a major one.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "t", "t_exact", "play", "answer", "frame"],
@@ -107,10 +107,15 @@
       "description": "The named markers in force at the frame, in the order they were placed.",
       "type": "array",
       "items": {"$ref": "#/$defs/marker"}
+    },
+    "value_at": {
+      "description": "Each probe asked for, in order, read at the request's own time (not at the frame on screen there), each value dated by its as_of. With no other answer asked, t is the request's time.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/point_read"}
     }
   },
   "$defs": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"const": "1.1"},
     "time": {"description": "Seconds of scene time.", "type": "number"},
     "exact": {
       "description": "An exact instant or rate, the rational \"n/d\".",
@@ -148,6 +153,62 @@
         "source_line": {"$ref": "#/$defs/line"},
         "source": {"$ref": "#/$defs/source"}
       }
+    },
+    "point_read": {
+      "description": "A probe and its answer: value (with its unit, the interpolation the object declares, the grid cells read and the instant it is of), outside (the object's domain, or a time before or after the scene or outside the span a stored simulation covers), or unknown (no such object, no such channel, or no value at a point).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "channel", "position", "space", "result"],
+      "properties": {
+        "id": {"type": "string"},
+        "channel": {"type": "string"},
+        "position": {
+          "type": "array",
+          "items": {"type": "number"},
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "space": {"enum": ["scene", "grid"]},
+        "result": {"enum": ["value", "outside", "unknown"]},
+        "value": {
+          "oneOf": [
+            {"type": "number"},
+            {
+              "type": "array",
+              "items": {"type": "number"},
+              "minItems": 1,
+              "maxItems": 16
+            }
+          ]
+        },
+        "unit": {"type": "string", "minLength": 1},
+        "interpolation": {"enum": ["nearest", "linear"]},
+        "cells": {
+          "type": "array",
+          "items": {"type": "array", "items": {"type": "integer"}}
+        },
+        "as_of": {"$ref": "#/$defs/time"},
+        "as_of_exact": {"$ref": "#/$defs/exact"},
+        "outside": {"enum": ["domain", "time"]},
+        "unknown": {"enum": ["id", "channel", "not_point_readable"]}
+      },
+      "oneOf": [
+        {
+          "properties": {"result": {"const": "value"}},
+          "required": ["value", "unit", "interpolation", "cells", "as_of", "as_of_exact"],
+          "not": {"anyOf": [{"required": ["outside"]}, {"required": ["unknown"]}]}
+        },
+        {
+          "properties": {"result": {"const": "outside"}},
+          "required": ["outside"],
+          "not": {"anyOf": [{"required": ["value"]}, {"required": ["unknown"]}]}
+        },
+        {
+          "properties": {"result": {"const": "unknown"}},
+          "required": ["unknown"],
+          "not": {"anyOf": [{"required": ["value"]}, {"required": ["outside"]}]}
+        }
+      ]
     },
     "thing": {
       "description": "A thing a query names; source_line is the line of the scene file that made it.",

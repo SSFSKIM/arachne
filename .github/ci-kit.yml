@@ -63,6 +63,10 @@ gates:
     timeout: 45
   - name: macos
     lane: hosted-macos
+    # GitHub runs five hosted macOS jobs at a time for the whole account, shared with the account's other
+    # repositories, so a ci-gate push does not start this one: the pull request's run carries it, and
+    # `ci-gate --gates macos` runs it by name.
+    on: [pr, dispatch]
     run: uv run python -m pytest --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.14"}
     timeout: 60
@@ -100,7 +104,105 @@ gates:
     timeout: 20
   - name: core-macos
     lane: hosted-macos
+    # GitHub runs five hosted macOS jobs at a time for the whole account, shared with the account's other
+    # repositories, so a ci-gate push does not start this one: the pull request's run carries it, and
+    # `ci-gate --gates core-macos` runs it by name.
+    on: [pr, dispatch]
     setup: false
     paths: ["core/**", ".github/ci-kit.yml"]
     run: bash core/ci/test.sh && bash core/ci/binding.sh 3.14
+    timeout: 30
+
+  # The comparator (compare/, the arachne-compare distribution): its built wheel's tests, run
+  # outside the checkout, where arachne is not importable and no root options apply.
+  - name: compare
+    setup: false
+    paths: ["compare/**", ".github/ci-kit.yml"]
+    timeout: 10
+    run: |
+      set -euo pipefail
+      command -v uv >/dev/null || pipx install uv==0.12.3
+      work=$(mktemp -d)
+      uv build --wheel --out-dir "$work/wheels" compare
+      uv venv --quiet --python 3.12 "$work/venv"
+      VIRTUAL_ENV="$work/venv" uv pip install --quiet "$work"/wheels/arachne_compare-*.whl pytest
+      cp -R compare/tests "$work/tests"
+      cd "$work"
+      venv/bin/python -c "import importlib.util as u, arachne_compare; assert u.find_spec('arachne') is None"
+      venv/bin/python -m pytest -q -p no:cacheprovider tests
+
+  # The simulation crate (sim/, arachne-sim: the rigid-body solver pinned with its determinism
+  # feature): its own toolchain, lock file and clippy rules, set up by each gate, and run only when
+  # sim/ or this file changes.
+  - name: sim-lint
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/lint.sh
+    timeout: 30
+  - name: sim-test
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/test.sh
+    timeout: 30
+  - name: sim-identity
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/identity.sh
+    timeout: 30
+  - name: sim-macos
+    lane: hosted-macos
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/macos.sh
+    timeout: 60
+
+  # The GPU build (gpu/, the arachne-gpu crate and its Python binding): a build of its own, never
+  # an extra of the engine. Its drawing tests run on a software adapter (lavapipe) that each gate
+  # installs itself. gpu-binding and cpu-bytes run on every pull request, whatever it changes:
+  # cpu-bytes shows that a scene using nothing new draws the same bytes with the GPU build
+  # installed and without it.
+  - name: gpu-lint
+    setup: false
+    paths: ["gpu/**", ".github/ci-kit.yml"]
+    run: bash gpu/ci/lint.sh
+    timeout: 20
+  - name: gpu-test
+    setup: false
+    paths: ["gpu/**", ".github/ci-kit.yml"]
+    run: bash gpu/ci/test.sh
+    timeout: 30
+  - name: gpu-binding
+    run: bash gpu/ci/binding.sh gpu/tests/python tests/routing tests/compose
+    env: {UV_PYTHON: "3.12"}
+    timeout: 30
+  - name: cpu-bytes
+    run: bash gpu/ci/cpu_bytes.sh
+    env: {UV_PYTHON: "3.12"}
+    timeout: 45
+  # A change to when or where old scenes are drawn and written is compared with the commit it
+  # merges into: the cpu-bytes scenes rendered at both, into an empty cache and into the one that
+  # run left, must give equal frames, keys, cache hits and published files. A pull request's run
+  # alone has that commit as its base.
+  - name: base-head
+    on: [pr]
+    paths:
+      - "arachne/compose/**"
+      - "arachne/manager.py"
+      - "arachne/renderer/**"
+      - "arachne/scene/**"
+      - "arachne/session.py"
+      - "arachne/timeline/draw.py"
+      - "arachne/timeline/record.py"
+      - "gpu/ci/base_head*"
+    run: bash gpu/ci/base_head.sh "$CI_KIT_BASE"
+    env: {UV_PYTHON: "3.12"}
+    timeout: 60
+
+  # The simulation crate's Python binding (sim/python, the engine's `sim` extra): its wheel, built
+  # with the pinned toolchain; its extension's import list (no platform maths) and links (no GPU
+  # library); and its tests under 3.12 and 3.14.
+  - name: sim-binding
+    setup: false
+    paths: ["sim/**", ".github/ci-kit.yml"]
+    run: bash sim/ci/binding.sh 3.12 3.14
     timeout: 30

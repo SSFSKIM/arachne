@@ -202,6 +202,152 @@ _TABLE = (
         "Scale the text up, or give it a larger font size.",
         ("height_px",),
     ),
+    Code(
+        "sim.quantity_unreadable",
+        "error",
+        "QuantityUnreadable",
+        "a declared quantity of an object in the scene has no readable value"
+        " at the instant: its name has no registered prefix, its unit is not"
+        " registered, its value is not finite or not of its kind, or its source"
+        " holds no value there (a simulation's quantity outside the stay it was"
+        " baked over); it is answered as null with the reason, never as a number",
+        "Declare the quantity under a registered prefix and unit with a finite"
+        " value of its kind, and read it only where its source holds a value.",
+        ("name", "unit", "reason"),
+    ),
+    Code(
+        "render.gpu_required",
+        "error",
+        "GpuRequired",
+        "a scene holding a GPU-only capability was asked to draw on a host with"
+        " no GPU; nothing is drawn or written. Raised by drawing calls only,"
+        " never listed by the lint, whose findings are the same on every host",
+        "Render on a GPU host; lint and state_at answer here.",
+        ("capabilities", "play", "object"),
+    ),
+    Code(
+        "render.gpu_live",
+        "error",
+        "GpuLive",
+        "a scene holding a GPU-only capability has its frames drawn before its"
+        " record is complete, which only Cairo does; nothing is written. Listed"
+        " by the lint on every host",
+        "Remove what makes the scene draw as it runs, which the message names,"
+        " or the GPU-only capability.",
+        ("capabilities", "play", "object", "cause"),
+    ),
+    Code(
+        "asset.manifest_missing",
+        "error",
+        "AssetManifestMissing",
+        "an asset asked for through the asset API has no manifest: its"
+        " directory holds no manifest.json, or no such directory or fixture"
+        " exists",
+        "Give the asset's directory its manifest.json, or name a directory that"
+        " has one: a path as given, or under the assets directory, or"
+        " fixture:<name> for one of the engine's fixtures.",
+        ("asset", "searched"),
+    ),
+    Code(
+        "asset.manifest_invalid",
+        "error",
+        "AssetManifestInvalid",
+        "an asset's manifest cannot be parsed, is of a major version or kind the"
+        " reader does not know, requires a feature the reader lacks, or misses"
+        " or contradicts a required member",
+        "Correct the member the finding names, as the asset manifest's rules"
+        " state it, or have the asset's maker export it again.",
+        ("asset", "member", "reason", "name"),
+    ),
+    Code(
+        "asset.file_missing",
+        "error",
+        "AssetFileMissing",
+        "a file an asset's manifest names is not there",
+        "Put the file at the path the manifest gives, relative to the asset's"
+        " directory, or correct the path in the manifest.",
+        ("asset", "file"),
+    ),
+    Code(
+        "asset.unreadable",
+        "error",
+        "AssetUnreadable",
+        "a file of an asset cannot be read or parsed, or holds something the"
+        " asset reader does not draw exactly as the file says (text, an embedded"
+        " image, a gradient or pattern paint, a dash, a clip path, a mask, a"
+        " filter, a percentage length, a reference to another file or to"
+        " nothing), or draws nothing",
+        "Export the file again as plain vector shapes with flat colours: outline"
+        " text, flatten masks, clips and filters, and embed nothing.",
+        ("asset", "file", "reason"),
+    ),
+    Code(
+        "asset.remote",
+        "error",
+        "AssetRemote",
+        "an asset is named by an address that would be fetched, or its manifest"
+        " names a file by anything but a plain path inside the asset's"
+        " directory: an address, an absolute path, a path with .. or a"
+        " backslash, or one through a link",
+        "Copy the file into the asset's directory and name it by a plain path"
+        " relative to it; assets are read from local directories only.",
+        ("asset", "file"),
+    ),
+    Code(
+        "rig.name_unknown",
+        "error",
+        "RigNameUnknown",
+        "a rig is asked for a part, parameter, slot or drawing its manifest"
+        " does not have; the finding's kind says which",
+        "Use one of the names the asset's manifest declares; the finding lists"
+        " the nearest.",
+        ("asset", "kind", "name", "nearest"),
+    ),
+    Code(
+        "rig.range",
+        "error",
+        "RigRange",
+        "a rig parameter is given a value outside the range its asset was tested"
+        " over, from its manifest's min to its max",
+        "Give the parameter a value from its min to its max; a pose outside them"
+        " was never checked to draw whole.",
+        ("asset", "parameter", "value", "min", "max"),
+    ),
+    Code(
+        "annotation.anchor_unknown",
+        "error",
+        "AnnotationAnchorUnknown",
+        "an anchor is asked of an asset whose manifest does not have it: the lint"
+        " reports it, and drawing refuses the scene",
+        "Use one of the anchors the asset's manifest declares; the finding lists"
+        " the nearest.",
+        ("asset", "name", "nearest"),
+    ),
+    Code(
+        "asset.unadmitted",
+        "error",
+        "AssetUnadmitted",
+        "an asset's manifest does not hold the complete, passing checks of the"
+        " admission tool this engine supports, recorded at the digest of the"
+        " asset as it is: it was never admitted, was admitted by another tool"
+        " version or has changed since, or a check is missing or failing; the"
+        " finding's reason says which",
+        "Admit the asset with python -m arachne.assets admit <its directory>"
+        " --write; where a check fails, correct the asset at its source and"
+        " admit it again.",
+        ("asset", "reason", "checks", "expected", "found"),
+    ),
+    Code(
+        "annotation.detached",
+        "error",
+        "AnnotationDetached",
+        "an annotation points more than a reference pixel from its anchor at an"
+        " instant the lint reads: it reads the anchor before what moves the"
+        " anchor's object, a frame late",
+        "Add the annotation to the scene after what it points at (and after"
+        " whatever moves that with an updater), so its updater runs after theirs.",
+        ("distance", "allowed", "anchor"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

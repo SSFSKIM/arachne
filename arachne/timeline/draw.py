@@ -19,7 +19,10 @@ moving families, in the camera's draw order. The play's static picture
 covers the longest prefix of that list equal leaf for leaf, at unchanged
 versions, to what it painted, while the camera's inputs are those it was
 painted with; the rest is drawn at the frame's state. ``static_layer=False``
-draws the whole list in every frame. Frames drawn live (:class:`LiveFrames`)
+draws the whole list in every frame. A drawing given a capture filter
+(``leave_out``) paints every frame whole, with no static picture, and each
+of its captures leaves out the leaves the filter takes from it. Frames
+drawn live (:class:`LiveFrames`)
 reuse no static picture, since drawing them runs the scene's code, which can
 read what no recorded state holds; only a frozen frame, during which nothing
 runs, keeps CE's picture under it.
@@ -31,6 +34,7 @@ __all__ = [
     "CameraExtras",
     "DrawReuse",
     "Drawing",
+    "LeaveOut",
     "LiveFrames",
     "camera_nodes",
     "static_list",
@@ -51,6 +55,7 @@ from .identity import one_of
 
 if TYPE_CHECKING:
     from arachne.camera.camera import Camera
+    from arachne.compose.stack import Stack
     from arachne.mobject.mobject import Mobject
     from arachne.mobject.values import FrozenBackground
     from arachne.typing import PixelArray
@@ -431,6 +436,11 @@ def _set_camera_values(camera: Camera, values: tuple[tuple[str, Any], ...]) -> N
 
 _MISSING = object()
 
+#: A capture filter (:class:`Drawing`'s ``leave_out``): given the list one
+#: capture of the camera is handed and the leaves the camera paints from it,
+#: in its order, the leaves the capture paints.
+LeaveOut = Callable[[Sequence["Mobject"], list["Mobject"]], list["Mobject"]]
+
 
 def _supplied_background(camera: Camera) -> FrozenBackground | None:
     """The background array the scene supplied, itself: it is read-only, so
@@ -794,6 +804,17 @@ class Drawing:
     or a scene that fell back to its camera's own draw (:attr:`captured`),
     runs code that can read what no recorded state holds at every draw. A
     reused frame is delivered as a drawn one is (:meth:`_deliver`).
+
+    ``leave_out``, a capture filter, takes leaves out of every capture the
+    drawing makes on ``cairo`` (:meth:`capture`): a drawing given one paints
+    every frame whole, reusing no static picture and keeping none, and
+    neither takes nor keeps a frame of ``reuse``.
+
+    ``stack`` (:class:`~arachne.compose.stack.Stack`) draws each frame as a
+    stack of layers on the GPU, on ``cairo``: every capture the drawing
+    makes hands the stack what it would paint (after the filter, if there
+    is one), and the frame is the stack's. Its frames are painted whole,
+    and none is taken from or kept in ``reuse``.
     """
 
     def __init__(
@@ -803,6 +824,8 @@ class Drawing:
         static_layer: bool | None = None,
         draw_path: str | None = None,
         reuse: DrawReuse | None = None,
+        leave_out: LeaveOut | None = None,
+        stack: Stack | None = None,
     ) -> None:
         from arachne import config
 
@@ -838,6 +861,12 @@ class Drawing:
         painted = "cairo" if self.captured else draw_path
         self.painter = painter_for(record, painted)
         self.static_painter = painter_for(record, painted, "static")
+        if leave_out is not None and self.painter is not None:
+            raise ValueError("A capture filter draws on the cairo draw path only.")
+        if stack is not None and self.painter is not None:
+            raise ValueError("A stack draws on the cairo draw path only.")
+        self.leave_out = leave_out
+        self.stack = stack
         #: The painter that drew last, which settles the cameras on exit.
         self._painted_by: Any = None
         self.camera: Camera = record._scene.renderer.camera
@@ -853,11 +882,14 @@ class Drawing:
         self._pictures_saved: dict[int, tuple[Any, PixelArray]] = {}
         # A camera the scene's code changed runs that code at every draw,
         # whichever path draws it: on a path that describes frames
-        # (:attr:`captured`) and on Cairo alike.
+        # (:attr:`captured`) and on Cairo alike. A capture filter's frames
+        # and a stack's are painted whole, from what no key says.
         if reuse is not None and (
             not _paints_its_list(self.camera)
             or self.captured
             or user_camera(self.camera) is not None
+            or leave_out is not None
+            or stack is not None
         ):
             reuse = None
         self.reuse = reuse
@@ -923,6 +955,8 @@ class Drawing:
         """
         from .record import NodeState
 
+        if self.stack is not None:
+            self.stack.at(capture)
         if capture.camera is not None:
             # First, so the camera's own mobjects reached below are the capture's.
             self._install_camera(self.camera, capture.camera)
@@ -1041,6 +1075,41 @@ class Drawing:
             self._pictures_saved[id(sub_camera)] = (sub_camera, sub_camera.pixel_array)
         sub_camera.pixel_array = picture
 
+    def capture(self, mobjects: list[Mobject], **options: Any) -> None:
+        """Paint ``mobjects`` into the camera as one capture of it
+        (``Camera.capture_mobjects``, given ``options``), less the leaves the
+        capture filter takes out, if there is one.
+        """
+        camera = self.camera
+        if self.leave_out is None and self.stack is None:
+            camera.capture_mobjects(mobjects, **options)
+            return
+        _reset_rotation(camera)
+        leaves = camera.get_mobjects_to_display(mobjects, **options)
+        if self.stack is not None:
+            # What a layer reads is painted only through it.
+            leaves = self.stack.own(mobjects, leaves)
+        if self.leave_out is not None:
+            leaves = self.leave_out(mobjects, leaves)
+        if self.stack is not None:
+            self.stack.add(mobjects, leaves)
+            return
+        camera.capture_mobjects(leaves, include_submobjects=False)
+
+    def reset(self) -> None:
+        """Start a frame whole: the camera's background alone."""
+        self.camera.reset()
+        if self.stack is not None:
+            self.stack.begin()
+
+    def pixels(self) -> PixelArray:
+        """The frame drawn since :meth:`reset`: the camera's picture, or the
+        stack's.
+        """
+        if self.stack is not None:
+            return self.stack.draw()
+        return self.camera.pixel_array.copy()
+
     def static(self, play: PlayRecord) -> PixelArray | None:
         """The play's static picture: its static mobjects as they were when
         its animations began, or ``None`` when it has none.
@@ -1066,7 +1135,7 @@ class Drawing:
         with self._captures(
             capture.instant, ("static", play.index), capture, reset=True
         ):
-            camera.capture_mobjects(list(play.static))
+            self.capture(list(play.static))
         self._pictures[play.index] = self._painted(play, capture)
         kept = camera.pixel_array.copy()
         if self.captured:
@@ -1232,7 +1301,11 @@ class Drawing:
             return self._paint(play, capture, targets, prepare, instant)
         shown = capture.instant if instant is None else instant
         with self._captures(shown, play.index, capture):
-            if self.static_layer and self._picture_holds(play, capture):
+            if self.leave_out is not None or self.stack is not None:
+                # Drawn whole: no static picture stands for what it leaves out,
+                # nor for the layers a stack draws.
+                self._draw_static(play, capture, None, targets, prepare)
+            elif self.static_layer and self._picture_holds(play, capture):
                 # A frame described from the camera's captures finds a drawn
                 # face's surface among the scene's roots: they hold their
                 # state at this capture, whichever drawing kept the picture.
@@ -1248,8 +1321,8 @@ class Drawing:
                     self.camera.reset()
             else:
                 self._draw_static(play, capture, static, targets, prepare)
-            self.camera.capture_mobjects(targets)
-        return self.camera.pixel_array.copy()
+            self.capture(targets)
+        return self.pixels()
 
     def restored(
         self,
@@ -1411,10 +1484,10 @@ class Drawing:
                     static = self._prefix_picture(picture, painted, kept)
                 camera.set_frame_to_background(static)
                 if kept < len(painted):
-                    camera.capture_mobjects(painted[kept:], include_submobjects=False)
+                    self.capture(painted[kept:], include_submobjects=False)
                 return
-        camera.reset()
-        camera.capture_mobjects(listed)
+        self.reset()
+        self.capture(listed)
 
     def _picture_of(self, play: PlayRecord) -> _Picture:
         """What the play's static picture painted, found without painting it
@@ -1469,7 +1542,7 @@ class Drawing:
             return picture.prefix[1]
         camera = self.camera
         camera.reset()
-        camera.capture_mobjects(painted[:kept], include_submobjects=False)
+        self.capture(painted[:kept], include_submobjects=False)
         found = camera.pixel_array.copy()
         picture.prefix = (kept, found)
         return found
@@ -1487,10 +1560,10 @@ class Drawing:
             self._painted_by = self.painter
             self.camera.set_pixel_array(pixels)
         else:
-            self.camera.reset()
+            self.reset()
             with self._captures(capture.instant, "final", capture, reset=True):
-                self.camera.capture_mobjects(targets)
-            pixels = self.camera.pixel_array.copy()
+                self.capture(targets)
+            pixels = self.pixels()
         self._deliver()
         return pixels
 
@@ -1515,11 +1588,15 @@ class LiveFrames:
         write: Callable[[PixelArray, int], None],
         *,
         static_layer: bool | None = None,
+        check: Callable[[], None] | None = None,
     ) -> None:
         if static_layer is None:
             from arachne import config
 
             static_layer = config.static_layer
+        #: Called with each capture recorded and before anything of it is
+        #: painted: the play's static capture, then each sample's.
+        self.check = check
         self.scene = scene
         self.camera: Camera = scene.renderer.camera
         self.fps = fps
@@ -1541,6 +1618,8 @@ class LiveFrames:
         self._play = play.index
         self._pending = None
         self._static = None
+        if self.check is not None:
+            self.check()
         if play.held and play.static and self.static_layer:
             from arachne.frame_ir.live import keep_static_picture, live
 
@@ -1578,6 +1657,8 @@ class LiveFrames:
         frames = frames_in(instant, min(until, upto), self.fps)
         if not frames:
             return
+        if self.check is not None:
+            self.check()
         scene = self.scene
         foreground = set(map(id, scene.foreground_mobjects))
         roots = [

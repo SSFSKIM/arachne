@@ -103,7 +103,8 @@ method          params, (default) when optional           result, beside generat
                 ("held+sampled"), ``rules`` ("armed"),    ``key_frames_dir``
                 ``sample_fps`` (none),
                 ``key_frames_dir`` (none)
-``query``       ``t``, ``what``, ``ids`` ([])             ``query``
+``query``       ``t``, ``what``, ``ids`` ([]),            ``query``
+                ``probes`` ([])
 ``frame``       ``t``, ``path``, ``quality`` (none)       ``frame``
 ``key_frames``  ``out_dir``, ``quality`` (none)           ``key_frames``
 ``reload``      ``force`` (false)                         ``reloaded``, a boolean
@@ -154,15 +155,24 @@ describes it.
   exempts every finding about an object it selects, a pair ``[a, b]`` of
   selectors a finding about exactly two objects, one selected by each.
   ``at`` is ``"held+sampled"`` or a list of times, the frames on screen
-  there. ``rules`` is ``"armed"`` (the temporal rules the scene armed) or a
+  there. ``rules`` is ``"armed"`` (the temporal rules the scene armed, and
+  ``"anchored"`` and ``"diagram_clear"`` for a scene holding an attached
+  annotation or a diagram) or a
   list of ``"hold_watch"`` and ``"departures"``, each armed from the scene's
-  start; ``[]`` runs the scene's own checks only. ``sample_fps`` (above 0)
+  start, ``"anchored"`` (annotations at their anchors) and
+  ``"diagram_clear"`` (a diagram's labels); ``[]`` runs the scene's own
+  checks only. ``sample_fps`` (above 0)
   is the rate the armed hold watch samples at, given with ``"armed"`` only.
   ``key_frames_dir`` writes the key frames there too, at the session's pixel
   size. A finding is an answer, never an error.
 - ``query``'s ``what`` is one of :data:`~arachne.api_json.QUERY_ANSWERS`, or
   a list of them; ``ids`` are the stable ids ``bbox`` boxes, required with
-  it.
+  it. ``probes``, required with ``value_at``, are the points it reads, each
+  ``{id, channel, position, space}``: a stable id, a channel's name, one to
+  three numbers and ``"scene"`` (scene units, the default) or ``"grid"`` (the
+  object's own cells). ``value_at`` is read at ``t`` itself, not at the
+  frame on screen there (:func:`arachne.quantities.value_at`): each answer
+  is dated, and with no other measure asked the answer's ``t`` is ``t``.
 - ``key_frames`` writes the key frames into the directory ``out_dir``, at
   ``quality``, else the session's pixel size.
 - ``reload`` executes the scene again when its files changed, or with
@@ -273,9 +283,13 @@ code       meaning, and ``data``
            answers no instant (``RecordRefused``), an instant it can't answer
            (``Unavailable``, ``Unrestorable`` among them), a frame the drawer
            does not draw (``Unsupported``, ``render.unsupported``), two
-           executions that can't be compared (``Incomparable``). ``data`` is
-           ``{type, message, reason}``: the refusal's class name, its message
-           and its stable code, or null
+           executions that can't be compared (``Incomparable``), a finding
+           raised while the scene's code ran (``RaisedFinding``, an asset that
+           cannot be loaded among them). ``data`` is ``{type, message,
+           reason}``: the refusal's class name, its message and its stable
+           code, or null; a raised finding's adds ``finding``, ``{code,
+           class, severity, message, fix, line, detail}``, ``line`` the scene
+           file's innermost line the error went through, or null
 ``-32002`` the request ran past its deadline: ``data`` is ``{method,
            deadline_s, ends}``. ``ends`` true: it ran past it, and the
            server ends; false: it was past it before its turn came, did not

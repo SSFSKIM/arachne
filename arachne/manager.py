@@ -166,6 +166,15 @@ class Manager(Generic[SceneT]):
         finding carries the refusal; the draw path asked for is the
         option's again once the render ends.
 
+        Every file the render writes (segments, frames of a sequence, the
+        still, sections, the movie) waits in the file writer's staging and
+        is moved into place once the render has ended
+        (:meth:`.SceneFileWriter.publish`). A refused render
+        (``render.gpu_required``, ``render.gpu_live``) publishes nothing:
+        every file that existed before it is as it was, and nothing new is
+        beside them. A render that raises otherwise publishes only the
+        segments it finished, into the cache.
+
         Parameters
         ----------
         preview
@@ -175,6 +184,50 @@ class Manager(Generic[SceneT]):
         open_after_render = preview or presentation.open_after_render
         if open_after_render and not self.output_spec.enabled:
             raise ValueError("Previewing after render requires a media artifact.")
+
+        from .routing.refusals import Refusal
+
+        self.file_writer.stage()
+        try:
+            self._render_staged()
+        except BaseException as error:
+            # A refused render leaves nothing: every file it wrote waits in
+            # staging, which goes with it. So does a render of a scene whose
+            # code recorded a finding that refuses drawing it, whatever ended
+            # it: a segment drawn before the finding stands for that scene.
+            # A render that raised otherwise keeps the plays it finished
+            # drawing in the cache, as a render always has, and publishes
+            # nothing else. Either way the error raised is the render's own.
+            refused = isinstance(error, Refusal) or self._drawing_refused()
+            try:
+                self.file_writer.discard(keep_segments=not refused)
+            except Exception:
+                logger.exception("Cleaning up after %s failed", type(error).__name__)
+            raise
+        self.file_writer.publish()
+
+        if open_after_render or presentation.show_in_file_browser:
+            open_media_file(
+                self.file_writer,
+                preview=open_after_render,
+                show_in_file_browser=presentation.show_in_file_browser,
+            )
+
+    def _drawing_refused(self) -> bool:
+        """Whether the scene's code recorded a finding that refuses drawing
+        it (:func:`~.lint.raised.found`), as far as it ran.
+        """
+        record = self.scene._arachne_timeline.record
+        if record is None or not record.bridge.calls:
+            return False
+        from .lint.raised import drawing_refusal
+
+        return drawing_refusal(record) is not None
+
+    def _render_staged(self) -> None:
+        """Execute the scene, again where a play must be drawn as it runs,
+        and finish its output, every file written into the writer's staging.
+        """
         known: dict[int, str] = {}
         earlier: list[tuple[int, tuple[bytes, ...]]] = []
         # The construction caches as a scene rendered earlier in this process
@@ -203,17 +256,13 @@ class Manager(Generic[SceneT]):
                     earlier.append((record.execution.number, play_keys(record)))
                     restore_construction_caches(caches)
                     self._reconfigure(configured)
+                    # One render, one staging, whichever painter draws it.
+                    staging = self.file_writer.staging
                     self._renew_scene()
+                    self.file_writer.staging = staging
                     self.scene._arachne_timeline.reexecuting(known, earlier)
         finally:
             self._undecide()
-
-        if open_after_render or presentation.show_in_file_browser:
-            open_media_file(
-                self.file_writer,
-                preview=open_after_render,
-                show_in_file_browser=presentation.show_in_file_browser,
-            )
 
     def _executions(
         self,
@@ -254,7 +303,11 @@ class Manager(Generic[SceneT]):
                 )
                 restore_construction_caches(caches)
                 self._reconfigure(configured)
+                # One render, one staging: what the interrupted execution
+                # wrote (its segments) waits for the execution that ends.
+                staging = self.file_writer.staging
                 self._renew_scene()
+                self.file_writer.staging = staging
                 self.scene._arachne_timeline.reexecuting(known, earlier)
 
     def _decide(self, option: str, value: Any) -> None:
@@ -363,6 +416,8 @@ class Manager(Generic[SceneT]):
         and logs the number of played animations. It intentionally runs after
         :meth:`tear_down` to preserve the established render lifecycle.
         """
+        # A scene the render refuses is refused before its output is judged.
+        self.renderer.check_finished(self.scene)
         output = self.output_spec
         empty_video_output = self.num_plays == 0 and output.is_video
         if empty_video_output and not output.fallback_to_still:

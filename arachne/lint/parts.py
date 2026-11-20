@@ -218,6 +218,19 @@ class Part:
         )
 
 
+@dataclass(frozen=True)
+class Landing:
+    """A leader an annotation declares, as a frame holds it: ``leader`` is
+    its stable id, ``target`` the stable ids of the family of the object
+    its anchor belongs to, and ``outline`` whether the anchor lies on that
+    object's outline rather than inside it.
+    """
+
+    leader: str
+    target: frozenset[str]
+    outline: bool
+
+
 @dataclass(frozen=True, eq=False)
 class Parts:
     """The parts drawn at ``t``, in paint order: ``play`` holds ``t``
@@ -226,7 +239,8 @@ class Parts:
     is the picture's box in home-frame units; ``target`` the resolution
     pixel boxes are given at, ``(width, height)``: the session's.
     ``fixed`` holds the stable ids of what a ThreeDCamera keeps fixed in
-    the frame there (empty under any other camera).
+    the frame there (empty under any other camera). ``landings`` are the
+    leaders the frame's annotations declare (:class:`Landing`).
     """
 
     t: Fraction
@@ -236,6 +250,7 @@ class Parts:
     parts: tuple[Part, ...]
     target: tuple[int, int]
     fixed: frozenset[str] = frozenset()
+    landings: tuple[Landing, ...] = ()
 
     @property
     def frame(self) -> Box:
@@ -444,7 +459,49 @@ def _read(
     fixed = frozenset(
         record.origin(m).id for m in (extras.fixed_in_frame if extras else ())
     )
-    return Parts(t, index, answer, view, tuple(parts), target, fixed)
+    landings = _landings(record, chains)
+    return Parts(t, index, answer, view, tuple(parts), target, fixed, landings=landings)
+
+
+def _landings(
+    record: Record, chains: dict[int, tuple[Mobject, tuple[Mobject, ...]]]
+) -> tuple[Landing, ...]:
+    """The leaders the annotations among ``chains`` declare, each read off
+    the annotation and its anchor's object as the frame holds them: none
+    whose anchor's object the frame does not hold, whose members it cannot
+    give as they were.
+    """
+    annotation, attached, inside, box_point = _annotation_types()
+    found: list[Landing] = []
+    for mob, _ in chains.values():
+        if not isinstance(mob, annotation) or mob.leader is None:
+            continue
+        held = mob.attached
+        if not isinstance(held, attached) or held.anchor.attachment is None:
+            continue
+        if id(held.anchor.mobject) not in chains:
+            continue
+        how = held.anchor.attachment
+        within = isinstance(how, inside) or (
+            isinstance(how, box_point) and not any(how.direction)
+        )
+        family = held.anchor.mobject.get_family()
+        found.append(
+            Landing(
+                record.origin(mob.leader).id,
+                frozenset(record.origin(m).id for m in family),
+                not within,
+            )
+        )
+    return tuple(found)
+
+
+@cache
+def _annotation_types() -> tuple[type[Any], type[Any], type[Any], type[Any]]:
+    from arachne.assets.anchor import Inside
+    from arachne.mobject.annotation.attach import Annotation, Attached, BoxPoint
+
+    return Annotation, Attached, Inside, BoxPoint
 
 
 def _viewing_nodes(camera: Any) -> set[int]:

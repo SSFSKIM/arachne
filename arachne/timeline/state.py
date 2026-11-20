@@ -4,9 +4,10 @@ from __future__ import annotations
 
 __all__ = ["NodeView", "State", "build_state"]
 
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -17,6 +18,7 @@ from arachne.camera.projection import (
     render_mapping_centre,
     view_of,
 )
+from arachne.quantities import At, Quantity, read
 
 from .draw import Drawing, camera_nodes
 from .record import NodeState
@@ -79,6 +81,10 @@ class State:
     whose record kept no tick at ``t``: there the answer is the last capture
     a frame read at or before ``t``, the frame a render shows, an earlier
     play's before the play's first frame. ``play`` is then that play.
+
+    ``quantities`` are the declared quantities of the mobjects it lists
+    that have any (:mod:`arachne.quantities`), by stable id, each list
+    sorted by name, read at ``as_of``: the instant the boxes are of.
     """
 
     t: Fraction
@@ -88,6 +94,9 @@ class State:
     roots: tuple[str, ...]
     nodes: tuple[NodeView, ...]
     as_of: Fraction
+    quantities: Mapping[str, tuple[Quantity, ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def node(self, node_id: str) -> NodeView:
         """The node with stable id ``node_id``."""
@@ -119,7 +128,8 @@ def build_state(
     given its captured values; ``prepare`` runs once they are (a trusted
     play's evaluation at an instant between its captures, or a state play's
     restore), and the tree is then read as the evaluation left it: a
-    callback may rebuild a mobject's submobjects.
+    callback may rebuild a mobject's submobjects. Each mobject it lists is
+    read for its declared quantities as the tree is, at ``as_of``.
     """
     camera = record._scene.renderer.camera
     hidden = {id(mob) for mob in camera_nodes(camera)}
@@ -154,10 +164,15 @@ def build_state(
                 return NodeState.of(mob)
 
         visible = _visible_ids(capture, state_of, hidden)
+        at = At.of(as_of, record.bakes)
+        quantities: dict[str, tuple[Quantity, ...]] = {}
         for mob, state in _walk(capture.draw_list(), state_of):
             if id(mob) not in visible:
                 continue
             origin = record.origin(mob)
+            declared = read(type(mob), mob.__dict__, at)
+            if declared and origin.id not in quantities:
+                quantities[origin.id] = declared
             children = tuple(
                 record.origin(child).id
                 for child in state.submobjects
@@ -183,7 +198,14 @@ def build_state(
             record.origin(mob).id for mob in capture.draw_list() if id(mob) in visible
         )
     return State(
-        t, play.index if play else None, route, answer, roots, tuple(views), as_of
+        t,
+        play.index if play else None,
+        route,
+        answer,
+        roots,
+        tuple(views),
+        as_of,
+        MappingProxyType(quantities),
     )
 
 
@@ -246,9 +268,14 @@ def _visible_ids(
 
 def _scene_box(mob: Mobject) -> tuple[float, float, float, float] | None:
     """The box of ``mob``'s family's points in scene units, unprojected;
-    ``None`` when they have none.
+    ``None`` when they have none. A rig's carrier (a scaffold member) is no
+    part of it.
     """
-    members = mob.family_members_with_points()
+    members = [
+        member
+        for member in mob.family_members_with_points()
+        if not getattr(type(member), "_scaffold", False)
+    ]
     if not members:
         return None
     points = np.concatenate([member.points[:, :2] for member in members])

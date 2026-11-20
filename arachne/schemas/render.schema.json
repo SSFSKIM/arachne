@@ -65,7 +65,7 @@
   },
   "$defs": {
     "schema_version": {
-      "const": "1.0"
+      "const": "1.1"
     },
     "time": {
       "description": "Seconds of scene time.",

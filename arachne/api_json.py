@@ -7,9 +7,11 @@ Each form is a dict of JSON values, described by the schema of its name in
   execution that made it, where each mobject was made, and the divergences
   found;
 - ``state``, :func:`state`: :meth:`~arachne.session.Session.state_at`'s
-  answer;
+  answer, with the declared quantities of the mobjects it lists
+  (:mod:`arachne.quantities`);
 - ``query``, :func:`query`: the answers of a
-  :class:`~arachne.lint.query.Query`;
+  :class:`~arachne.lint.query.Query`, and values at points
+  (:func:`arachne.quantities.value_at`);
 - ``key_frames``, :func:`key_frames`: the key frames written;
 - ``lint_result``, :func:`lint`: a lint's report and its notes
   (:mod:`arachne.lint.serialise`);
@@ -72,8 +74,10 @@ if TYPE_CHECKING:
     from .lint.core import LintResult
     from .lint.keyframes import KeyFrames
     from .lint.query import CameraReplaced, Query, Thing
+    from .quantities import PointAnswers, PointProbe, PointRead, Quantity
     from .server.render import Rendered
     from .session import Session
+    from .timeline.bake import BakeContent, Bakes, Occurrence
     from .timeline.execution import Divergence
     from .timeline.fallback import Answer
     from .timeline.probe import Probe
@@ -83,7 +87,7 @@ if TYPE_CHECKING:
     from .typing import StrPath
 
 #: The version of every form.
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 #: The forms, by the name of their schema.
 FORMS = (
@@ -106,6 +110,7 @@ QUERY_ANSWERS = (
     "offscreen",
     "text_heights",
     "markers",
+    "value_at",
 )
 
 
@@ -153,6 +158,7 @@ def inspect(session: Session) -> dict[str, Any]:
         "mobjects": _provenance(record),
         "divergences": [_divergence(found) for found in session.divergences],
         "probe": _probe(session.probe),
+        "bakes": _bakes(record.bakes),
     }
 
 
@@ -170,17 +176,29 @@ def state(found: State, session: Session) -> dict[str, Any]:
         "target_resolution": _resolution(session),
         "roots": list(found.roots),
         "nodes": [_node(node) for node in found.nodes],
+        "quantities": _quantities(found.quantities),
     }
 
 
 def query(
-    found: Query, what: str | Sequence[str], *, ids: Sequence[str] = ()
+    found: Query | None,
+    what: str | Sequence[str],
+    *,
+    ids: Sequence[str] = (),
+    points: PointAnswers | None = None,
 ) -> dict[str, Any]:
     """The answers of ``found`` that ``what`` names (one or more of
     :data:`QUERY_ANSWERS`), each under its name; ``bbox`` boxes the mobjects
     whose stable ids ``ids`` lists. A measure of the picture the scene's
     camera code stands in the way of is the
     :class:`~arachne.lint.query.CameraReplaced` in its place.
+
+    ``value_at`` is ``points``' answers, each read at the request's own time
+    and dated (:func:`arachne.quantities.value_at`). The head (``t``, the
+    play, the answer and the frame) is the frame's of ``found`` when a
+    measure of it is asked; for ``value_at`` alone, ``found`` is ``None`` and
+    the head is the request's time, the play holding it, ``"recorded"`` and
+    the picture's box as the configuration gives it.
     """
     asked = (what,) if isinstance(what, str) else tuple(what)
     unknown = [name for name in asked if name not in QUERY_ANSWERS]
@@ -191,15 +209,38 @@ def query(
         )
     if "bbox" in asked and not ids:
         raise ValueError("A query's bbox needs the ids of the mobjects to box.")
-    out: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
-        **_timed("t", found.t),
-        "play": found.play,
-        "answer": found.answer,
-        "frame": _box(found.frame),
-    }
+    if "value_at" in asked and points is None:
+        raise ValueError("A query's value_at needs the points' answers.")
+    measured = any(name != "value_at" for name in asked)
+    if measured and found is None:
+        raise ValueError("A query's measures need the frame's answers.")
+    out: dict[str, Any] = {"schema_version": SCHEMA_VERSION}
+    if found is not None and measured:
+        out.update(
+            {
+                **_timed("t", found.t),
+                "play": found.play,
+                "answer": found.answer,
+                "frame": _box(found.frame),
+            }
+        )
+    else:
+        assert points is not None
+        out.update(
+            {
+                **_timed("t", points.t),
+                "play": points.play,
+                "answer": "recorded",
+                "frame": _box(points.frame),
+            }
+        )
     for name in asked:
-        out[name] = _ANSWERS[name](found, ids)
+        if name == "value_at":
+            assert points is not None
+            out[name] = [_point(probe, read) for probe, read in points.reads]
+        else:
+            assert found is not None
+            out[name] = _ANSWERS[name](found, ids)
     return out
 
 
@@ -248,9 +289,10 @@ def frame(found: Answer, path: StrPath) -> dict[str, Any]:
     """The frame of ``found``, an answer of
     :meth:`~arachne.session.Session.answers`, written as the PNG ``path``:
     the instant asked, the instant whose state it shows, the play holding
-    it and how it was answered.
+    it and how it was answered; for a frame drawn on the GPU, ``renderer``:
+    its name and the pin of the device that drew it.
     """
-    return {
+    form = {
         "schema_version": SCHEMA_VERSION,
         **_timed("t", found.state.t),
         **_timed("as_of", found.state.as_of),
@@ -258,6 +300,9 @@ def frame(found: Answer, path: StrPath) -> dict[str, Any]:
         "answer": found.state.answer,
         "path": os.fspath(path),
     }
+    if found.renderer is not None:
+        form["renderer"] = found.renderer
+    return form
 
 
 def render(found: Rendered) -> dict[str, Any]:
@@ -574,3 +619,119 @@ def _plain(value: Any) -> Any:
     if isinstance(value, os.PathLike):
         return os.fspath(value)
     return repr(value)
+
+
+# The declared quantities and the bakes
+
+
+def _quantities(found: Mapping[str, Sequence[Quantity]]) -> dict[str, list[Any]]:
+    """The state's declared quantities, by stable id, each list by name."""
+    return {
+        node_id: [_quantity(each) for each in quantities]
+        for node_id, quantities in found.items()
+    }
+
+
+def _quantity(found: Quantity) -> dict[str, Any]:
+    value = found.value
+    out: dict[str, Any] = {
+        "name": found.name,
+        "value": list(value) if isinstance(value, tuple) else value,
+        "unit": found.unit,
+    }
+    if found.tolerance is not None:
+        out["tolerance"] = found.tolerance
+    if found.unreadable is not None:
+        out["unreadable"] = found.unreadable
+    return out
+
+
+def _point(probe: PointProbe, found: PointRead) -> dict[str, Any]:
+    """A probe's answer, after what it asked."""
+    out: dict[str, Any] = {
+        "id": probe.id,
+        "channel": probe.channel,
+        "position": [float(v) for v in probe.position],
+        "space": probe.space,
+        "result": found.result,
+    }
+    if found.result != "value":
+        out[found.result] = found.why
+        return out
+    value = found.value
+    out.update(
+        {
+            "value": list(value) if isinstance(value, tuple) else value,
+            "unit": found.unit,
+            "interpolation": found.interpolation,
+            "cells": [list(cell) for cell in found.cells],
+            **_timed("as_of", found.as_of),
+        }
+    )
+    return out
+
+
+def _bakes(found: Bakes | None) -> dict[str, list[Any]]:
+    """The record's bakes without their values: each content's identity and
+    shape, by key, and each occurrence, by ordinal; empty with none.
+    """
+    if found is None:
+        return {"contents": [], "occurrences": []}
+    return {
+        "contents": [_content(found.contents[key]) for key in sorted(found.contents)],
+        "occurrences": [_occurrence(each) for each in found.occurrences],
+    }
+
+
+def _content(found: BakeContent) -> dict[str, Any]:
+    identity = found.identity
+    return {
+        "key": found.key.hex(),
+        "identity": {
+            "producer": identity.producer,
+            "producer_version": identity.producer_version,
+            "solver": identity.solver,
+            "solver_version": identity.solver_version,
+            "integrator": identity.integrator,
+            "build": identity.build,
+            "features": sorted(identity.features),
+        },
+        "ticks": found.ticks,
+        "channels": [
+            {
+                "name": name,
+                "dtype": channel.dtype,
+                "shape": list(channel.shape),
+                "unit": channel.unit,
+            }
+            for name, channel in found.channels.items()
+        ],
+        "events": [
+            {"name": name, "columns": table.columns, "rows": len(table.rows)}
+            for name, table in found.events.items()
+        ],
+    }
+
+
+def _occurrence(found: Occurrence) -> dict[str, Any]:
+    return {
+        "ordinal": found.ordinal,
+        "content": found.content.hex(),
+        "first_tick": found.first_tick,
+        "last_tick": found.last_tick,
+        "closed": found.closed,
+        "declaration": found.declaration.hex(),
+        "bindings": [
+            {"id": each.id, "channel": each.channel, "index": each.index}
+            for each in found.bindings
+        ],
+        "findings": [
+            {
+                "code": each.code,
+                "row": each.row,
+                "ids": list(each.ids),
+                "detail": _plain(each.detail),
+            }
+            for each in found.findings
+        ],
+    }

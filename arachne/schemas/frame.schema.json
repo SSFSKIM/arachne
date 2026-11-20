@@ -28,7 +28,7 @@
     "path": {"description": "The PNG written.", "type": "string"}
   },
   "$defs": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"const": "1.1"},
     "time": {"description": "Seconds of scene time.", "type": "number"},
     "exact": {
       "description": "An exact instant or rate, the rational \"n/d\".",

@@ -1,0 +1,28 @@
+[build-system]
+# Pinned, as the core's is: how the GPU build is compiled and packaged is fixed.
+requires = ["maturin==1.16.0"]
+build-backend = "maturin"
+
+[project]
+name = "arachne-gpu"
+description = "Arachne's GPU build: stacks pictures as layers on a GPU and reads the frame back"
+requires-python = ">=3.12"
+dependencies = ["numpy>=2.1"]
+dynamic = ["version"]
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "arachne_gpu._gpu"
+features = ["python"]
+# Build from Cargo.lock as committed (a PEP 517 build passes no --locked of its own).
+locked = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]

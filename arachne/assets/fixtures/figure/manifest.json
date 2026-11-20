@@ -1,0 +1,181 @@
+{
+  "manifest_version": "1.0",
+  "name": "figure",
+  "version": 1,
+  "kind": "parts",
+  "requires": [],
+  "size": {
+    "scene_units_per_unit": 0.01,
+    "origin": [150, 225],
+    "width": 0.95,
+    "height": 3.08
+  },
+  "parts": [
+    {
+      "name": "torso",
+      "file": "figure.svg",
+      "element": "torso",
+      "parent": null,
+      "pivot": [150, 300],
+      "order": 0
+    },
+    {
+      "name": "head",
+      "file": "pieces/head.svg",
+      "parent": "torso",
+      "pivot": [150, 148],
+      "order": 1,
+      "lattice": {"cols": 2, "rows": 2, "bounds": [114, 68, 186, 152]}
+    },
+    {
+      "name": "upper_arm",
+      "file": "figure.svg",
+      "element": "upper_arm",
+      "parent": "torso",
+      "pivot": [195, 168],
+      "order": 3
+    },
+    {
+      "name": "lower_arm",
+      "file": "figure.svg",
+      "element": "lower_arm",
+      "parent": "upper_arm",
+      "pivot": [195, 230],
+      "order": 4
+    }
+  ],
+  "slots": [
+    {
+      "name": "eyes",
+      "parent": "head",
+      "pivot": [150, 105],
+      "order": 2,
+      "default": "open",
+      "drawings": [
+        {"name": "open", "file": "slots/eyes-open.svg"},
+        {"name": "closed", "file": "slots/eyes-closed.svg"}
+      ]
+    },
+    {
+      "name": "hand",
+      "parent": "lower_arm",
+      "pivot": [195, 290],
+      "order": 5,
+      "default": "open",
+      "drawings": [
+        {"name": "open", "file": "slots/hand-open.svg"},
+        {"name": "point", "file": "slots/hand-point.svg"}
+      ]
+    }
+  ],
+  "parameters": [
+    {
+      "name": "reach",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": "1",
+      "drives": [
+        {
+          "part": "upper_arm",
+          "kind": "rotate",
+          "unit": "deg",
+          "keys": [{"at": 0, "value": 0}, {"at": 1, "value": 70}]
+        },
+        {
+          "part": "hand",
+          "kind": "translate",
+          "keys": [{"at": 0, "value": [0, 0]}, {"at": 1, "value": [12, -4]}]
+        }
+      ]
+    },
+    {
+      "name": "head_turn",
+      "min": -25,
+      "max": 25,
+      "default": 0,
+      "unit": "deg",
+      "drives": [
+        {
+          "part": "head",
+          "kind": "warp",
+          "keys": [
+            {
+              "at": -25,
+              "offsets": [
+                [-4, 0],
+                [-8, 0],
+                [-4, 0],
+                [-4, 0],
+                [-8, 0],
+                [-4, 0],
+                [-4, 0],
+                [-8, 0],
+                [-4, 0]
+              ]
+            },
+            {
+              "at": 0,
+              "offsets": [
+                [0, 0],
+                [0, 0],
+                [0, 0],
+                [0, 0],
+                [0, 0],
+                [0, 0],
+                [0, 0],
+                [0, 0],
+                [0, 0]
+              ]
+            },
+            {
+              "at": 25,
+              "offsets": [
+                [4, 0],
+                [8, 0],
+                [4, 0],
+                [4, 0],
+                [8, 0],
+                [4, 0],
+                [4, 0],
+                [8, 0],
+                [4, 0]
+              ]
+            }
+          ]
+        },
+        {
+          "part": "eyes",
+          "kind": "translate",
+          "keys": [
+            {"at": -25, "value": [-6.667, 0]},
+            {"at": 0, "value": [0, 0]},
+            {"at": 25, "value": [6.667, 0]}
+          ]
+        }
+      ]
+    }
+  ],
+  "anchors": [
+    {"name": "hand_tip", "part": "hand", "attach": "interior", "at": [195, 302]},
+    {"name": "head_top", "part": "head", "attach": "outline", "at": [150, 72]},
+    {"name": "chest", "part": "torso", "attach": "interior", "at": [150, 190]},
+    {"name": "elbow", "part": "lower_arm", "attach": "interior", "at": [195, 232]}
+  ],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:681e6b9b20d8334b6c930efb5c6a68b73614381f473f4b65d538bce07abe2f51",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

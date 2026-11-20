@@ -1,0 +1,80 @@
+{
+  "manifest_version": "1.0",
+  "name": "gate-valve",
+  "version": 1,
+  "kind": "parts",
+  "requires": [],
+  "size": {
+    "scene_units_per_unit": 0.01,
+    "origin": [200, 150],
+    "width": 3.2,
+    "height": 1.98
+  },
+  "parts": [
+    {
+      "name": "body",
+      "file": "gate-valve.svg",
+      "element": "body",
+      "parent": null,
+      "pivot": [200, 195],
+      "order": 0
+    },
+    {
+      "name": "stem",
+      "file": "gate-valve.svg",
+      "element": "stem",
+      "parent": "body",
+      "pivot": [200, 168],
+      "order": 1
+    }
+  ],
+  "slots": [
+    {
+      "name": "state",
+      "parent": "body",
+      "pivot": [300, 110],
+      "order": 2,
+      "default": "closed",
+      "drawings": [
+        {"name": "closed", "file": "slots/state-closed.svg"},
+        {"name": "open", "file": "slots/state-open.svg"}
+      ]
+    }
+  ],
+  "parameters": [
+    {
+      "name": "opening",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": "1",
+      "drives": [
+        {
+          "part": "stem",
+          "kind": "translate",
+          "keys": [{"at": 0, "value": [0, 0]}, {"at": 1, "value": [0, -60]}]
+        }
+      ]
+    }
+  ],
+  "anchors": [
+    {"name": "wheel", "part": "stem", "attach": "outline", "at": [236, 40]},
+    {"name": "flow", "part": "body", "attach": "interior", "at": [80, 195]}
+  ],
+  "checks": {
+    "tool": "arachne.assets 1",
+    "digest": "sha256:656fa136a8172538508ab65c653bac5b5b5f9b3ca3879da13723a64711490721",
+    "results": [
+      {"name": "hole", "pass": true},
+      {"name": "detached_part", "pass": true},
+      {"name": "anchor_off_part", "pass": true}
+    ]
+  },
+  "provenance": {
+    "source_url": null,
+    "author": "the engine's fixture generator",
+    "license": "none",
+    "credit_line": null,
+    "retrieved_at": null
+  }
+}

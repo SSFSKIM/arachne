@@ -17,8 +17,8 @@ A server asked to open a session whose manifest's files still hold what
 they held, by digest, answers from the store until a request needs what the
 store does not hold, and only then executes the scene. Everything is kept
 under the engine that made it (:func:`engine_fingerprint`, its native core
-included): another engine, or this one edited or built again, reads none of
-it.
+and its simulation extension included): another engine, or this one edited
+or built again, reads none of it.
 
 The store is the directory ``ARACHNE_STORE`` names, else the user's cache
 directory's ``arachne/store``. Each file is written whole, under another
@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING, Any
 
 from .._config import config as global_config
 from .._config import tempconfig
+from ..compose import session as compose_session
 from ..timeline.execution import ExecutionSummary
 from ..timeline.inputs import file_digests, source_files
 
@@ -87,16 +88,17 @@ def store_dir() -> Path:
     return cache / "arachne" / "store"
 
 
-def _core_identity() -> str:
-    """The native core this process would load: ``arachne_core``'s version
-    and the sha256 of each of its compiled extensions, by name; ``"absent"``
-    when it is not installed. Read without importing it.
+def _extension_identity(module: str, distribution: str) -> str:
+    """The native extension package ``module`` this process would load: its
+    distribution's version and the sha256 of each of its compiled
+    extensions, by name; ``"absent"`` when it is not installed. Read without
+    importing it.
     """
-    spec = importlib.util.find_spec("arachne_core")
+    spec = importlib.util.find_spec(module)
     if spec is None or not spec.submodule_search_locations:
         return "absent"
     try:
-        version = importlib.metadata.version("arachne-core")
+        version = importlib.metadata.version(distribution)
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
     built = tuple(importlib.machinery.EXTENSION_SUFFIXES)
@@ -106,22 +108,36 @@ def _core_identity() -> str:
         for path in sorted(Path(location).iterdir())
         if path.name.endswith(built)
     ]
-    found = [f"arachne-core {version}"]
+    found = [f"{distribution} {version}"]
     found += [
         f"{p.name} {hashlib.sha256(p.read_bytes()).hexdigest()}" for p in extensions
     ]
     return "\n".join(found)
 
 
+def _core_identity() -> str:
+    """The native core this process would load (``arachne_core``)."""
+    return _extension_identity("arachne_core", "arachne-core")
+
+
+def _sim_identity() -> str:
+    """The simulation extension this process would load (``arachne_sim``),
+    whose solver build computes every bake.
+    """
+    return _extension_identity("arachne_sim", "arachne-sim")
+
+
 @functools.cache
 def engine_fingerprint() -> str:
     """The digest of the engine answering: the interpreter's version, every
-    source file of the ``arachne`` package, by path and content, and its
-    native core (:func:`_core_identity`).
+    source file of the ``arachne`` package, by path and content, its native
+    core (:func:`_core_identity`) and its simulation extension
+    (:func:`_sim_identity`).
     """
     root = Path(__file__).resolve().parent.parent
     digest = hashlib.sha256(sys.version.encode())
     digest.update(_core_identity().encode() + b"\0")
+    digest.update(_sim_identity().encode() + b"\0")
     for directory, names, files in os.walk(root):
         names[:] = sorted(n for n in names if n != "__pycache__")
         for name in sorted(files):
@@ -228,7 +244,15 @@ class Manifest:
     real path, ``scene`` and ``config``), the files it came from (``files``,
     its source, and ``reads``, the files its execution read, each as
     ``(path relative to the scene's directory, sha256)``), its execution's
-    ``identity``, and ``record``, the record's form ``open`` answered.
+    ``identity``, ``record``, the record's form ``open`` answered, and
+    ``route``, the renderer its record chose (``"cpu"`` or ``"gpu"``), with
+    ``gpu``, the form of a ``gpu`` route (:meth:`.compose.session.Route.form`):
+    a frame drawn on the GPU is never kept, since the store's key names no
+    device, and what a ``gpu``-route scene can't do on this host is refused
+    from the manifest, without executing the scene.
+    ``refuses`` is the finding its scene's code recorded that refuses
+    drawing it, as the server answers a finding (``None``: none, and what a
+    manifest kept without it says).
     """
 
     key: str
@@ -239,6 +263,9 @@ class Manifest:
     reads: tuple[tuple[str, str], ...]
     identity: dict[str, Any]
     record: dict[str, Any]
+    refuses: dict[str, Any] | None = None
+    route: str = "cpu"
+    gpu: dict[str, Any] | None = None
 
     @property
     def answers_key(self) -> str:
@@ -275,6 +302,9 @@ class Manifest:
             "reads": [list(pair) for pair in self.reads],
             "identity": self.identity,
             "record": self.record,
+            "refuses": self.refuses,
+            "route": self.route,
+            "gpu": self.gpu,
         }
 
     @classmethod
@@ -288,6 +318,9 @@ class Manifest:
             reads=tuple((path, digest) for path, digest in data["reads"]),
             identity=data["identity"],
             record=data["record"],
+            refuses=data.get("refuses"),
+            route=data["route"],
+            gpu=data["gpu"],
         )
 
 
@@ -341,6 +374,12 @@ class Store:
         source = session._source
         if source is None or source.files is None or session.stale:
             return None
+        refuses = None
+        if session.record.bridge.calls:
+            from arachne.lint.raised import drawing_refusal
+
+            refusal = drawing_refusal(session.record)
+            refuses = None if refusal is None else refusal.finding()
         manifest = Manifest(
             key=self.manifest_key(file, scene, config),
             file=file,
@@ -350,6 +389,9 @@ class Store:
             reads=dependency_reads(session, loaded),
             identity=identity_form(session.record.identity),
             record=record,
+            refuses=refuses,
+            route=session.route,
+            gpu=compose_session.route_of(session).form(),
         )
         self._write(self._manifest_path(manifest.key), manifest.to_json())
         return manifest

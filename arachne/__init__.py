@@ -41,6 +41,7 @@ from .animation.transform import *
 from .animation.transform_matching_parts import *
 from .animation.updaters.mobject_update_utils import *
 from .animation.updaters.update import *
+from .assets import *
 from .camera.camera import *
 from .camera.mapping_camera import *
 from .camera.moving_camera import *
@@ -48,6 +49,8 @@ from .camera.multi_camera import *
 from .camera.three_d_camera import *
 from .constants import *
 from .manager import *
+from .mobject.annotation import *
+from .mobject.diagram import *
 from .mobject.frame import *
 from .mobject.geometry.arc import *
 from .mobject.geometry.boolean_ops import *
@@ -63,6 +66,7 @@ from .mobject.graphing.number_line import *
 from .mobject.graphing.probability import *
 from .mobject.graphing.scale import *
 from .mobject.logo import *
+from .mobject.marks import *
 from .mobject.matrix import *
 from .mobject.mobject import *
 from .mobject.svg.brace import *

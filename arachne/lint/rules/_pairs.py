@@ -21,7 +21,10 @@ an axis's line or ticks against anything but text; a grid against anything
 but text drawn after it (content on its background); a point-sized marker
 against a stroke, or another marker; a stroke touching only at its own
 ends (unless the other is text or axis furniture); two strokes drawn along
-each other, or a stroke along a filled shape's own outline.
+each other, or a stroke along a filled shape's own outline; and an
+annotation's leader landing on the object its declared anchor belongs to
+as the frame holds it (:attr:`~arachne.lint.parts.Parts.landings`),
+crossing that object's outline nowhere but at its landing.
 
 A contact that overlaps (a stroke whose centre line enters a glyph's ink,
 or anything else past touching) between a text and something drawn after
@@ -77,6 +80,7 @@ from ._geometry import (
     outline_edges,
     signed_to_box,
     signed_to_outline,
+    stroke_samples,
     within,
 )
 from ._rule import Terms
@@ -150,7 +154,7 @@ def _pair(
     measured = _measure(a, b)
     if required - measured < NOISE:
         return None
-    if _lands(a, b, required) or _along(a, b, required):
+    if _lands(a, b, required) or _along(a, b, required) or _lands_declared(parts, a, b):
         return None
     stroke = _inked_stroke(a, b)
     if stroke is None:
@@ -302,6 +306,82 @@ def _lands(a: Measured, b: Measured, required: float) -> bool:
         if len(hits) and float(nearest(hits, x.ends).max()) <= END_REACH:
             return True
     return False
+
+
+def _lands_declared(parts: Parts, a: Measured, b: Measured) -> bool:
+    """One is a leader the frame declares and the other a piece of its
+    anchor's object, and the leader meets that piece only to land: on an
+    outline anchor it crosses the piece's outline only within
+    :data:`END_REACH` of its end; on an inside one it crosses it at most
+    once and ends inside its fill. A filled leaf's outline is closed and
+    its inside wound as Cairo fills it. A leader starting inside a fill
+    lands on nothing.
+    """
+    for leader, target in ((a, b), (b, a)):
+        landing = next((x for x in parts.landings if x.leader == leader.id), None)
+        if landing is None or target.id not in landing.target:
+            continue
+        if target.text or target.furniture or not leader.leaves:
+            continue
+        fills, strokes = _outlines(target)
+        start = leader.leaves[0].points[0]
+        end = leader.leaves[-1].points[-1]
+        if _in_fill(start, fills):
+            return False
+        crossed = [
+            place
+            for leaf in leader.leaves
+            for place in _crossings(stroke_samples(leaf), [*fills, *strokes])
+        ]
+        if landing.outline:
+            return all(float(np.linalg.norm(p - end)) <= END_REACH for p in crossed)
+        return len(crossed) <= 1 and (not fills or _in_fill(end, fills))
+    return False
+
+
+Edges = tuple[np.ndarray, np.ndarray]
+
+
+def _outlines(unit: Measured) -> tuple[list[Edges], list[Edges]]:
+    """A unit's outlines as edges ``(starts, ends)``: each filled leaf's
+    closed, as its fill is (:func:`~._geometry.outline_edges`), and each
+    other leaf's as its curves run.
+    """
+    fills: list[Edges] = []
+    strokes: list[Edges] = []
+    for leaf in unit.leaves:
+        if leaf.first_fill_opacity > 0 and (ring := outline_edges(leaf)) is not None:
+            fills.append(ring)
+        elif (lines := leaf.outline()) is not None:
+            strokes.append((lines[:, :-1].reshape(-1, 2), lines[:, 1:].reshape(-1, 2)))
+    return fills, strokes
+
+
+def _in_fill(point: np.ndarray, fills: list[Edges]) -> bool:
+    """Whether ``point`` lies inside a fill, by its nonzero winding."""
+    return any(float(signed_to_outline(point[None], ring)[0]) < 0 for ring in fills)
+
+
+def _crossings(points: np.ndarray, outlines: list[Edges]) -> list[np.ndarray]:
+    """Where the polyline ``points`` crosses ``outlines``, each place once."""
+    found: list[np.ndarray] = []
+    if not outlines:
+        return found
+    q = np.vstack([starts for starts, _ in outlines])
+    s = np.vstack([ends for _, ends in outlines]) - q
+    for p0, p1 in zip(points[:-1], points[1:], strict=True):
+        r = p1 - p0
+        across = r[0] * s[:, 1] - r[1] * s[:, 0]
+        ok = np.abs(across) > 1e-12
+        d = q - p0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            u = (d[:, 0] * s[:, 1] - d[:, 1] * s[:, 0]) / across
+            v = (d[:, 0] * r[1] - d[:, 1] * r[0]) / across
+        hit = ok & (u >= 0) & (u <= 1) & (v >= 0) & (v <= 1)
+        for place in p0 + np.outer(u[hit], r):
+            if all(float(np.linalg.norm(place - seen)) > 1e-9 for seen in found):
+                found.append(place)
+    return found
 
 
 def _along(a: Measured, b: Measured, required: float) -> bool:

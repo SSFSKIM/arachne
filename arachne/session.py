@@ -51,7 +51,7 @@ from .timeline.admission import (
     whole_line,
 )
 from .timeline.clock import exact
-from .timeline.draw import Drawing, DrawReuse
+from .timeline.draw import Drawing, DrawReuse, LeaveOut
 from .timeline.execution import (
     Divergence,
     ExecutionSummary,
@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     from PIL import Image
 
     from ._config.utils import ManimConfig
+    from .compose.session import Route
     from .lint import LintResult
     from .lint.keyframes import KeyFrames, Storyboard
     from .lint.query import Query
@@ -186,6 +187,11 @@ class Session:
         #: What :meth:`open` was asked, which :meth:`reload` asks again.
         self._opened: dict[str, Any] | None = None
         self._closed = False
+        #: The route of the record held, taken as it is opened (:attr:`route`).
+        self._route: Route | None = None
+        #: The ``renderer`` block of the frames drawn last on the ``gpu``
+        #: route (:attr:`renderer`).
+        self._renderer: dict[str, Any] | None = None
 
     @classmethod
     @_enters_its_settings
@@ -319,6 +325,7 @@ class Session:
             }
             if not probe:
                 session._source = _source(session, path, scene, effective, stepping)
+                session._take_route()
                 return session
             # Probe the record. On a demotion, record the scene again with the
             # play ticked, a new execution compared with the first, and probe
@@ -398,13 +405,50 @@ class Session:
             found = session._found_in(found, described, whole)
             session.probe = replace(found, settled=settled)
             session._source = _source(session, path, scene, effective, stepping)
+            session._take_route()
             return session
+
+    def _take_route(self) -> None:
+        """Take the route of the complete record the session now holds,
+        which every frame it gives is drawn on (:mod:`arachne.compose`).
+        """
+        from .compose.session import Route
+
+        self._route = Route.of(self.record)
+
+    @property
+    @_under_its_settings
+    def route(self) -> str:
+        """The renderer the scene is drawn by, ``"cpu"`` or ``"gpu"``, as its
+        complete record decides (:mod:`arachne.compose.session`): every
+        frame the session gives is drawn on it, a forward run's too.
+        """
+        from .compose.session import route_of
+
+        return route_of(self).name
+
+    @property
+    @_under_its_settings
+    def renderer(self) -> dict[str, Any] | None:
+        """For a ``gpu``-route session, the renderer that drew its frames
+        last and the pin of its device; ``None`` on the ``cpu`` route.
+        """
+        return self._renderer if self.route == "gpu" else None
+
+    def _live_refused(self) -> None:
+        """Refuse an answer that needs a run drawing as it runs, of a scene
+        on the ``gpu`` route (``render.gpu_live``).
+        """
+        from .compose.session import refuse_live
+
+        refuse_live(self)
 
     @_under_its_settings
     def state_at(self, t: Fraction | float) -> State:
         """The scene at ``t``, from the record: restored there when a
         state-function play holds ``t`` and the record did not sample it.
         """
+        self._live_refused()
         return self.record.state_at(t)
 
     @_under_its_settings
@@ -416,14 +460,49 @@ class Session:
         A state-function play is restored at an instant it was not sampled
         at; raises :class:`~arachne.timeline.restore.Unrestorable` where it
         can't be, and :class:`~arachne.timeline.routes.RecordRefused` for a
-        scene whose camera the record can't draw.
+        scene whose camera the record can't draw. A scene on the ``gpu``
+        route is drawn on this host's GPU (:mod:`arachne.compose`), and
+        refused with ``render.gpu_required`` where it has none. What the
+        scene's code found that refuses drawing it is refused first
+        (:func:`~arachne.compose.session.refuse_pictures`).
         """
+        from .compose.session import refuse_pictures
+
+        refuse_pictures(self, self.record)
         self._use_quality(quality)
         record = self.record
         (pixels,) = self._drawn(
             record, [_resolve(record, exact(t))], self._static_picture
         )
         return self.scene.renderer.camera.get_image(pixels)
+
+    def _current_draw_quality(self) -> str | None:
+        """The quality the session draws at now (:meth:`frame`'s last)."""
+        return self._quality
+
+    def _render_frame_rate(self) -> Fraction:
+        """The frame rate a render of the scene draws its frames at: its
+        camera's, as the renderer reads it.
+        """
+        return exact(self.scene.renderer.camera.frame_rate)
+
+    @_under_its_settings
+    def _frame_leaving_out(
+        self, t: Fraction | float, quality: str | None, leave_out: LeaveOut
+    ) -> PixelArray:
+        """The frame at ``t`` as :meth:`frame` draws it, but whole, every
+        capture leaving out what the capture filter ``leave_out`` takes from
+        it (:class:`.Drawing`): the session's kept static picture is neither
+        used nor replaced.
+        """
+        from .compose.session import drawing as session_drawing
+
+        self._live_refused()
+        self._use_quality(quality)
+        record = self.record
+        freeze_mapping_centre(record)
+        with session_drawing(self, record, leave_out=leave_out) as drawing:
+            return _draw(drawing, _resolve(record, exact(t)), lambda play: None)
 
     def _drawn(
         self,
@@ -438,14 +517,26 @@ class Session:
         froze at its first frame, whatever order frames are asked in
         (:mod:`.timeline.mapping`).
 
+        A finding the scene's code recorded for the lint that refuses
+        drawing (:func:`~.lint.raised.found`) is raised before anything is
+        drawn.
+
         Called inside an operation, so under the configuration the session
         was opened with (:func:`_under_its_settings`): what the camera reads
         while it draws (a point cloud's thickness reads the frame's pixel
         size), and what a restore's callbacks read, are the session's.
         """
+        from .compose.session import drawing as session_drawing
+        from .compose.session import refuse_pictures
+
+        refuse_pictures(self, record)
+
         freeze_mapping_centre(record)
         reuse = self.draws if global_config.draw_reuse else None
-        with Drawing(record, draw_path=self.draw_path, reuse=reuse) as drawing:
+        with session_drawing(self, record, reuse=reuse) as drawing:
+            if drawing.stack is not None:
+                # A stack draws every frame whole: no static picture.
+                return [_draw(drawing, found, lambda play: None) for found in answers]
             return [
                 _draw(drawing, found, lambda play: static(drawing, play))
                 for found in answers
@@ -477,8 +568,24 @@ class Session:
         the record's execution (:attr:`forward_runs`, :attr:`divergences`).
         A forward run of a source changed since the record is compared with
         nothing: its answers say ``source-changed``, and :attr:`stale` is set.
+        On the ``gpu`` route each answer with a frame names the renderer that
+        drew it (:attr:`renderer`).
+
+        Frames are refused, before anything is drawn, for a finding the
+        scene's code recorded for the lint that refuses drawing
+        (:func:`~.lint.raised.found`), wherever in the scene it was found;
+        states alone are answered.
         """
-        return answer_instants(self, instants, quality, frames=frames)
+        if frames:
+            from .compose.session import refuse_pictures
+
+            refuse_pictures(self, self.record)
+        else:
+            self._live_refused()
+        found = answer_instants(self, instants, quality, frames=frames)
+        if frames and self.route == "gpu":
+            found = [replace(answer, renderer=self._renderer) for answer in found]
+        return found
 
     @_under_its_settings
     def lint(self, **options: Any) -> LintResult:
@@ -497,16 +604,24 @@ class Session:
         """
         from .lint.query import query
 
+        self._live_refused()
         return query(self, t)
 
     @_under_its_settings
-    def key_frames(self, out_dir: StrPath, quality: str | None = None) -> KeyFrames:
+    def key_frames(
+        self,
+        out_dir: StrPath,
+        quality: str | None = None,
+        *,
+        keep_refusals: bool = False,
+    ) -> KeyFrames:
         """One PNG per play or wait in ``out_dir``, its last frame
-        (:func:`arachne.lint.keyframes.key_frames`).
+        (:func:`arachne.lint.keyframes.key_frames`); ``keep_refusals`` lists
+        a picture the ``gpu`` route can't draw here with its refusal.
         """
         from .lint.keyframes import key_frames
 
-        return key_frames(self, out_dir, quality)
+        return key_frames(self, out_dir, quality, keep_refusals=keep_refusals)
 
     @_under_its_settings
     def storyboard(self, out_dir: StrPath, quality: str | None = None) -> Storyboard:
@@ -699,6 +814,7 @@ class Session:
         del self.scene, self.record, self.module, self._recorder
         self._summary = self._static = None
         self.draws.clear()
+        self._route = self._renderer = None
 
 
 def resize(camera: Any, height: int, width: int) -> None:

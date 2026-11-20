@@ -7,7 +7,10 @@ read through one forward run of the scene on the render's grid, whose live
 scene is read at each instant it answers: so is every instant the record
 kept no capture of, rather than evaluated there by the lint, and every
 instant of a record kept on another grid than the render's, whose frame
-hooks and dt updaters ran at other instants than the render's. The session's divergences become ``replay.diverged``
+hooks and dt updaters ran at other instants than the render's. Every
+mobject at each instant is read for its declared quantities, and one that
+cannot be read is a ``sim.quantity_unreadable`` finding
+(:mod:`.quantities`). The session's divergences become ``replay.diverged``
 findings (a probe's a note, an execution's an error), and a stale session a
 ``source.changed`` note. The caller's time range and exemptions then leave
 findings out, look-alikes fold, and the result is data: nothing the lint
@@ -40,6 +43,7 @@ from .findings import Finding, fold, in_range
 from .frames import FrameReader, Frames
 from .instants import LintInstant, lint_instants
 from .parts import Parts, PartsCache, build_parts
+from .quantities import request_quantities, unreadable_findings
 
 if TYPE_CHECKING:
     from arachne.session import Session
@@ -131,14 +135,27 @@ def lint(
     that hold at no time in ``t_range`` are left out, and so are those the
     selectors and pairs of ``exempt`` exempt (:mod:`.exempt`).
 
-    ``rules="armed"`` runs the temporal rules the scene armed
-    (:func:`.arming.armed`), the hold watch sampling at ``sample_fps``,
+    ``rules="armed"`` runs the temporal rules the scene armed and those
+    what it holds arms (:func:`.arming.armed`), the hold watch sampling at
+    ``sample_fps``,
     which is theirs alone: raises :class:`ValueError` for a ``sample_fps``
     given with any other rules.
+
+    A scene holding a GPU-only capability whose record refuses drawing
+    could be read only from a run drawing as it runs, which it may not: its
+    lint is the one error ``render.gpu_live``, on every host.
     """
     started = time.perf_counter()
     exemptions = Exemptions.parse(exempt)
     record = session.record
+    from arachne.compose.session import live_refusal
+
+    refused = live_refusal(session)
+    if refused is not None:
+        # Every answer about the scene comes from a run drawing as it runs,
+        # which a scene holding a GPU-only capability may not: that one
+        # error, on every host.
+        return _live_lint(session, refused.finding, started)
     if isinstance(rules, str):
         if rules != "armed":
             raise ValueError(f"rules are rules or 'armed', not {rules!r}")
@@ -152,8 +169,9 @@ def lint(
         )
     instants = lint_instants(record, fps, at=at)
     rules = tuple(rules)
-    frames = Frames(session)
+    frames = Frames(session, lint_instants=instants)
     _request_parts(frames, instants)
+    request_quantities(frames, instants)
     # The scene's own checks (:mod:`.bridge`), whatever the rules.
     checks = Checks(rules)
     checks.request_frames(frames)
@@ -166,6 +184,7 @@ def lint(
     context = LintContext(session, record, exact(fps), instants, parts, frames)
     found = [finding for rule in rules for finding in rule(context)]
     found.extend(checks(context))
+    found.extend(unreadable_findings(frames, instants, parts))
     # After the parts: a forward run that read them may have found one.
     found.extend(_diverged(session))
     if session.stale:
@@ -178,6 +197,25 @@ def lint(
     return LintResult(
         tuple(fold(kept, timeline=[span.t_start for span in timeline])),
         instants,
+        timeline,
+        session.stale,
+        time.perf_counter() - started,
+        target_resolution(session),
+    )
+
+
+def _live_lint(session: Session, finding: Finding, started: float) -> LintResult:
+    """The lint of a scene refused ``render.gpu_live``: that finding, and
+    the session's staleness.
+    """
+    found = [finding, _stale(session)] if session.stale else [finding]
+    timeline = tuple(
+        Span(play.index, play.kind, play.start, play.end)
+        for play in session.record.plays
+    )
+    return LintResult(
+        tuple(found),
+        (),
         timeline,
         session.stale,
         time.perf_counter() - started,

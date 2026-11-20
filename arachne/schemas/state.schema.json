@@ -15,7 +15,8 @@
     "answer",
     "target_resolution",
     "roots",
-    "nodes"
+    "nodes",
+    "quantities"
   ],
   "properties": {
     "schema_version": {"$ref": "#/$defs/schema_version"},
@@ -83,10 +84,18 @@
           }
         }
       }
+    },
+    "quantities": {
+      "description": "The declared quantities of the mobjects listed that have any, by stable id, each list sorted by name, each name once; read at as_of. Empty when none has any.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"$ref": "#/$defs/quantity"}
+      }
     }
   },
   "$defs": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"const": "1.1"},
     "time": {"description": "Seconds of scene time.", "type": "number"},
     "exact": {
       "description": "An exact instant or rate, the rational \"n/d\".",
@@ -105,6 +114,51 @@
       "properties": {
         "width": {"type": "integer", "minimum": 1},
         "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "quantity": {
+      "description": "One declared quantity. value is null exactly when unreadable says why it could not be read; an unreadable entry keeps the name and unit as they were declared, whatever they are. tolerance, in the value's unit, is absent where the value is exact.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value", "unit"],
+      "properties": {
+        "name": {"type": "string"},
+        "value": {
+          "oneOf": [
+            {"description": "A finite number.", "type": "number"},
+            {
+              "description": "A vector of finite numbers: none to 16.",
+              "type": "array",
+              "items": {"type": "number"},
+              "maxItems": 16
+            },
+            {
+              "description": "A name, from a set its object declares; its unit is name.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            {"type": "null"}
+          ]
+        },
+        "unit": {"type": "string"},
+        "tolerance": {"type": "number", "minimum": 0},
+        "unreadable": {"type": "string"}
+      },
+      "if": {"properties": {"value": {"type": "null"}}},
+      "then": {"required": ["unreadable"], "not": {"required": ["tolerance"]}},
+      "else": {
+        "not": {"required": ["unreadable"]},
+        "properties": {
+          "name": {
+            "description": "<prefix>.<rest>: the prefix one segment, the rest one or more, of letters, digits, '_' and '-'.",
+            "pattern": "^[A-Za-z0-9_-]+([.][A-Za-z0-9_-]+)+$"
+          },
+          "unit": {
+            "description": "A registered unit: 1 for a plain number, name for a name value.",
+            "minLength": 1
+          }
+        }
       }
     },
     "box_or_null": {

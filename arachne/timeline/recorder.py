@@ -977,6 +977,7 @@ class Recorder:
             names=names_from_frames(frames, scene),
             random_state=(random.getstate(), np.random.get_state()),  # noqa: NPY002
             cache_key=cache_key,
+            frame_rate=_frame_rate(scene),
             rebuilds_called=rebuilds.count(),
             _record=record,
             _animations=tuple(animations),
@@ -1371,3 +1372,11 @@ def _scene_file(scene: Scene) -> str | None:
 
 def _base_dir(record: Record) -> str | None:
     return os.path.dirname(record.scene_file) if record.scene_file else None
+
+
+def _frame_rate(scene: Scene) -> Fraction | None:
+    """The frame rate the scene's renderer draws a play beginning now at: its
+    camera's, if it has one.
+    """
+    rate = getattr(getattr(scene.renderer, "camera", None), "frame_rate", None)
+    return exact(rate) if rate is not None else None
