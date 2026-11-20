@@ -98,6 +98,10 @@ class MediaObject(AbstractImageMobject):
     asset_kind: ClassVar[str]
     #: The GPU-only capability its objects declare, if any.
     capability: ClassVar[str | None] = None
+    #: The fields a content key leaves out: the loaded asset, which knows
+    #: where this host keeps it (its digest is keyed), and the line that
+    #: made the object.
+    _content_key_omits: ClassVar[frozenset[str]] = frozenset({"_asset", "_made"})
 
     def __init__(
         self,
