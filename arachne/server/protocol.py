@@ -61,7 +61,7 @@ SCENE_ERROR = -32000
 #: The engine refused the request, by one of its refusals
 #: (:data:`arachne.server.dispatch.REFUSALS`): ``data`` is ``{type, message,
 #: reason}``, the refusal's class name, its message and its stable code, or
-#: null.
+#: null; a raised finding's adds ``finding``, the finding whole.
 REFUSED = -32001
 #: The request ran past its deadline: ``data`` is ``{method, deadline_s,
 #: ends}``. With ``ends`` true it ran past it, and the server exits

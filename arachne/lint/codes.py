@@ -236,6 +236,73 @@ _TABLE = (
         " or the GPU-only capability.",
         ("capabilities", "play", "object", "cause"),
     ),
+    Code(
+        "asset.manifest_missing",
+        "error",
+        "AssetManifestMissing",
+        "an asset asked for through the asset API has no manifest: its"
+        " directory holds no manifest.json, or no such directory or fixture"
+        " exists",
+        "Give the asset's directory its manifest.json, or name a directory that"
+        " has one: a path as given, or under the assets directory, or"
+        " fixture:<name> for one of the engine's fixtures.",
+        ("asset", "searched"),
+    ),
+    Code(
+        "asset.manifest_invalid",
+        "error",
+        "AssetManifestInvalid",
+        "an asset's manifest cannot be parsed, is of a major version or kind the"
+        " reader does not know, requires a feature the reader lacks, or misses"
+        " or contradicts a required member",
+        "Correct the member the finding names, as the asset manifest's rules"
+        " state it, or have the asset's maker export it again.",
+        ("asset", "member", "reason", "name"),
+    ),
+    Code(
+        "asset.file_missing",
+        "error",
+        "AssetFileMissing",
+        "a file an asset's manifest names is not there",
+        "Put the file at the path the manifest gives, relative to the asset's"
+        " directory, or correct the path in the manifest.",
+        ("asset", "file"),
+    ),
+    Code(
+        "asset.unreadable",
+        "error",
+        "AssetUnreadable",
+        "a file of an asset cannot be read or parsed, or holds something the"
+        " asset reader does not draw exactly as the file says (text, an embedded"
+        " image, a gradient or pattern paint, a dash, a clip path, a mask, a"
+        " filter, a percentage length, a reference to another file or to"
+        " nothing), or draws nothing",
+        "Export the file again as plain vector shapes with flat colours: outline"
+        " text, flatten masks, clips and filters, and embed nothing.",
+        ("asset", "file", "reason"),
+    ),
+    Code(
+        "asset.remote",
+        "error",
+        "AssetRemote",
+        "an asset is named by an address that would be fetched, or its manifest"
+        " names a file by anything but a plain path inside the asset's"
+        " directory: an address, an absolute path, a path with .. or a"
+        " backslash, or one through a link",
+        "Copy the file into the asset's directory and name it by a plain path"
+        " relative to it; assets are read from local directories only.",
+        ("asset", "file"),
+    ),
+    Code(
+        "rig.name_unknown",
+        "error",
+        "RigNameUnknown",
+        "a rig is asked for a part, parameter, slot or drawing its manifest"
+        " does not have",
+        "Use one of the names the asset's manifest declares; the finding lists"
+        " the nearest.",
+        ("asset", "kind", "name", "nearest"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

@@ -210,8 +210,10 @@ def test_the_live_refusal_with_no_known_cause_says_none(session_of):
     assert "It draws as it runs:" not in str(error)
 
 
-def test_both_codes_are_errors_appended_last_to_the_table():
-    *_, required, live = CODES.values()
+def test_both_codes_are_errors_appended_in_turn_to_the_table():
+    codes = list(CODES)
+    assert codes.index("render.gpu_live") == codes.index("render.gpu_required") + 1
+    required, live = CODES["render.gpu_required"], CODES["render.gpu_live"]
     assert (required.code, required.severity, required.cls) == (
         "render.gpu_required",
         "error",
