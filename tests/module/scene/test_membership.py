@@ -10,6 +10,7 @@ from __future__ import annotations
 from fractions import Fraction
 
 from arachne import FadeIn, FadeOut, Group, Mobject, Scene, Square
+from arachne.scene.scene import _take_membership_notice
 
 
 class Carrier(Mobject):
@@ -18,6 +19,7 @@ class Carrier(Mobject):
     def __init__(self) -> None:
         super().__init__()
         self.told: list[tuple[bool, Fraction | None]] = []
+        _take_membership_notice(self)
 
     def _scene_membership(self, scene, present, at):
         self.told.append((present, at))
@@ -126,3 +128,29 @@ def test_a_change_by_another_path_during_a_play_has_no_instant(dry_run):
     scene.wait(0.5)
     assert seen
     assert carrier.told == [(True, 0), (False, None)]
+
+
+def test_the_look_walks_the_engine_s_family_not_a_mobject_s(dry_run):
+    class Hiding(Group):
+        def get_family(self, recurse=True):
+            return [self]
+
+    scene, carrier = Scene(), Carrier()
+    scene.add(Hiding(carrier))
+    assert carrier.told == [(True, 0)]
+
+
+def test_a_scene_with_nothing_that_takes_the_notice_only_checks(dry_run, monkeypatch):
+    import weakref
+
+    from arachne.scene import scene as scene_module
+
+    def no_walk(mobject):
+        raise AssertionError("walked a family with nothing to tell")
+
+    monkeypatch.setattr(scene_module, "_NOTICE_TAKERS", weakref.WeakSet())
+    monkeypatch.setattr(scene_module, "_family", no_walk)
+    scene = Scene()
+    scene.add(Group(Square()))
+    scene.wait(0.5)
+    scene.clear()

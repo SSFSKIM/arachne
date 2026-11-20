@@ -4,6 +4,9 @@ mobjects, closed and open, entering and leaving the scene.
 
 from __future__ import annotations
 
+import sys
+import types
+import weakref
 from types import SimpleNamespace
 
 from arachne import (
@@ -18,6 +21,7 @@ from arachne import (
     Cube,
     Dot,
     FadeIn,
+    FadeOut,
     Gravity,
     Group,
     Motor,
@@ -39,6 +43,12 @@ READS: list[tuple[int, float, float]] = []
 FOUND: dict[str, object] = {}
 #: The lists a callback closes over, which a test changes after the run.
 HELD: list[list[int]] = []
+#: Shared with the tests across the sessions' own copies of this file: a
+#: session loads it as a module of its own.
+SHARED = sys.modules.setdefault("_world_scenes_shared", types.ModuleType("shared"))
+#: What happened, in order: ("call", the tick a callback was handed) and
+#: ("tick", the tick a scene updater ran at).
+EVENTS: list[tuple[str, int]] = []
 
 
 class ClosedThenOpen(Scene):
@@ -482,3 +492,127 @@ class DrawnByAnOverride(Scene):
         world.body(Overridden(radius=0.3).shift(UP * 2), shape=None, mass=1.0)
         self.add(world)
         self.wait(0.5)
+
+
+def _logged_open_world():
+    """An open world whose callback logs each call in EVENTS."""
+    world = World()
+    point = world.body(Dot(LEFT), shape=None, mass=1.0)
+
+    def push(state):
+        EVENTS.append(("call", state.tick))
+        return {point: RIGHT}
+
+    world.add_force(push)
+    return world
+
+
+class _Logged(Scene):
+    def log_ticks(self):
+        EVENTS.clear()
+
+        def tick(dt):
+            if dt:
+                EVENTS.append(("tick", int(self.time * 60)))
+
+        self.add_updater(tick)
+
+
+class FadedInLast(_Logged):
+    """An open world faded in by the scene's last play."""
+
+    def construct(self):
+        self.log_ticks()
+        self.play(FadeIn(_logged_open_world()), run_time=0.5)
+
+
+class FadedBeside(Scene):
+    """Two alike open worlds: one faded in, one added, then a wait."""
+
+    def construct(self):
+        faded, added = World(), World()
+        for world in (faded, added):
+            point = world.body(Dot(LEFT), shape=None, mass=1.0)
+            world.add_force(_pushing(point))
+        self.add(added)
+        self.play(FadeIn(faded), run_time=0.5)
+        self.wait(0.5)
+
+
+def _pushing(point):
+    def push(state):
+        return {point: RIGHT * (1 + state.tick / 60)}
+
+    return push
+
+
+class FadedOut(_Logged):
+    """An open world in the scene for a wait, then faded out."""
+
+    def construct(self):
+        self.log_ticks()
+        world = _logged_open_world()
+        self.add(world)
+        self.wait(0.5)
+        self.play(FadeOut(world), run_time=0.5)
+
+
+class Dropped(Scene):
+    """A world the scene enters, whose session is closed unread."""
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        point = world.body(Dot(UP), shape=None, mass=1.0)
+
+        def push(state):
+            return {point: RIGHT}
+
+        world.add_force(push)
+        SHARED.world = weakref.ref(world)
+        self.add(world)
+        self.wait(0.25)
+
+
+class RaisesAfterEntering(Dropped):
+    def construct(self):
+        super().construct()
+        raise RuntimeError("the scene's own error")
+
+
+class Resting(Scene):
+    """A ball resting on a floor, away and back."""
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        world.body(Rectangle(width=4, height=0.4).shift(DOWN * 0.2), fixed=True)
+        world.body(Circle(radius=0.3).shift(UP * 0.3))
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.wait(0.25)
+        self.add(world)
+        self.wait(0.5)
+
+
+class CopiedOpen(Scene):
+    def construct(self):
+        self.add(_logged_open_world().copy())
+        self.wait(0.1)
+
+
+class CopiedClosed(Scene):
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        world.body(Dot(UP), shape=None, mass=1.0)
+        self.add(world.copy())
+        self.wait(0.5)
+
+
+class Heavier(Scene):
+    """Falling, under another gravity: the same start, another world."""
+
+    def construct(self):
+        world = World(gravity=DOWN * 19.6)
+        world.body(Dot(UP * 2), shape=None, mass=1.0, velocity=RIGHT)
+        self.add(world)
+        self.wait(1)

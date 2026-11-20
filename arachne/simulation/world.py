@@ -30,7 +30,7 @@ import dataclasses
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
@@ -67,7 +67,7 @@ from .declaration import (
     stored_angular,
     stored_vector,
 )
-from .stay import CALLBACKS, closed_world, crate_of, live_stay, open_world
+from .stay import closed_world, crate_of, live_stay, open_world
 
 if TYPE_CHECKING:
     from fractions import Fraction
@@ -201,9 +201,39 @@ class World(Mobject):
     its points is refused, since the world places each member's points
     itself.
 
+    **Membership goes through the scene's methods.** A world's stays follow
+    ``Scene.add``, ``remove``, ``replace``, ``clear``, ``bring_to_front`` and
+    ``bring_to_back``, the foreground pair, the animations that introduce and
+    remove, and groups changed between plays. A direct edit of
+    ``scene.mobjects`` (an assignment or an in-place change) is not tracked
+    during a play, where one the scene finds after scene time passed is
+    refused, nor after the last play; an edit inside one play that is undone
+    before the play ends is not seen at all.
+
+    **An animation that holds the world's drawing** (``FadeIn(world)``, which
+    suspends its updating) holds its bodies where they are; an open world's
+    callbacks still run at every tick while it is in the scene, and the
+    bodies show the world's motion again once the animation ends.
+
+    A world's mobject keys as content by :attr:`_declared`, a digest of what
+    it was given, and its bodies by their placements; the declaration
+    itself, its bodies' list (its submobjects) and its occurrence's
+    reference are not content (:attr:`_content_key_omits`). Its callback
+    forces are held by the world apart from what a capture keeps of it.
+
     Without the engine's ``sim`` extra, making a world raises an
     :class:`ImportError` that names it.
     """
+
+    #: Not content: the declaration (its digest, ``_declared``, is), the
+    #: bodies' mobjects (they are the world's submobjects), and the reference
+    #: to its occurrence (the record's bakes key the stay).
+    _content_key_omits: ClassVar[frozenset[str]] = frozenset(
+        {"_declaration", "_body_mobjects", "_bake"}
+    )
+    # The callback forces: held by the world, outside what a capture keeps
+    # of it (its __dict__), and not copied with it.
+    __slots__ = ("_callbacks",)
 
     def __init__(
         self,
@@ -222,23 +252,53 @@ class World(Mobject):
                 f" {integrator!r}."
             )
         super().__init__(**kwargs)
-        self._declaration = Declaration(dimension, integrator)
+        self._callbacks: tuple[Any, ...] = ()
+        self._declare(Declaration(dimension, integrator))
         self._body_mobjects: tuple[Mobject, ...] = ()
         self._bake: BakeRef | None = None
+        #: Whether an animation holds the world's drawing (its updating
+        #: suspended): it steps, and places nothing.
+        self._drawing_suspended = False
         self.add_updater(closed_world)  # type: ignore[arg-type]
+        _take_membership_notice(self)
         if gravity is not None:
             self.add_force(Gravity(gravity))
 
     def __deepcopy__(self, clone_from_id: dict[int, Any]) -> World:
-        """A copy is a world declared alike that never entered the scene:
-        its callback forces are this world's, and its stays its own.
+        """A copy is a world declared alike that never entered the scene,
+        with no callback forces: a copy of an open world is refused if it
+        enters the scene.
         """
         copied = super().__deepcopy__(clone_from_id)
         copied._bake = None
-        callbacks = CALLBACKS.get(self)
-        if callbacks is not None:
-            CALLBACKS[copied] = callbacks
+        _take_membership_notice(copied)
         return copied
+
+    def _declare(self, declaration: Declaration) -> None:
+        """Hold ``declaration``, and its digest as the world's content."""
+        self._declaration = declaration
+        #: The digest of the declaration: what a content key reads of it.
+        self._declared = declaration.digest()
+
+    def _callback_functions(self) -> tuple[Any, ...]:
+        """The world's callback forces, in the order declared."""
+        return getattr(self, "_callbacks", ())
+
+    def suspend_updating(self, recursive: bool = True) -> World:
+        """Suspend updating, as an animation of the world does: the bodies
+        hold where they are. An open world keeps stepping (its callbacks run
+        at every tick it is in the scene) and places nothing until resumed.
+        """
+        super().suspend_updating(recursive)
+        if self._declaration.open:
+            self.updating_suspended = False
+            self._drawing_suspended = True
+        return self
+
+    def resume_updating(self, recursive: bool = True) -> World:
+        self._drawing_suspended = False
+        super().resume_updating(recursive)
+        return self
 
     def _scene_membership(
         self, scene: Scene, present: bool, at: Fraction | None
@@ -380,10 +440,12 @@ class World(Mobject):
             shapes=shapes,
             rest=stay.rest_points(mobject),
         )
-        self._declaration = dataclasses.replace(
-            self._declaration,
-            bodies=(*self._declaration.bodies, body),
-            order=(*self._declaration.order, "body"),
+        self._declare(
+            dataclasses.replace(
+                self._declaration,
+                bodies=(*self._declaration.bodies, body),
+                order=(*self._declaration.order, "body"),
+            )
         )
         self._body_mobjects = (*self._body_mobjects, mobject)
         self.add(mobject)
@@ -438,10 +500,12 @@ class World(Mobject):
             inputs.check_feature(f"joint.{item.kind}.motor")
         if crate is not None:
             stay.add_joint(crate, item)
-        self._declaration = dataclasses.replace(
-            self._declaration,
-            joints=(*self._declaration.joints, item),
-            order=(*self._declaration.order, "joint"),
+        self._declare(
+            dataclasses.replace(
+                self._declaration,
+                joints=(*self._declaration.joints, item),
+                order=(*self._declaration.order, "joint"),
+            )
         )
 
     def add_force(self, force: Any) -> None:
@@ -466,10 +530,12 @@ class World(Mobject):
             inputs.check_feature(f"force.{item.kind}")
             if crate is not None:
                 stay.add_force(crate, item)
-            self._declaration = dataclasses.replace(
-                self._declaration,
-                forces=(*self._declaration.forces, item),
-                order=(*self._declaration.order, "force"),
+            self._declare(
+                dataclasses.replace(
+                    self._declaration,
+                    forces=(*self._declaration.forces, item),
+                    order=(*self._declaration.order, "force"),
+                )
             )
             return
         inputs.check_force(force)
@@ -478,11 +544,13 @@ class World(Mobject):
                 "A callback force joins a world before the world first enters the"
                 " scene: declare it with the world's other forces."
             )
-        CALLBACKS[self] = (*CALLBACKS.get(self, ()), force)
+        self._callbacks = (*self._callback_functions(), force)
         name = getattr(force, "__qualname__", type(force).__qualname__)
-        self._declaration = dataclasses.replace(
-            self._declaration,
-            callbacks=(*self._declaration.callbacks, CallbackItem(str(name))),
+        self._declare(
+            dataclasses.replace(
+                self._declaration,
+                callbacks=(*self._declaration.callbacks, CallbackItem(str(name))),
+            )
         )
         if closed_world in self.updaters:
             self.remove_updater(closed_world)
@@ -705,6 +773,12 @@ class World(Mobject):
                 ("torque", stored_angular(force.torque, dimension, "A constant torque"))
             )
         return ForceItem("constant", (self._index(force.body),), tuple(numbers))
+
+
+def _take_membership_notice(world: World) -> None:
+    from arachne.scene.scene import _take_membership_notice as take
+
+    take(world)
 
 
 def _pose_point(position: Sequence[float]) -> np.ndarray:

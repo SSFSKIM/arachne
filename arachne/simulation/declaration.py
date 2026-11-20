@@ -46,8 +46,10 @@ __all__ = [
     "WeldJoint",
 ]
 
+import dataclasses
+import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from numbers import Real
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -463,7 +465,7 @@ class ForceItem:
 class CallbackItem:
     """A callback force, by its function's name: the function itself, called
     once for each new tick with the world's state at the tick before, is held
-    apart from the world's mobject (:data:`.stay.CALLBACKS`).
+    by the world apart from what a capture keeps of it.
     """
 
     name: str
@@ -491,6 +493,17 @@ class Declaration:
         """Whether scene code runs in the world's step: a callback force."""
         return bool(self.callbacks)
 
+    def digest(self) -> str:
+        """A digest of everything the world was given, in a canonical form
+        two processes make alike (each number by its exact bits): the
+        content a world's mobject keys as (:attr:`.World._declared`).
+        """
+        digest = hashlib.blake2b(digest_size=16)
+        for part in _canonical(self):
+            digest.update(len(part).to_bytes(4, "big"))
+            digest.update(part)
+        return digest.hexdigest()
+
     def routed(self) -> str:
         """The integrator the world takes: the declared one, else
         ``point_masses`` for a world of points with no joint (springs,
@@ -502,6 +515,33 @@ class Declaration:
             return self.integrator
         points = all(not body.shapes for body in self.bodies)
         return "point_masses" if points and not self.joints else "solver"
+
+
+def _canonical(value: Any) -> Iterator[bytes]:
+    """``value``, a declaration or a part of one, as tagged parts."""
+    if value is None or isinstance(value, bool):
+        yield f"{type(value).__name__}:{value}".encode()
+    elif isinstance(value, int):
+        yield b"int:" + str(value).encode()
+    elif isinstance(value, float):
+        yield b"float:" + value.hex().encode()
+    elif isinstance(value, str):
+        yield b"str:" + value.encode()
+    elif isinstance(value, tuple):
+        yield b"tuple:" + str(len(value)).encode()
+        for item in value:
+            yield from _canonical(item)
+    elif isinstance(value, np.ndarray):
+        array = np.ascontiguousarray(value)
+        yield f"array:{array.dtype.str}:{array.shape}".encode()
+        yield array.tobytes()
+    elif dataclasses.is_dataclass(value):
+        yield b"item:" + type(value).__name__.encode()
+        for field in dataclasses.fields(value):
+            yield field.name.encode()
+            yield from _canonical(getattr(value, field.name))
+    else:
+        raise TypeError(f"A declaration holds plain values, not {value!r}.")
 
 
 def measure(shape: ShapeItem, dimension: int) -> float:

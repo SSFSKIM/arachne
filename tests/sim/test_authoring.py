@@ -223,3 +223,25 @@ def test_a_checked_vector_keeps_the_scene_s_numbers():
     assert given_vector((0.1, 2, 0.0), 2, "v") == (0.1, 2.0)
     assert given_vector(np.array([1.0, 2.0, 3.0]), 3, "v") == (1.0, 2.0, 3.0)
     assert given_angular(0.5, 2, "w") == (0.5,)
+
+
+def test_an_occurrence_s_contacts_begin_with_the_pairs_touching_as_it_begins():
+    from arachne.simulation.stay import _window_contacts
+
+    solver = np.array(
+        [
+            [0, 0, 1, 1],  # 0-1 touch from the first row
+            [3, 1, 2, 1],
+            [5, 1, 2, 0],  # 1-2 part at the window's first row
+            [6, 0, 1, 0],
+            [7, 0, 2, 1],
+        ],
+        dtype=np.uint32,
+    )
+    assert _window_contacts(solver, 0, 4).tolist() == [[0, 0, 1, 1], [3, 1, 2, 1]]
+    assert _window_contacts(solver, 5, 9).tolist() == [
+        [0, 0, 1, 1],
+        [1, 0, 1, 0],
+        [2, 0, 2, 1],
+    ]
+    assert _window_contacts(solver[:0], 2, 4).shape == (0, 4)

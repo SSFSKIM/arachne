@@ -79,3 +79,28 @@ def test_every_value_a_capture_stores_of_a_world_keys(name):
         for session in sessions:
             session.close()
         admission.DEMOTED.clear()
+
+
+def test_the_content_key_reads_a_world_by_its_declaration_s_digest():
+    """Both content keys encode a string: a world given another declaration
+    keys apart at its first capture, its bodies alike.
+    """
+    admission.DEMOTED.clear()
+    sessions = [
+        Session.open(SCENES, name, config=CONFIG) for name in ("Falling", "Heavier")
+    ]
+    try:
+        declared = []
+        for session in sessions:
+            (state,) = [
+                state
+                for mob, state in session.record.plays[0].start_state.nodes()
+                if isinstance(mob, World)
+            ]
+            fields = dict(zip(state.keys, state.values, strict=True))
+            declared.append(keys.value_key(fields["_declared"])[0])
+        assert declared[0] != declared[1]
+    finally:
+        for session in sessions:
+            session.close()
+        admission.DEMOTED.clear()

@@ -13,7 +13,8 @@ import functools
 import inspect
 import platform
 import random
-from collections.abc import Callable, Iterable, Sequence
+import weakref
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -61,6 +62,34 @@ class _Timeline:
         if scene is None:
             return self
         return scene._arachne_timeline
+
+
+#: Every live mobject that takes the scene's membership notice, each having
+#: registered itself (:func:`_take_membership_notice`): while there is none
+#: and none was in a scene's family, a scene's look is this one check.
+_NOTICE_TAKERS: weakref.WeakSet[Mobject] = weakref.WeakSet()
+
+
+def _take_membership_notice(mobject: Mobject) -> None:
+    """Register ``mobject``, whose class has ``_scene_membership``, to be
+    looked for in the scenes' families (:meth:`Scene._membership_changed`).
+    """
+    _NOTICE_TAKERS.add(mobject)
+
+
+def _family(mobject: Mobject) -> Iterator[Mobject]:
+    """``mobject``'s family, through the submobject lists its members hold
+    (the engine's own walk: no mobject's override runs).
+    """
+    seen: set[int] = set()
+    stack = [mobject]
+    while stack:
+        member = stack.pop()
+        if id(member) in seen:
+            continue
+        seen.add(id(member))
+        yield member
+        stack.extend(reversed(member.__dict__.get("submobjects", ())))
 
 
 class _Membership:
@@ -269,8 +298,9 @@ class Scene:
 
     def _membership_changed(self, *, reported: bool = False) -> None:
         """Tell each mobject that takes the scene's membership notice, one
-        whose class has a ``_scene_membership(scene, present, at)`` method,
-        that it entered (``present`` true) or left the family of the scene's
+        whose class has a ``_scene_membership(scene, present, at)`` method
+        and that registered itself (:func:`_take_membership_notice`), that it
+        entered (``present`` true) or left the family of the scene's
         mobjects and foreground mobjects since the scene last looked: at the
         scene's instant ``at``, or ``None`` when scene time passed since the
         scene last looked and the change was not ``reported`` by the method
@@ -281,13 +311,16 @@ class Scene:
         never called, and nothing else changes.
         """
         membership = self._membership
+        before = membership.present
         now = self.time
+        if not before and not _NOTICE_TAKERS:
+            membership.seen_at = now
+            return
         present: dict[int, Mobject] = {}
         for top in (*self.mobjects, *self.foreground_mobjects):
-            for member in top.get_family():
+            for member in _family(top):
                 if getattr(type(member), "_scene_membership", None) is not None:
                     present.setdefault(id(member), member)
-        before = membership.present
         known = reported or membership.seen_at in (None, now)
         membership.present = present
         membership.seen_at = now

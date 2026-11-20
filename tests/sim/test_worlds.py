@@ -500,3 +500,102 @@ def test_a_world_holds_no_callable_of_the_scene():
     assert [item.name for item in world._declaration.callbacks] == [
         "test_a_world_holds_no_callable_of_the_scene.<locals>.push"
     ]
+
+
+def _interleaved(ticks):
+    """Each tick's callback, handed the tick before, then the tick's scene
+    updater.
+    """
+    return [event for k in ticks for event in (("call", k - 1), ("tick", k))]
+
+
+def test_a_world_faded_in_by_the_last_play_steps_at_every_tick(opened):
+    session = opened("FadedInLast")
+    assert _interleaved(range(1, 31)) == session.module.EVENTS
+    assert _spans(session) == [(0, 30)]
+
+
+def test_a_world_faded_in_moves_as_its_twin_added_plainly(opened):
+    session = opened("FadedBeside")
+    _, (added, faded) = _occurrences(session)
+    assert (faded.first_tick, faded.last_tick) == (added.first_tick, added.last_tick)
+    assert faded.content == added.content
+
+
+def test_a_world_faded_out_calls_nothing_as_it_leaves(opened):
+    session = opened("FadedOut")
+    assert _interleaved(range(1, 61)) == session.module.EVENTS
+    assert _spans(session) == [(0, 60)]
+
+
+def test_a_world_is_released_with_its_session(opened):
+    import gc
+
+    session = Session.open(SCENES, "Dropped", config={**SMALL, "frame_rate": 15})
+    world = session.module.SHARED.world
+    assert world() is not None
+    session.close()
+    del session
+    gc.collect()
+    assert world() is None
+
+
+def test_a_world_is_released_when_its_scene_raises():
+    import gc
+
+    world_scenes.SHARED.world = None
+    with pytest.raises(RuntimeError, match="own error"):
+        Session.open(SCENES, "RaisesAfterEntering", config={**SMALL, "frame_rate": 15})
+    world = world_scenes.SHARED.world
+    gc.collect()
+    assert world() is None
+
+
+def test_two_equal_stays_of_an_accelerating_world_declare_apart(opened):
+    _, (first, second) = _occurrences(opened("AwayAndBack"))
+    assert first.last_tick - first.first_tick == second.last_tick - second.first_tick
+    assert first.declaration != second.declaration
+
+
+def _paired(events):
+    """Whether every contact that ends began before, in one occurrence."""
+    touching = set()
+    for _, a, b, kind in events.tolist():
+        if kind:
+            touching.add((a, b))
+        elif (a, b) not in touching:
+            return False
+        else:
+            touching.discard((a, b))
+    return True
+
+
+def test_a_resting_pair_begins_touching_in_each_stay(opened):
+    session = opened("Resting")
+    bakes, (first, second) = _occurrences(session)
+    for occurrence in (first, second):
+        events = bakes.contents[occurrence.content].events["contact"].rows
+        assert _paired(events)
+    events = bakes.contents[second.content].events["contact"].rows
+    assert events[0].tolist() == [0, 0, 1, 1]
+
+
+def test_a_copy_of_an_open_world_is_refused_and_a_closed_one_runs(opened):
+    with pytest.raises(ValueError, match="copy of an open world"):
+        opened("CopiedOpen")
+    assert _spans(opened("CopiedClosed")) == [(0, 30)]
+
+
+def test_a_capture_s_key_changes_with_the_world_and_its_bodies(opened):
+    """c54's content key reads a world by its declaration's digest and its
+    bodies by their placements; the declaration, the bodies' list and the
+    occurrence's reference are named as not content.
+    """
+    from arachne import World
+
+    assert World._content_key_omits == {"_declaration", "_body_mobjects", "_bake"}
+    falling, heavier = opened("Falling"), opened("Heavier")
+    starts = [s.record.plays[0].start_state.content_key() for s in (falling, heavier)]
+    assert starts[0] != starts[1]
+    later = opened("AwayAndBack").record.plays
+    assert later[0].start_state.content_key() != later[2].start_state.content_key()

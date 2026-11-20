@@ -12,8 +12,9 @@ sealed, and one added again later starts a new stay, and a new occurrence,
 from the state it was left in. A copy of a world (an animation's) is never
 told: its updater finds no stay and does nothing.
 
-**One solver's world per world per run**, held by the run's record
-(:data:`_RUNS`), never by a mobject: built from the declaration where the
+**One solver's world per world per run**, held by the run's record (its
+bakes' :attr:`~.bake.Bakes.held`, released once the run's stays are sealed),
+never by a mobject: built from the declaration where the
 world first enters, in the order its bodies, joints and forces were
 declared, and continued by every later stay, so a joint's frames, a slide's
 origin and a pin's angle zero are the ones declared, whatever the world did
@@ -32,7 +33,11 @@ so a frame between ticks shows the last tick at or before it. An evaluation
 with ``dt == 0`` (a play's start, the lint's entry state, the evaluation
 after a play, ``resume_updating``) steps no open world and calls no
 callback; a closed world's rows are the solver's alone, and it is computed
-to the tick a frame reads at any evaluation.
+to the tick a frame reads at any evaluation. An open world steps at every
+tick it is in the scene, whether or not an animation holds its drawing
+(:meth:`.World.suspend_updating`), and only there: its callbacks run once
+per tick, in tick order, at that tick; a leave or the end of the script
+calls none.
 
 A stay still open when the scene's script has ended is sealed when the
 record's bakes are first read (:meth:`Stay.settle`): a closed world's
@@ -49,8 +54,7 @@ import dataclasses
 import hashlib
 import inspect
 import math
-import weakref
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -94,26 +98,23 @@ if TYPE_CHECKING:
 
 
 class _Run:
-    """A world's part in one run: its solver's world and its open stay."""
+    """A world's part in one run, held by the run's record: its solver's
+    world and its open stay, until the run's stays are sealed.
+    """
 
-    __slots__ = ("crate", "stay")
+    __slots__ = ("crate", "recorder", "stay")
 
-    def __init__(self, crate: Any) -> None:
+    def __init__(self, recorder: Recorder, crate: Any) -> None:
+        self.recorder = recorder
         self.crate = crate
         self.stay: Stay | None = None
 
-
-#: Each run's worlds, by the record of the run: what computes them.
-_RUNS: weakref.WeakKeyDictionary[Record, weakref.WeakKeyDictionary[World, _Run]] = (
-    weakref.WeakKeyDictionary()
-)
-
-#: Each world's callback forces, in the order declared: the scene's
-#: functions, held apart from the world's mobject, which holds a reference to
-#: each (:class:`.declaration.CallbackItem`).
-CALLBACKS: weakref.WeakKeyDictionary[World, tuple[Callable[..., Any], ...]] = (
-    weakref.WeakKeyDictionary()
-)
+    def settle(self) -> None:
+        """Once the scene's script has ended and the world's stays are
+        sealed, let go of its solver's world.
+        """
+        if self.recorder not in _recorder._RUNNING and self.stay is None:
+            self.crate = None
 
 
 def closed_world(world: World, dt: float) -> None:
@@ -122,24 +123,25 @@ def closed_world(world: World, dt: float) -> None:
     only at the ticks a frame reads (:mod:`arachne.timeline.ticking`): the
     solver computes the ticks between in one call.
     """
-    reach(world, stepping=True)
+    reach(world, stepping=True, placing=True)
 
 
 def open_world(world: World, dt: float) -> None:
     """An open world's updater. It reads ``dt``, so a ticked play runs it at
     every tick, where it calls the world's callbacks for that tick; at an
-    evaluation with ``dt == 0`` it calls none.
+    evaluation with ``dt == 0`` it calls none. While an animation holds the
+    world's drawing it steps and places nothing.
     """
-    reach(world, stepping=dt != 0)
+    reach(world, stepping=dt != 0, placing=not world._drawing_suspended)
 
 
 def _run_of(world: World) -> _Run | None:
     """``world``'s part in the run of the scene running now, if it has one."""
     recorder = _recorder.running()
-    if recorder is None or recorder.record is None:
+    if recorder is None or recorder.record is None or recorder.record.bakes is None:
         return None
-    worlds = _RUNS.get(recorder.record)
-    return None if worlds is None else worlds.get(world)
+    run = recorder.record.bakes.held.get(world)
+    return run if isinstance(run, _Run) else None
 
 
 def live_stay(world: World) -> Stay | None:
@@ -157,10 +159,11 @@ def crate_of(world: World) -> Any | None:
     return None if run is None else run.crate
 
 
-def reach(world: World, *, stepping: bool) -> None:
+def reach(world: World, *, stepping: bool, placing: bool) -> None:
     """Bring ``world``, while it is in the scene, to the scene clock's tick:
     its rows computed through the tick (an open world's only when
-    ``stepping``), its bodies placed at the last row computed.
+    ``stepping``), its bodies placed at the last row computed (when
+    ``placing``).
     """
     stay = live_stay(world)
     if stay is None:
@@ -168,7 +171,8 @@ def reach(world: World, *, stepping: bool) -> None:
     tick = stay.now_tick()
     if stepping or not stay.crate.open:
         stay.compute_through(tick)
-    stay.place(min(tick, stay.computed_tick))
+    if placing:
+        stay.place(min(tick, stay.computed_tick))
 
 
 def membership(world: World, scene: Scene, present: bool, at: Fraction | None) -> None:
@@ -187,8 +191,9 @@ def membership(world: World, scene: Scene, present: bool, at: Fraction | None) -
             " Scene.remove, or between plays."
         )
     record = recorder.ensure_record()
-    worlds = _RUNS.setdefault(record, weakref.WeakKeyDictionary())
-    run = worlds.get(world)
+    held = bakes_of(record).held
+    found = held.get(world)
+    run = found if isinstance(found, _Run) else None
     stay = None if run is None else run.stay
     if not present:
         if stay is not None and stay.left_at is None:
@@ -199,21 +204,25 @@ def membership(world: World, scene: Scene, present: bool, at: Fraction | None) -
             return
         if stay.left_at == at:
             stay.left_at = None
+            stay.left_tick = None
             stay.left_declaration = None
             return
         stay.seal()
     if run is None:
         declaration = world._declaration
         if declaration.integrator is None:
-            declaration = world._declaration = dataclasses.replace(
+            declaration = dataclasses.replace(
                 declaration, integrator=declaration.routed()
             )
-        if len(CALLBACKS.get(world, ())) != len(declaration.callbacks):
+            world._declare(declaration)
+        if len(world._callback_functions()) != len(declaration.callbacks):
             raise ValueError(
-                "An open world's callback forces are not held for it: make the"
-                " world in the scene that runs it."
+                "A copy of an open world cannot run: its callback forces read the"
+                " bodies of the world it was copied from, by their handles, and are"
+                " not bound again to the copy's. Declare another world, with"
+                " callbacks of its own, instead of copying an open one."
             )
-        run = worlds[world] = _Run(build(declaration))
+        run = held[world] = _Run(recorder, build(declaration))
     run.stay = Stay.begin(world, recorder, record, run, at)
 
 
@@ -241,8 +250,9 @@ class Stay:
         self.first_tick = first_tick
         self.ordinal = -1
         #: The instant the world left the scene, while it may enter again
-        #: with no scene time between.
+        #: with no scene time between, and its last tick then.
         self.left_at: Fraction | None = None
+        self.left_tick: int | None = None
         #: The declaration's bytes as it left, which a change while it is
         #: away does not reach.
         self.left_declaration: bytes | None = None
@@ -283,8 +293,8 @@ class Stay:
         """The stay's last tick: the one at or before the instant it left,
         else the latest computed.
         """
-        if self.left_at is not None:
-            return math.floor(self.left_at * TICK_RATE)
+        if self.left_tick is not None:
+            return self.left_tick
         return self.computed_tick
 
     def _solver_row(self, tick: int) -> int:
@@ -313,7 +323,7 @@ class Stay:
         state = self._state_of(row - 1)
         forces = [[0.0] * dimension for _ in range(count)]
         torques = [[0.0] * angular for _ in range(count)]
-        for callback in CALLBACKS[world]:
+        for callback in world._callback_functions():
             for body, push in _pushes(callback(state), world):
                 force, torque = (
                     (push.force, push.torque)
@@ -387,11 +397,16 @@ class Stay:
                 _place_body(mobject, item, pose[number], world.dimension)
 
     def leave(self, at: Fraction) -> None:
-        """The world left the scene at ``at``: its stay is computed through
-        the tick at or before it, and holds no later one.
+        """The world left the scene at ``at``: a closed world's stay is
+        computed through the tick at or before it, an open world's holds the
+        ticks its callbacks ran for (none is called now), and neither holds a
+        later one.
         """
-        self.compute_through(math.floor(at * TICK_RATE))
+        tick = math.floor(at * TICK_RATE)
+        if not self.crate.open:
+            self.compute_through(tick)
         self.left_at = at
+        self.left_tick = min(tick, self.computed_tick)
         self.left_declaration = self.crate.declaration_bytes()
 
     # The record's side
@@ -435,9 +450,7 @@ class Stay:
             crate.identity()
         )
         pose_unit, velocity_unit = crate.units()
-        contacts = crate.contacts()
-        events = contacts[(contacts[:, 0] >= start) & (contacts[:, 0] < stop)].copy()
-        events[:, 0] -= start
+        events = _window_contacts(crate.contacts(), start, stop)
         content = BakeContent(
             BakeIdentity(
                 producer,
@@ -460,11 +473,15 @@ class Stay:
             body = self.record.origin(mobject).id
             bindings.append(Binding(body, "pose", number))
             bindings.append(Binding(body, "velocity", number))
-        declared = (
+        declared = hashlib.blake2b(digest_size=16)
+        for part in (
             crate.declaration_bytes()
             if self.left_declaration is None
-            else self.left_declaration
-        )
+            else self.left_declaration,
+            f"window:{start}:{stop}".encode(),
+        ):
+            declared.update(len(part).to_bytes(8, "big"))
+            declared.update(part)
         self.sealed = True
         if self.run.stay is self:
             self.run.stay = None
@@ -473,9 +490,27 @@ class Stay:
             content,
             first_tick=self.first_tick,
             closed=not crate.open,
-            declaration=hashlib.blake2b(declared, digest_size=16).digest(),
+            declaration=declared.digest(),
             bindings=tuple(bindings),
         )
+
+
+def _window_contacts(contacts: np.ndarray, start: int, stop: int) -> np.ndarray:
+    """The contact events of the solver's rows ``start`` to ``stop`` as an
+    occurrence holds them, by its own rows: a pair touching at its first row
+    begins there, and every later event of the window follows; no pair ends
+    that did not begin in it.
+    """
+    touching: dict[tuple[int, int], bool] = {}
+    for _row, a, b, kind in contacts[contacts[:, 0] <= start].tolist():
+        touching[(a, b)] = bool(kind)
+    began = [(0, a, b, 1) for (a, b), on in sorted(touching.items()) if on]
+    later = contacts[(contacts[:, 0] > start) & (contacts[:, 0] < stop)].astype(
+        np.int64
+    )
+    later[:, 0] -= start
+    events = np.array(began + [tuple(row) for row in later.tolist()], dtype=np.uint32)
+    return events.reshape(-1, 4)
 
 
 def build(declaration: Declaration) -> Any:
