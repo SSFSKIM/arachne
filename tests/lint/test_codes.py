@@ -38,7 +38,10 @@ PUBLISHED = [
     ("annotation.anchor_unknown", "error", "AnnotationAnchorUnknown"),
     ("asset.unadmitted", "error", "AssetUnadmitted"),
     ("annotation.detached", "error", "AnnotationDetached"),
+    ("timing.exact_content", "error", "TimingExactContent"),
+    ("timing.updater", "error", "TimingUpdater"),
     ("media.inexact", "error", "MediaInexact"),
+    ("media.clock_past_end", "error", "MediaClockPastEnd"),
     ("sim.force_input", "error", "ForceInput"),
     ("sim.withheld", "error", "FeatureWithheld"),
 ]
