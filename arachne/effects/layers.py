@@ -18,7 +18,10 @@ An object an effect is set on declares its effects' numbers as quantities
 (:mod:`arachne.quantities`), read from the spec each capture records:
 ``effect.blur``, ``effect.mask_feather`` and ``effect.depth``, in ``u``,
 each present while the spec holds its field. The focus is the camera's, and
-is no object's quantity.
+is no object's quantity. These are quantity names; the routing table's
+capability ids (:mod:`arachne.routing`), one of which is also spelled
+``effect.blur``, are a namespace of their own, and nothing here reads a name
+of one as a name of the other.
 """
 
 from __future__ import annotations
