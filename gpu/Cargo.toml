@@ -15,6 +15,9 @@ crate-type = ["cdylib", "rlib"]
 # The Python extension (built by maturin through pyproject.toml). Off for `cargo test`, which links
 # no Python.
 python = ["dep:pyo3", "dep:numpy", "pyo3/extension-module"]
+# The frame set and the read-back benchmark (src/bench/, examples/): tools that measure this
+# build on a GPU host. The wheel never has them.
+bench = []
 
 [dependencies]
 # Vulkan only, through the system's loader at run time (never linked at build time). The exact
@@ -33,3 +36,11 @@ lto = "thin"
 
 [dev-dependencies]
 serde_json = "1.0"
+
+[[example]]
+name = "frameset"
+required-features = ["bench"]
+
+[[example]]
+name = "readback_bench"
+required-features = ["bench"]
