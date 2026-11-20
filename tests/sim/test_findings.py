@@ -76,7 +76,8 @@ def test_a_falling_body_s_quantities_are_its_bake_s_row(opened):
     floor, ball, _ = _bodies(session)
     bakes = session.record.bakes
     pose = bakes.contents[bakes.occurrences[0].content].channels["pose"].values
-    t = Fraction(3, 10)
+    # A frame of the 15 fps grid: what it shows is of its own instant, tick 12.
+    t = Fraction(1, 5)
     read = _read(session.state_at(t), ball)
     units = {name: q.unit for name, q in read.items()}
     assert units == {
@@ -87,13 +88,13 @@ def test_a_falling_body_s_quantities_are_its_bake_s_row(opened):
         "sim.contact_count": "1",
     }
     assert all(q.unreadable is None for q in read.values())
-    # Exact as baked, at tick 18: z is 0 in a plane.
-    x, y = pose[18, 1, :2].astype(float)
+    # Exact as baked, at tick 12: z is 0 in a plane.
+    x, y = pose[12, 1, :2].astype(float)
     assert read["sim.position"].value == (x, y, 0.0)
     # The closed form: v = -g t, which the tick's integration keeps exactly.
     vx, vy, vz = read["sim.velocity"].value
     assert (vx, vz) == (0.0, 0.0)
-    assert vy == pytest.approx(-G * 0.3, abs=1e-3)
+    assert vy == pytest.approx(-G * 0.2, abs=1e-3)
     assert read["sim.angular_velocity"].value == 0.0
     assert read["sim.contact_times"].value == ()
     assert read["sim.contact_count"].value == 0
@@ -138,9 +139,10 @@ def test_a_body_in_three_dimensions_turns_about_three_axes(opened):
 def test_a_body_shown_after_its_world_left_is_unreadable(opened):
     session = opened("ShownAfterItsWorld")
     (body,) = _bodies(session)
+    # The frame on screen at 3/4 s is of 11/15 s: tick 44, past the stay's 30.
     (quantity, *_) = session.state_at(Fraction(3, 4)).quantities[body]
     assert quantity.value is None
-    assert quantity.unreadable == "no bake holds tick 45 of this body's stay"
+    assert quantity.unreadable == "no bake holds tick 44 of this body's stay"
     result, found = _simulation(session)
     assert {f.code for f in found} == {"sim.quantity_unreadable"}
     assert all(f.objects[0].id == body for f in found)

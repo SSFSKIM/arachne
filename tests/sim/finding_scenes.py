@@ -114,7 +114,7 @@ class Dropped(Scene):
 
 class ShownAfterItsWorld(Scene):
     """A falling point's mobject shown on its own after its world left the
-    scene: no bake holds its quantities then.
+    scene, and moved there: no bake holds its quantities then.
     """
 
     leaves = True
@@ -128,7 +128,10 @@ class ShownAfterItsWorld(Scene):
         if self.leaves:
             self.remove(world)
             self.add(dot)
-        self.wait(0.5)
+            # Moved, so that each frame of it is captured at its own instant.
+            self.play(dot.animate.shift(RIGHT), run_time=0.5)
+        else:
+            self.wait(0.5)
 
 
 class ShownWithItsWorld(ShownAfterItsWorld):
