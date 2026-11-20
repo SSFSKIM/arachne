@@ -684,3 +684,42 @@ def test_a_file_that_is_a_pipe_is_unreadable_without_waiting(tmp_path):
     found = refused("asset.unreadable", lambda: Rig(directory))
     assert found.detail["file"] == "pieces/needle.svg"
     assert "not a regular file" in found.detail["reason"]
+
+
+@pytest.mark.parametrize(
+    "d",
+    [
+        "M 100 100 L 200 100 M 200 100 L 200 200",
+        "M 100 100 L 200 100 Z M 100 100 L 50 50",
+    ],
+    ids=["open", "after-z"],
+)
+def test_a_stroke_whose_next_subpath_starts_where_one_ends_is_refused(tmp_path, d):
+    """Combined segments sharing an end: SVG caps each, and the engine,
+    which splits subpaths only where they part, joins them as one.
+    """
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").write_text(
+        _needle(f'<path d="{d}" fill="none" stroke="#000"/>')
+    )
+    found = refused("asset.unreadable", lambda: Rig(directory))
+    reason = found.detail["reason"]
+    assert "the part 'needle'" in reason
+    assert "keep the segments as separate elements, or join their nodes" in reason
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<path d="M 100 100 L 200 100 L 200 200" fill="none" stroke="#000"/>',
+        '<path d="M 100 100 L 200 100" fill="none" stroke="#000"/>'
+        '<path d="M 200 100 L 200 200" fill="none" stroke="#000"/>',
+        '<path d="M 100 100 L 200 100 M 200 100 L 200 200" fill="#c0392b"/>',
+        '<path d="M 100 100 L 200 100 M 210 100 L 200 200" fill="none" stroke="#000"/>',
+    ],
+    ids=["joined", "two-elements", "unstroked", "apart"],
+)
+def test_segments_sharing_an_end_as_one_path_or_two_are_accepted(tmp_path, body):
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").write_text(_needle(body))
+    assert Rig(directory).part("needle").submobjects

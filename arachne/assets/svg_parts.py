@@ -14,8 +14,22 @@ an ordinary :class:`~arachne.mobject.types.vectorized_mobject.VMobject` with
 its file's flat paint and stroke join, its stroke as wide as the file's
 transform makes it. A stroke the engine would draw otherwise than the file
 means is refused: one under a transform that is not a similarity, an open
-subpath ending where it starts, and a miter join the engine's own miter limit
-cuts otherwise than the file's (:mod:`.joins`).
+subpath ending where it starts, a subpath starting where the one before it
+ends, and a miter join the engine's own miter limit cuts otherwise than the
+file's (:mod:`.joins`).
+
+Two such strokes still pass, drawn otherwise than SVG draws them:
+
+- ends that nearly meet. Whether a subpath's ends, or one subpath's end and
+  the next one's start, meet is judged in canvas units by the camera's own
+  test, but the camera tests again in scene units, after the asset's scale,
+  with the same absolute tolerance. An asset drawn small can therefore have
+  ends the reader holds apart and the camera joins: ``M 0 0 L 100 0
+  L 0 0.00001`` passes, and is closed once the scale makes the gap smaller
+  than the camera's tolerance;
+- drawing on after ``Z`` with no move: in ``M 0 0 L 10 0 L 10 10 Z L 5 5`` SVG
+  starts a new subpath at ``0 0`` and caps it there, while the engine runs the
+  closed outline on into ``L 5 5`` and joins the two.
 """
 
 from __future__ import annotations
@@ -25,6 +39,8 @@ __all__ = ["SvgFile", "Unreadable", "read_svg", "structure"]
 import io
 import re
 from collections.abc import Iterator, Sequence
+from itertools import pairwise
+from typing import NamedTuple
 from xml.etree import ElementTree as ET
 
 import numpy as np
@@ -179,9 +195,11 @@ def _stroke(mob: VMobject, shape: se.Shape) -> None:
     """Draw ``mob``'s stroke as its file means, or refuse it: SVG strokes a
     shape in its own coordinates, then transforms it; the engine strokes the
     transformed outline at one width, closing every subpath that ends where
-    it starts. The two agree under a similarity, at the width it scales
-    the stroke to, on a stroke whose open subpaths end apart from their
-    start, and at joins :func:`_join` accepts.
+    it starts and running on into the next subpath that starts where one
+    ends. The two agree under a similarity, at the width it scales the
+    stroke to, on a stroke whose open subpaths end apart from their start
+    and whose subpaths each start apart from where the one before ends,
+    and at joins :func:`_join` accepts.
     """
     transform = str(shape.values.get("transform", "")).strip()
     if not _similarity(se.Matrix(transform)):
@@ -191,12 +209,23 @@ def _stroke(mob: VMobject, shape: se.Shape) -> None:
             " after it: apply the transform to the path, or stroke after it"
         )
     mob.set_stroke(width=shape.implicit_stroke_width)
-    for start, end in _open_subpaths(shape):
-        if mob.consider_points_equals_2d(start, end):
+    runs = _runs(shape)
+    for run in runs:
+        if not run.closed and mob.consider_points_equals_2d(run.start, run.end):
+            x, y = run.end
             raise Unreadable(
-                f"a stroked subpath ends at ({end[0]:g}, {end[1]:g}), where it"
-                " starts, without Z; SVG caps both ends and the engine joins"
-                " them: close it with Z, or end it apart from its start"
+                f"a stroked subpath ends at ({x:g}, {y:g}), where it starts,"
+                " without Z; SVG caps both ends and the engine joins them:"
+                " close it with Z, or end it apart from its start"
+            )
+    for before, after in pairwise(runs):
+        if after.moved_to and mob.consider_points_equals_2d(before.end, after.start):
+            x, y = after.start
+            raise Unreadable(
+                f"a stroked subpath starts at ({x:g}, {y:g}), where the one before"
+                " it ends; SVG caps both there and the engine strokes them as one,"
+                " joined: keep the segments as separate elements, or join their"
+                " nodes"
             )
     _join(mob, shape)
 
@@ -212,39 +241,57 @@ def _similarity(matrix: se.Matrix) -> bool:
     return abs(a * c + b * d) <= slack and abs(a * a + b * b - c * c - d * d) <= slack
 
 
-def _open_subpaths(shape: se.Shape) -> Iterator[tuple[np.ndarray, np.ndarray]]:
-    """The start and end, in canvas coordinates, of each subpath SVG draws
-    open (no ``Z``) that goes anywhere from its start; a closed shape has
-    none.
+class _Run(NamedTuple):
+    """A subpath SVG draws, in canvas coordinates: where it starts and ends,
+    whether a ``Z`` closes it, and whether a move starts it.
     """
-    runs: list[tuple[se.Point, se.Point]] = []
+
+    start: np.ndarray
+    end: np.ndarray
+    closed: bool
+    moved_to: bool
+
+
+def _runs(shape: se.Shape) -> list[_Run]:
+    """The subpaths SVG draws in ``shape`` that go anywhere from their
+    start, in order; none for a shape that is closed whole (a rect, circle,
+    ellipse or polygon) or a line.
+    """
+    found: list[tuple[se.Point, se.Point, bool, bool]] = []
     if isinstance(shape, se.Path):
         start: se.Point | None = None
         end: se.Point | None = None
-        moved = False
+        moved = False  # whether the subpath goes anywhere yet
+        moved_to = False
         for segment in shape:
             if isinstance(segment, se.Move):  # ends an open subpath
                 if moved:
-                    runs.append((start, end))
+                    found.append((start, end, False, moved_to))
                 start = end = segment.end
-                moved = False
+                moved, moved_to = False, True
             elif isinstance(segment, se.Close):  # the next starts where it did
+                if moved:
+                    found.append((start, start, True, moved_to))
                 end = start
-                moved = False
+                moved, moved_to = False, False
             else:
                 start = segment.start if start is None else start
                 end = segment.end
                 moved = moved or segment.length() > 0
         if moved:
-            runs.append((start, end))
+            found.append((start, end, False, moved_to))
     elif isinstance(shape, se.Polyline) and len(shape) > 1:
-        runs.append((shape[0], shape[-1]))
+        found.append((shape[0], shape[-1], False, True))
     matrix = se.Matrix(shape.transform) if shape.apply else se.Matrix()
-    for first, last in runs:
-        yield (
+    return [
+        _Run(
             np.array(_xy(matrix.point_in_matrix_space(first))),
             np.array(_xy(matrix.point_in_matrix_space(last))),
+            closed,
+            moved_to,
         )
+        for first, last, closed, moved_to in found
+    ]
 
 
 def _xy(point: se.Point) -> tuple[float, float]:
