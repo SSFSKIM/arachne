@@ -7,7 +7,8 @@ each argument is one side, whatever it holds, read from the live scene in
 scene units, drawn or not.
 
 **A side.** A side is a *region* when it is a text (a text mobject, or a
-group of nothing but texts) or when every leaf it holds is filled; it is
+group of nothing but texts) or when every leaf it holds is filled (a picture
+is, over its corners, as the sweep reads it); it is
 then held to its box (a text, against anything but a text, to each glyph's
 box and the glyph's outline within :data:`INK_NEAR` of it; a filled shape
 of several leaves to each leaf's box). Anything else is a *path*, held to
@@ -38,6 +39,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from arachne.camera.projection import draw_kind
 from arachne.timeline.origins import origin_of
 
 from .findings import Finding, FindingObject
@@ -259,6 +261,12 @@ def _is_text(mob: Any) -> bool:
 
 
 def _filled(leaf: Any) -> bool:
+    """Whether a leaf lays a fill: a picture does, wholly (as the sweep's
+    parts read an image: opaque over its corners), whatever its fill says;
+    so does any leaf that declares its fill a picture.
+    """
+    if draw_kind(leaf) == "image" or getattr(leaf, "fill_is_picture", False):
+        return True
     opacity = getattr(leaf, "get_fill_opacity", None)
     return opacity is not None and float(opacity()) > 0
 
