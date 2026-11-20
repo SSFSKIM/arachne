@@ -10,6 +10,8 @@ joins, and a camera move into one piece.
 - :class:`ZoomInto`: the camera's frame moves onto a block while the
   block's inside diagram fades in, once its labels are large enough to
   read, and what the frame's edge would cut fades out before it is cut.
+- :class:`ZoomOut`: a played zoom's move backwards, its fades reversed,
+  back to where it began.
 
 A flow declares its speed as ``diagram.flow_speed``, in scene units a
 second (:mod:`arachne.quantities`), read from what a capture holds: the
@@ -26,7 +28,7 @@ exempting two pieces of one top-level mobject, leave unasked.
 
 from __future__ import annotations
 
-__all__ = ["Diagram", "Flow", "ZoomInto"]
+__all__ = ["Diagram", "Flow", "ZoomInto", "ZoomOut"]
 
 import math
 import weakref
@@ -601,6 +603,8 @@ class ZoomInto(Animation):
 
     def begin(self) -> None:
         frame, block = self.mobject, self.block
+        #: The frame as the move begins, which a return puts back.
+        self._from_points = frame.points
         self._from = (frame.get_center(), float(frame.height))
         aspect = frame.width / frame.height
         height = max(block.height, block.width / aspect) * (1 + 2 * self.margin)
@@ -702,6 +706,143 @@ class ZoomInto(Animation):
                 set_opacities(member, scaled(shown, share))
         for family, faded, window in self._fading:
             keep = 1.0 - _ramp(alpha, window)
+            for member, opacities in zip(family, faded, strict=True):
+                set_opacities(member, scaled(opacities, keep))
+
+
+#: How far, as a share of the height the zoom left it at, the camera's frame
+#: may stand from where a zoom left it for the zoom to come back.
+RETURN_TOLERANCE = 1e-6
+
+
+class ZoomOut(Animation):
+    """Undo a played :class:`ZoomInto`: the camera's frame takes the
+    move-in's own path backwards, from the block to where the move-in began,
+    while the block's inside fades out over its fade-in window reversed and
+    each piece the move-in faded comes back over its own window reversed, to
+    the opacities it showed before the move-in.
+
+    At eased progress ``p`` the frame takes the height and centre the
+    move-in gave it at share ``1 - p``. At the end the frame is exactly where
+    the move-in began, the inside is hidden, and every faded piece shows as
+    before. ``run_time`` and ``rate_func`` are the move-in's unless given,
+    read when the return plays, so a play's own ``run_time`` for the move-in
+    counts.
+
+    Nested zooms come back in order, the inner first. A return is refused,
+    by name, when its zoom was never played, when the camera's frame is not
+    where that zoom left it (within :data:`RETURN_TOLERANCE` of its height,
+    so a moved camera or an outer zoom returned while an inner one holds the
+    frame), when a piece the zoom faded has left the scene, and in a scene
+    without that zoom's moving camera.
+    """
+
+    def __init__(
+        self,
+        zoom: ZoomInto,
+        run_time: float | None = None,
+        rate_func: Callable[[float], float] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if not isinstance(zoom, ZoomInto):
+            raise TypeError(
+                f"ZoomOut returns from a ZoomInto, not a {type(zoom).__name__}"
+            )
+        self.zoom = zoom
+        super().__init__(zoom.mobject, **kwargs)
+        # Unset, each is the move-in's, read when the return plays.
+        self.run_time, self.rate_func = run_time, rate_func
+        self._scene: weakref.ref[Scene] | None = None
+
+    @property
+    def run_time(self) -> float:
+        own = self._own_run_time
+        return self.zoom.run_time if own is None else own
+
+    @run_time.setter
+    def run_time(self, value: float | None) -> None:
+        if value is not None and value < 0:
+            raise ValueError(
+                f"The run_time of ZoomOut cannot be negative. The given value was"
+                f" {value}."
+            )
+        self._own_run_time = value
+
+    @property
+    def rate_func(self) -> Callable[[float], float]:
+        own = self._own_rate_func
+        return self.zoom.rate_func if own is None else own
+
+    @rate_func.setter
+    def rate_func(self, value: Callable[[float], float] | None) -> None:
+        self._own_rate_func = value
+
+    def _setup_scene(self, scene: Scene) -> None:
+        from arachne.camera.moving_camera import MovingCamera
+
+        camera = scene.camera
+        if not isinstance(camera, MovingCamera) or camera.frame is not self.mobject:
+            raise ValueError(
+                "ZoomOut moves the scene's camera's frame back, and only a moving"
+                " camera has one: make the scene a MovingCameraScene, and return"
+                " from a ZoomInto of that camera's frame"
+            )
+        self._scene = weakref.ref(scene)
+        super()._setup_scene(scene)
+
+    def begin(self) -> None:
+        zoom, frame = self.zoom, self.mobject
+        if not hasattr(zoom, "_from_points"):
+            raise ValueError(
+                "ZoomOut returns from a played ZoomInto, and this one was never"
+                " played: play the ZoomInto first"
+            )
+        height, centre = zoom._height(1.0), zoom._center(1.0)
+        tolerance = RETURN_TOLERANCE * height
+        moved = max(
+            abs(float(frame.height) - height),
+            float(np.linalg.norm(frame.get_center() - centre)),
+        )
+        if moved > tolerance:
+            raise ValueError(
+                "ZoomOut returns the camera's frame from where its ZoomInto left it,"
+                f" {height:.4g} tall about {np.round(centre, 4).tolist()}, but it is"
+                f" {float(frame.height):.4g} tall about"
+                f" {np.round(frame.get_center(), 4).tolist()}: return from an inner"
+                " zoom before an outer one, and move the camera only after the"
+                " return"
+            )
+        scene = self._scene() if self._scene is not None else None
+        if scene is not None:
+            present = {id(m) for m in scene.get_mobject_family_members()}
+            for family, _, _ in zoom._fading:
+                if id(family[0]) not in present:
+                    raise ValueError(
+                        f"a {type(family[0]).__name__} the ZoomInto faded has left"
+                        " the scene: ZoomOut brings back each piece its ZoomInto"
+                        " faded, so keep it in the scene until the return"
+                    )
+        super().begin()
+
+    def interpolate_mobject(self, alpha: float) -> None:
+        # Eased once, for the frame and every fade alike; the move-in's share.
+        share = 1.0 - self.get_sub_alpha(alpha, 0, 1)
+        zoom, frame = self.zoom, self.mobject
+        if share == 0.0:
+            # Exactly where the move-in began.
+            frame.points = zoom._from_points
+        else:
+            frame.scale_to_fit_height(zoom._height(share))
+            frame.move_to(zoom._center(share))
+        inside = zoom.block.inside
+        if inside is not None:
+            shown_share = _ramp(share, zoom._fade_in)
+            for member, shown in zip(
+                inside.get_family(), zoom.block.inside_shown, strict=True
+            ):
+                set_opacities(member, scaled(shown, shown_share))
+        for family, faded, window in zoom._fading:
+            keep = 1.0 - _ramp(share, window)
             for member, opacities in zip(family, faded, strict=True):
                 set_opacities(member, scaled(opacities, keep))
 
