@@ -286,7 +286,11 @@ class Pose(Animation):
                 },
                 eased=True,
             )
-        values = np.array(rig._values, dtype=float)
+        from .timing import true_value
+
+        # The parameters it does not move, as they are true: under stepped
+        # timing the rig holds the drawing on display between two boundaries.
+        values = np.array(true_value(rig, "_values"), dtype=float)
         values[self._indices] = blended
         rig._values = _values(values)
 

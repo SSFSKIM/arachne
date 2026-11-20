@@ -1273,6 +1273,36 @@ def clock_of(scene: Scene) -> TimingClock | None:
     return held() if held is not None else None
 
 
+#: What :func:`true_value` reads off a state that does not hold the attribute.
+_ABSENT = object()
+
+
+def true_value(mobject: Mobject, name: str) -> Any:
+    """``mobject``'s attribute ``name`` as it is true. Between two
+    boundaries a declared family holds the drawing on display, and an
+    animation runs before the clock puts back what is true: an engine
+    animation that writes part of a value (a pose, the parameters it moves)
+    builds on this, not on what it finds. It is what ``mobject`` holds,
+    unless that is what the running scene's clock installed there, which
+    no writer has replaced since; then it is what the clock holds as true.
+    """
+    value = getattr(mobject, name)
+    scene = _running_scene()
+    clock = clock_of(scene) if scene is not None else None
+    if clock is None:
+        return value
+    key = id(mobject)
+    for illustration in clock.illustrations:
+        installed = illustration.installed.get(key)
+        if installed is None or installed[0] is not mobject:
+            continue
+        true = illustration.true.get(key)
+        if installed[1].get(name, _ABSENT) is not value or true is None:
+            return value
+        return true[1].get(name, value)
+    return value
+
+
 def _running_scene() -> Scene | None:
     from ..timeline.recorder import running
 
