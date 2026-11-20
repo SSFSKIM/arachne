@@ -352,7 +352,6 @@ fn an_effect_out_of_its_range_refuses_the_frame_whole() {
     let refused = [
         Layer::picture(key).with_blur(-1.0),
         Layer::picture(key).with_blur(f64::NAN),
-        Layer::picture(key).with_mask(small, 2.0, false),
         Layer::picture(key).with_mask(key, f64::INFINITY, false),
     ];
     for layer in refused {
@@ -364,6 +363,14 @@ fn an_effect_out_of_its_range_refuses_the_frame_whole() {
             "{layer:?}"
         );
     }
+    // A mask of another size than the frame's.
+    assert!(matches!(
+        c.draw(&Frame::new(
+            CLEAR,
+            vec![Layer::picture(key).with_mask(small, 2.0, false)]
+        )),
+        Err(DrawError::SizeMismatch(_))
+    ));
     // A sigma that reaches past the frame's longer side: 161 reaches 483 px, past 480.
     let sigma = f64::from(w.max(h) / 3 + 1);
     assert!(matches!(

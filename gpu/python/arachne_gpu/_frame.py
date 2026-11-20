@@ -31,14 +31,24 @@ class Quad:
 
 @dataclass(frozen=True)
 class Window:
-    """Another stack, ``frame``, composed at the frame's size and placed at four corners as a
-    :class:`Quad` is. Windows nest at most four deep. Its stack is drawn on 8-bit integers as any
-    frame is and its texels are copied, not filtered, so it rounds nothing.
+    """Another stack, ``frame``, composed as a frame of its own of ``size`` (width, height) pixels,
+    or of the size of the frame holding it when ``size`` is None, then placed at four corners as
+    a :class:`Quad` is. Its pictures and masks are of its size (others raise
+    :class:`~arachne_gpu.SizeMismatch`), and its effects run at its size, so they stay inside
+    it. Windows nest at most four deep, each with its own size.
+
+    ``resampling`` is PIL's value: nearest (0) copies texels; bilinear (2) weights the four
+    texels round each pixel's centre in fixed point, with transparent texels past the window's
+    edge, so the edge is antialiased and a window moved by a fraction of a pixel moves by that
+    fraction. At whole-pixel corners spanning exactly ``size``, both copy the frame texel for
+    texel. A window off the pixel grid is given the size of its rectangle rounded to whole pixels
+    (at least 1) and placed at its true corners, bilinear.
     """
 
     frame: Frame
     corners: Sequence[tuple[float, float]]
     resampling: int
+    size: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)

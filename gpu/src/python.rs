@@ -55,6 +55,7 @@ fn draw_error(py: Python<'_>, err: DrawError) -> PyErr {
         DrawError::UnknownKey(_) => PyKeyError::new_err(err.to_string()),
         DrawError::Unsupported(reason) => python_error(py, "Unsupported", (reason,)),
         DrawError::Invalid(_) => PyValueError::new_err(err.to_string()),
+        DrawError::SizeMismatch(what) => python_error(py, "SizeMismatch", (what,)),
         DrawError::Device(_) => PyRuntimeError::new_err(err.to_string()),
     }
 }
@@ -167,10 +168,18 @@ fn frame_of(frame: &Bound<'_, PyAny>, nesting: usize) -> PyResult<Frame> {
                     (format!("windows nested deeper than {MAX_NESTING}"),),
                 ));
             }
+            let size = match optional(&source, "size")? {
+                Some(size) => {
+                    let (width, height): (u32, u32) = size.extract()?;
+                    Some([width, height])
+                }
+                None => None,
+            };
             Source::Window {
                 frame: Box::new(frame_of(&source.getattr("frame")?, nesting + 1)?),
                 corners: corners_of(&source, "a window")?,
                 resampling: source.getattr("resampling")?.extract()?,
+                size,
             }
         } else {
             return Err(PyTypeError::new_err(

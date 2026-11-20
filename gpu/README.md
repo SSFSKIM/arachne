@@ -59,8 +59,29 @@ stacked as above.
   a pixel may be partly kept though it is farther than `feather_px` from the edge in a straight
   line: the feather reaches a square, as the comparator's grown footprint does. `invert` keeps
   what it would remove.
-- **Window** (`Window(frame, corners, resampling)`): another stack, composed at the frame's size and
-  placed at four corners as a quad is. Windows nest at most four deep.
+- **Window** (`Window(frame, corners, resampling, size=None)`): another stack, composed as a frame
+  of its own of `size` (width, height) pixels, then placed at four corners as a quad is. With no
+  `size` it is the size of the frame holding it, as every window was before windows had sizes.
+  Each level is its own frame: a window's pictures and masks are of its size, its blur and
+  feather run on textures of its size (so nothing of them reaches past its rectangle, and a blur
+  may reach no farther than its longer side), and quads inside it are placed in its pixels.
+  Windows nest at most four deep, each with its own size. A picture or a mask of another size
+  than the frame it is in, the outermost frame or a window, refuses the frame whole with
+  `SizeMismatch` (a `ValueError`; `DrawError::SizeMismatch` in Rust), for example:
+  `layer 1: in its window, layer 0: a picture of 480 x 270 in a frame of 160 x 90: a frame's
+  pictures and masks are of its size, and a window's frame is of the window's size`.
+
+  A window is resampled by nearest (PIL's 0), its texels copied, or by bilinear (PIL's 2): each
+  pixel takes the four texels round its centre, weighted by its offset from them in 8 fractional
+  bits a side, with transparent texels past the window's edge, and is rounded half up to 8 bits
+  once. So a bilinear window's edge is antialiased over the pixels its rectangle reaches, and a
+  window moved by a fraction of a pixel moves by that fraction rather than by whole pixels. At
+  whole-pixel corners spanning exactly `size`, either resampling copies the window's frame texel
+  for texel: it is that frame drawn alone at its size, byte for byte. A quad keeps nearest only.
+  For a window shown off the pixel grid (moving or growing), the caller composes it at the size of
+  its true rectangle rounded to whole pixels, at least 1, and places it at the true fractional
+  corners, bilinear: its content then moves with its carrier with no step larger than the
+  carrier's own.
 
 **Arithmetic.** Three parts, and what each promises across adapters:
 
@@ -70,8 +91,10 @@ stacked as above.
 - *Pixel filtering and the final rounding*, on the device, in integers: identical on every
   adapter.
 - *Placement* of a quad or a window, on the device, in floating point: which already-rounded texel
-  a pixel copies may differ at a texel's or the outline's edge between adapters, and is not
-  promised identical. It rounds no value.
+  a pixel copies, or for a bilinear window which four texels and which 8-bit offset it weights
+  them by, may differ at a texel's or the outline's edge between adapters, and is not promised
+  identical. Nearest rounds no value; bilinear rounds its weighted sum to 8 bits once, in
+  integers.
 
 The row pass reads the 8-bit placed layer and keeps 8 fractional bits; the column pass reads those
 32-bit values and keeps 8 fractional bits again, so the second pass reads no 8-bit rounding of the
@@ -81,8 +104,19 @@ scales the 8-bit result as it scales any layer. A layer whose effects do nothing
 depth at the focus with no blur of its own) is stacked as a plain layer, its bytes untouched.
 
 A frame is refused whole for an effect out of range: a negative or non-finite sigma, feather or
-aperture, a non-finite depth, a mask of another size (`ValueError`); a blur or feather that reaches
-past the frame's longer side, or windows nested deeper than four (`Unsupported`).
+aperture, a non-finite depth, a window size with a side of 0 or past the device's limit
+(`ValueError`); a picture or mask of another size than its frame (`SizeMismatch`, a
+`ValueError`); a blur or feather that reaches past its frame's longer side, windows nested deeper
+than four, or a resampling other than nearest for a quad and nearest or bilinear for a window
+(`Unsupported`).
+
+**Working textures.** A frame is stacked in two working textures of its size, and a layer's
+effect works in four more; each window level and size has its own. A draw keeps exactly the
+working textures its frame uses: as it starts, those of a level and size it does not use are
+freed, then those it lacks are made. So a window whose size changes every frame (an inset growing
+on screen) holds at most one frame's working textures at any moment, and once a frame no longer
+shows it, its size's textures are gone; the live set is always what the last frame drew with. A
+refused frame changes none. `arachne_gpu::testing::working_textures` counts them for tests.
 
 ## The object map
 

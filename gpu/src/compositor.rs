@@ -7,7 +7,7 @@ use std::fmt;
 use wgpu::util::DeviceExt;
 
 use crate::device::{self, AdapterSummary, Door, ForkedProcess, NoGpu, Opened, Pin};
-use crate::frame::Frame;
+use crate::frame::{BILINEAR, Frame};
 use crate::keys::{Key, image_key, painted_from_straight, painted_key};
 use crate::object_map::{Footprint, from_coverage};
 use crate::plan::{Canvas, Effect, Placed, Planned, Stack, plan};
@@ -28,6 +28,9 @@ pub enum DrawError {
     Unsupported(String),
     /// Malformed input: a key that is not its bytes' key, a size that does not fit.
     Invalid(String),
+    /// A picture or a mask that is not of the size of the frame it is in: the outermost frame's
+    /// size, or a window's own.
+    SizeMismatch(String),
     /// The device failed.
     Device(String),
 }
@@ -39,7 +42,7 @@ impl fmt::Display for DrawError {
                 write!(f, "no texture is held under the key {}", hex(key))
             }
             DrawError::Unsupported(what) => write!(f, "render.unsupported: {what}"),
-            DrawError::Invalid(what) => f.write_str(what),
+            DrawError::Invalid(what) | DrawError::SizeMismatch(what) => f.write_str(what),
             DrawError::Device(what) => write!(f, "the device failed: {what}"),
         }
     }
@@ -105,7 +108,8 @@ struct LayerUniform {
     opacity: u32,
     mode: u32,
     bit: u32,
-    padding: [u32; 2],
+    resampling: u32,
+    padding: u32,
 }
 
 // A layer pass's kinds.
@@ -128,7 +132,8 @@ impl LayerUniform {
             opacity: 255,
             mode: OVER,
             bit: 0,
-            padding: [0; 2],
+            resampling: 0,
+            padding: 0,
         }
     }
 
@@ -158,8 +163,9 @@ struct FinishUniform {
     padding: [u32; 2],
 }
 
-/// The textures one level of windows draws with: two accumulators a stack ping-pongs between,
-/// and, once a layer at this level carries an effect, that effect's working textures.
+/// The textures the stacks of one level of windows and one size draw with: two accumulators a
+/// stack ping-pongs between, and, when a layer of such a stack carries an effect, that effect's
+/// working textures.
 struct Level {
     accumulators: [Texture; 2],
     effects: Option<Scratch>,
@@ -188,8 +194,11 @@ pub struct Compositor {
     compose: Pipeline,
     blur: Pipeline,
     finish: Pipeline,
-    /// Level 0 draws the frame; level n + 1 the windows of level n.
-    levels: Vec<Level>,
+    /// The working textures, by level and size: level 0 draws the frame at its size; level n + 1
+    /// the windows of level n, each at its own. A draw keeps exactly those its frame uses.
+    levels: HashMap<(usize, [u32; 2]), Level>,
+    /// The most working textures held at once since the compositor opened.
+    peak_working: usize,
     readback: wgpu::Buffer,
     padded_row: u32,
 }
@@ -233,7 +242,8 @@ impl Compositor {
         let compose = pipeline(&device, &compose, "fs", FORMAT);
         let blur = pipeline(&device, &effects, "blur_pass", WIDE);
         let finish = pipeline(&device, &effects, "finish_pass", FORMAT);
-        let level = Level::new(&device, width, height);
+        let level = Level::new(&device, [width, height]);
+        let peak_working = level.textures();
         let readback = readback_buffer(&device, readback_size);
         Ok(Compositor {
             device,
@@ -248,7 +258,8 @@ impl Compositor {
             compose,
             blur,
             finish,
-            levels: vec![level],
+            levels: HashMap::from([((0, [width, height]), level)]),
+            peak_working,
             readback,
             padded_row,
         })
@@ -385,33 +396,57 @@ impl Compositor {
         self.held(key).expect("a key the plan found is held")
     }
 
-    /// The frame checked whole and resolved, and every working texture it needs made.
+    /// The frame checked whole and resolved, and its working textures made ready: those of a
+    /// level and size it does not use are freed first, then those it lacks are made. So the
+    /// working textures held are always those of one frame, the last one planned; a refused
+    /// frame changes none.
     fn prepare(&mut self, frame: &Frame) -> Result<Stack, DrawError> {
         let size_of = |key: &Key| self.held(key).map(|t| (t.width, t.height));
         let canvas = Canvas {
             width: self.width,
             height: self.height,
+            max_dimension: self.max_dimension,
             size_of: &size_of,
         };
         let stack = plan(frame, &canvas, 0)?;
-        self.make_room(&stack, 0);
+        let mut used = HashMap::new();
+        uses(&stack, 0, [self.width, self.height], &mut used);
+        self.levels.retain(|at, level| match used.get(at).or(Some(&true)) {
+            Some(&effects) => {
+                if !effects {
+                    level.effects = None;
+                }
+                true
+            }
+            None => false,
+        });
+        let device = &self.device;
+        for (&(nesting, size), &effects) in &used {
+            let level = self
+                .levels
+                .entry((nesting, size))
+                .or_insert_with(|| Level::new(device, size));
+            if effects && level.effects.is_none() {
+                level.effects = Some(Scratch::new(device, size));
+            }
+            let held: usize = self.levels.values().map(Level::textures).sum();
+            self.peak_working = self.peak_working.max(held);
+        }
         Ok(stack)
     }
 
-    /// Makes the working textures `stack` needs at `level`, and its windows' one level down.
-    fn make_room(&mut self, stack: &Stack, level: usize) {
-        if self.levels.len() == level {
-            self.levels
-                .push(Level::new(&self.device, self.width, self.height));
-        }
-        if self.levels[level].effects.is_none() && stack.layers.iter().any(|l| l.effect.is_some()) {
-            self.levels[level].effects = Some(Scratch::new(&self.device, self.width, self.height));
-        }
-        for layer in &stack.layers {
-            if let Placed::Window { stack, .. } = &layer.placed {
-                self.make_room(stack, level + 1);
-            }
-        }
+    /// The working textures held now, and the most held at once since the compositor opened
+    /// (`testing::working_textures`).
+    pub(crate) fn working_textures(&self) -> (usize, usize) {
+        let held: usize = self.levels.values().map(Level::textures).sum();
+        (held, self.peak_working)
+    }
+
+    /// The working textures of `level` at `size`, which the frame being drawn was prepared with.
+    fn level(&self, level: usize, size: [u32; 2]) -> &Level {
+        self.levels
+            .get(&(level, size))
+            .expect("a frame is prepared before it is drawn")
     }
 
     /// Draws the frame: tight RGBA8 rows, top first, painted. The whole frame is checked before
@@ -452,7 +487,7 @@ impl Compositor {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let drawn = self.encode_stack(&mut encoder, stack, 0);
+        let drawn = self.encode_stack(&mut encoder, stack, 0, [self.width, self.height]);
         self.copy_out(&mut encoder, drawn, buffer);
         self.queue.submit(Some(encoder.finish()))
     }
@@ -474,7 +509,8 @@ impl Compositor {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            let accumulators = &self.levels[0].accumulators;
+            let frame_size = [self.width, self.height];
+            let accumulators = &self.level(0, frame_size).accumulators;
             let [first, second] = accumulators;
             self.layer_pass(
                 &mut encoder,
@@ -485,7 +521,8 @@ impl Compositor {
             );
             let mut current = 0;
             for (bit, (_, layer, _)) in batch.iter().enumerate() {
-                let Some((source, mut uniform)) = self.placed(&mut encoder, &layer.placed, 0)
+                let Some((source, mut uniform)) =
+                    self.placed(&mut encoder, &layer.placed, 0, frame_size)
                 else {
                     continue;
                 };
@@ -511,14 +548,16 @@ impl Compositor {
         Ok(footprints)
     }
 
-    /// Records a stack's passes with `level`'s accumulators and returns the one it ends in.
+    /// Records the passes of a stack of `size` with the accumulators of `level` at that size, and
+    /// returns the one it ends in.
     fn encode_stack(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         stack: &Stack,
         level: usize,
+        size: [u32; 2],
     ) -> &Texture {
-        let accumulators = &self.levels[level].accumulators;
+        let accumulators = &self.level(level, size).accumulators;
         let [first, second] = accumulators;
         self.layer_pass(
             encoder,
@@ -529,13 +568,13 @@ impl Compositor {
         );
         let mut current = 0;
         for layer in &stack.layers {
-            let Some((placed, uniform)) = self.placed(encoder, &layer.placed, level) else {
+            let Some((placed, uniform)) = self.placed(encoder, &layer.placed, level, size) else {
                 continue;
             };
             let (source, mut uniform) = match &layer.effect {
                 Some(effect) => {
-                    let finished = self.encode_effect(encoder, level, placed, uniform, effect);
-                    let size = [self.width, self.height];
+                    let finished =
+                        self.encode_effect(encoder, level, size, placed, uniform, effect);
                     (finished, LayerUniform::new(PICTURE, [[0.0; 4]; 3], size))
                 }
                 None => (placed, uniform),
@@ -548,15 +587,16 @@ impl Compositor {
         &accumulators[current]
     }
 
-    /// The texture a layer draws from and the uniform that places it; `None` when it places
-    /// nothing. A window's stack is composed first, one level down.
+    /// The texture a layer of a stack of `frame_size` at `level` draws from and the uniform that
+    /// places it; `None` when it places nothing. A window's stack is composed first, one level
+    /// down, at the window's size.
     fn placed(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         placed: &Placed,
         level: usize,
+        frame_size: [u32; 2],
     ) -> Option<(&Texture, LayerUniform)> {
-        let frame_size = [self.width, self.height];
         match placed {
             Placed::Nothing => None,
             Placed::Picture(key) => Some((
@@ -568,26 +608,35 @@ impl Compositor {
                 let size = [texture.width, texture.height];
                 Some((texture, LayerUniform::new(QUAD, *rows, size)))
             }
-            Placed::Window { stack, rows } => {
-                let composed = self.encode_stack(encoder, stack, level + 1);
-                Some((composed, LayerUniform::new(QUAD, *rows, frame_size)))
+            Placed::Window {
+                stack,
+                rows,
+                size,
+                resampling,
+            } => {
+                let composed = self.encode_stack(encoder, stack, level + 1, *size);
+                let mut uniform = LayerUniform::new(QUAD, *rows, *size);
+                uniform.resampling = u32::from(*resampling == BILINEAR);
+                Some((composed, uniform))
             }
         }
     }
 
-    /// Records one layer's effects with `level`'s working textures and returns the finished layer,
-    /// a picture of the frame's size in 8 bits. The layer is placed alone, blurred along rows then
-    /// columns into wide values, multiplied by its mask's alpha (feathered the same way), and
-    /// rounded to 8 bits once (`effects.wgsl`).
+    /// Records one layer's effects with the working textures of `level` at `size`, the size of
+    /// its stack, and returns the finished layer, a picture of that size in 8 bits. The layer is
+    /// placed alone, blurred along rows then columns into wide values, multiplied by its mask's
+    /// alpha (feathered the same way), and rounded to 8 bits once (`effects.wgsl`).
     fn encode_effect(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         level: usize,
+        size: [u32; 2],
         source: &Texture,
         mut place: LayerUniform,
         effect: &Effect,
     ) -> &Texture {
-        let scratch = self.levels[level]
+        let scratch = self
+            .level(level, size)
             .effects
             .as_ref()
             .expect("room is made for every effect before it is drawn");
@@ -869,7 +918,7 @@ fn working(device: &wgpu::Device, width: u32, height: u32, format: wgpu::Texture
 }
 
 impl Level {
-    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    fn new(device: &wgpu::Device, [width, height]: [u32; 2]) -> Self {
         Level {
             accumulators: [
                 working(device, width, height, FORMAT),
@@ -878,10 +927,27 @@ impl Level {
             effects: None,
         }
     }
+
+    /// How many textures it holds: two accumulators, and four for an effect.
+    fn textures(&self) -> usize {
+        2 + if self.effects.is_some() { 4 } else { 0 }
+    }
+}
+
+/// The levels and sizes whose working textures `stack`, drawn at `level` and `size`, uses, each
+/// with whether a layer of a stack there carries an effect.
+fn uses(stack: &Stack, level: usize, size: [u32; 2], used: &mut HashMap<(usize, [u32; 2]), bool>) {
+    let effects = used.entry((level, size)).or_insert(false);
+    *effects |= stack.layers.iter().any(|l| l.effect.is_some());
+    for layer in &stack.layers {
+        if let Placed::Window { stack, size, .. } = &layer.placed {
+            uses(stack, level + 1, *size, used);
+        }
+    }
 }
 
 impl Scratch {
-    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    fn new(device: &wgpu::Device, [width, height]: [u32; 2]) -> Self {
         Scratch {
             layer: working(device, width, height, FORMAT),
             wide: [

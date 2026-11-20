@@ -3,7 +3,7 @@
 
 use crate::compositor::DrawError;
 use crate::effects::{blur_reach, feather_reach, kernel, resolved_sigma};
-use crate::frame::{Focus, Frame, Layer, NEAREST, Source};
+use crate::frame::{BILINEAR, Focus, Frame, Layer, NEAREST, Source};
 use crate::keys::Key;
 use crate::placement::{Placement, place};
 
@@ -39,10 +39,13 @@ pub(crate) enum Placed {
         key: Key,
         rows: [[f32; 4]; 3],
     },
-    /// A stack composed at the frame's size, placed as a quad.
+    /// A stack composed as a frame of `size`, placed as a quad, resampled by PIL's `resampling`
+    /// value.
     Window {
         stack: Box<Stack>,
         rows: [[f32; 4]; 3],
+        size: [u32; 2],
+        resampling: u8,
     },
 }
 
@@ -58,15 +61,39 @@ pub(crate) struct Mask {
     pub invert: bool,
 }
 
-/// What planning needs of the compositor: the frame's size, and the size of the texture held
-/// under a key, if one is.
+/// What planning needs of the compositor: the size of the frame being planned, the device's
+/// largest texture side, and the size of the texture held under a key, if one is.
 pub(crate) struct Canvas<'a> {
     pub width: u32,
     pub height: u32,
+    pub max_dimension: u32,
     pub size_of: &'a dyn Fn(&Key) -> Option<(u32, u32)>,
 }
 
-impl Canvas<'_> {
+impl<'a> Canvas<'a> {
+    /// The canvas of a window's frame: this one at `size`.
+    fn of_size(&self, size: [u32; 2]) -> Canvas<'a> {
+        Canvas {
+            width: size[0],
+            height: size[1],
+            max_dimension: self.max_dimension,
+            size_of: self.size_of,
+        }
+    }
+
+    /// Refuses a picture or a mask that is not of this frame's size.
+    fn check_size(&self, index: usize, what: &str, key: &Key) -> Result<(), DrawError> {
+        let (width, height) = self.held(key)?;
+        if (width, height) != (self.width, self.height) {
+            return Err(DrawError::Invalid(format!(
+                "layer {index}: a {what} of {width} x {height} in a frame of {} x {}: a frame's \
+                 pictures and masks are of its size, and a window's frame is of the window's size",
+                self.width, self.height
+            )));
+        }
+        Ok(())
+    }
+
     fn held(&self, key: &Key) -> Result<(u32, u32), DrawError> {
         (self.size_of)(key).ok_or(DrawError::UnknownKey(*key))
     }
@@ -109,17 +136,10 @@ fn plan_layer(
 ) -> Result<Planned, DrawError> {
     let invalid = |what: String| DrawError::Invalid(format!("layer {index}: {what}"));
     let unsupported = |what: String| DrawError::Unsupported(format!("layer {index}: {what}"));
-    let frame_size = (canvas.width, canvas.height);
 
     let placed = match &layer.source {
         Source::Picture { key } => {
-            let size = canvas.held(key)?;
-            if size != frame_size {
-                return Err(invalid(format!(
-                    "a picture of {} x {} in a frame of {} x {}",
-                    size.0, size.1, canvas.width, canvas.height
-                )));
-            }
+            canvas.check_size(index, "picture", key)?;
             Placed::Picture(*key)
         }
         Source::Quad {
@@ -128,7 +148,9 @@ fn plan_layer(
             resampling,
         } => {
             let (width, height) = canvas.held(key)?;
-            match placement(corners, *resampling, width, height).map_err(|e| e.labelled(index))? {
+            match placement(corners, *resampling, &[NEAREST], width, height)
+                .map_err(|e| e.labelled(index))?
+            {
                 Some(rows) => Placed::Quad { key: *key, rows },
                 None => Placed::Nothing,
             }
@@ -137,23 +159,39 @@ fn plan_layer(
             frame,
             corners,
             resampling,
+            size,
         } => {
             if nesting >= MAX_NESTING {
                 return Err(unsupported(format!(
                     "windows nested deeper than {MAX_NESTING}"
                 )));
             }
-            let stack = plan(frame, canvas, nesting + 1).map_err(|err| match err {
-                DrawError::Invalid(what) => invalid(format!("in its window, {what}")),
-                DrawError::Unsupported(what) => unsupported(format!("in its window, {what}")),
-                other => other,
-            })?;
-            match placement(corners, *resampling, canvas.width, canvas.height)
+            let _ = size;
+            let size = [canvas.width, canvas.height];
+            let max = canvas.max_dimension;
+            if !size.iter().all(|side| (1..=max).contains(side)) {
+                return Err(invalid(format!(
+                    "a window of {} x {} does not fit this device (1 to {max} a side)",
+                    size[0], size[1]
+                )));
+            }
+            let stack =
+                plan(frame, &canvas.of_size(size), nesting + 1).map_err(|err| match err {
+                    DrawError::Invalid(what) => invalid(format!("in its window, {what}")),
+                    DrawError::Unsupported(what) => unsupported(format!("in its window, {what}")),
+                    DrawError::SizeMismatch(what) => {
+                        DrawError::SizeMismatch(format!("layer {index}: in its window, {what}"))
+                    }
+                    other => other,
+                })?;
+            match placement(corners, *resampling, &[NEAREST], size[0], size[1])
                 .map_err(|e| e.labelled(index))?
             {
                 Some(rows) => Placed::Window {
                     stack: Box::new(stack),
                     rows,
+                    size,
+                    resampling: *resampling,
                 },
                 None => Placed::Nothing,
             }
@@ -190,13 +228,7 @@ fn plan_layer(
     let mask = match &layer.mask {
         None => None,
         Some(mask) => {
-            let size = canvas.held(&mask.key)?;
-            if size != frame_size {
-                return Err(invalid(format!(
-                    "a mask of {} x {} in a frame of {} x {}",
-                    size.0, size.1, canvas.width, canvas.height
-                )));
-            }
+            canvas.check_size(index, "mask", &mask.key)?;
             let feather = mask.feather_px;
             if !(feather.is_finite() && feather >= 0.0) {
                 return Err(invalid(format!(
@@ -253,18 +285,26 @@ impl Unplaceable {
 }
 
 /// The rows placing a `width` x `height` texture at `corners`, or `None` where the corners have no
-/// area.
+/// area. A quad is resampled by nearest only; a window by nearest or bilinear (`drawn`).
 fn placement(
     corners: &[[f64; 2]; 4],
     resampling: u8,
+    drawn: &[u8],
     width: u32,
     height: u32,
 ) -> Result<Option<[[f32; 4]; 3]>, Unplaceable> {
-    if resampling != NEAREST {
-        return Err(Unplaceable::Unsupported(format!(
-            "resampling {resampling} (PIL's value); this build resamples by nearest ({NEAREST}) \
-             only"
-        )));
+    if !drawn.contains(&resampling) {
+        return Err(Unplaceable::Unsupported(if drawn == [NEAREST] {
+            format!(
+                "resampling {resampling} (PIL's value); this build resamples a quad by nearest \
+                 ({NEAREST}) only"
+            )
+        } else {
+            format!(
+                "resampling {resampling} (PIL's value); this build resamples a window by nearest \
+                 ({NEAREST}) or bilinear ({BILINEAR})"
+            )
+        }));
     }
     if corners.iter().flatten().any(|c| !c.is_finite()) {
         return Err(Unplaceable::Invalid("the corners are not finite".into()));
@@ -295,6 +335,7 @@ mod tests {
         let canvas = Canvas {
             width: 100,
             height: 50,
+            max_dimension: 1000,
             size_of: &sizes,
         };
         plan(frame, &canvas, 0)
@@ -365,7 +406,10 @@ mod tests {
         assert_invalid(one(Layer::picture(PICTURE).with_depth(f64::INFINITY)));
         assert_invalid(one(Layer::picture(PICTURE).with_mask(PICTURE, -2.0, false)));
         // A mask must be a picture of the frame's size, and held.
-        assert_invalid(one(Layer::picture(PICTURE).with_mask(SMALL, 2.0, false)));
+        assert!(matches!(
+            one(Layer::picture(PICTURE).with_mask(SMALL, 2.0, false)),
+            Err(DrawError::SizeMismatch(_))
+        ));
         assert!(matches!(
             one(Layer::picture(PICTURE).with_mask([9; 16], 2.0, false)),
             Err(DrawError::UnknownKey(_))
@@ -407,5 +451,75 @@ mod tests {
             one(Layer::window(inner, line, NEAREST)).unwrap().placed,
             Placed::Nothing
         ));
+    }
+
+    #[test]
+    fn a_window_is_planned_at_its_own_size_and_its_pictures_and_masks_are_of_it() {
+        let corners = [[10.0, 5.0], [18.0, 5.0], [10.0, 13.0], [18.0, 13.0]];
+        // SMALL is 8 x 8: a window of that size holds it, and so does a window of no stated size
+        // inside it, which takes the size of the frame holding it.
+        let small = Frame::new([0; 4], vec![Layer::picture(SMALL)]);
+        let nested = Frame::new([0; 4], vec![Layer::window(small.clone(), corners, NEAREST)]);
+        for (frame, resampling) in [(small.clone(), NEAREST), (nested, BILINEAR)] {
+            match one(Layer::sized_window(frame, corners, resampling, [8, 8]))
+                .unwrap()
+                .placed
+            {
+                Placed::Window {
+                    size,
+                    resampling: placed_by,
+                    ..
+                } => assert_eq!((size, placed_by), ([8, 8], resampling)),
+                _ => panic!("a window placed nothing"),
+            }
+        }
+        let frame_sized = Frame::new([0; 4], vec![Layer::picture(PICTURE)]);
+        match one(Layer::sized_window(frame_sized, corners, NEAREST, [8, 8])) {
+            Err(DrawError::SizeMismatch(what)) => assert_eq!(
+                what,
+                "layer 0: in its window, layer 0: a picture of 100 x 50 in a frame of 8 x 8: a \
+                 frame's pictures and masks are of its size, and a window's frame is of the \
+                 window's size"
+            ),
+            other => panic!("{:?}", other.err()),
+        }
+        let masked = Frame::new(
+            [0; 4],
+            vec![Layer::picture(SMALL).with_mask(PICTURE, 1.0, false)],
+        );
+        assert!(matches!(
+            one(Layer::sized_window(masked, corners, NEAREST, [8, 8])),
+            Err(DrawError::SizeMismatch(_))
+        ));
+        // With no size it is the frame's, 100 x 50.
+        assert!(matches!(
+            one(Layer::window(small, corners, NEAREST)),
+            Err(DrawError::SizeMismatch(_))
+        ));
+        for size in [[0, 8], [8, 0], [1001, 8]] {
+            let empty = Frame::new([0; 4], vec![]);
+            assert_invalid(one(Layer::sized_window(empty, corners, NEAREST, size)));
+        }
+        // A window's blur reaches no farther than the window's longer side: sigma 3 reaches 9.
+        let blurred = Frame::new([0; 4], vec![Layer::picture(SMALL).with_blur(3.0)]);
+        assert_unsupported(one(Layer::sized_window(blurred, corners, NEAREST, [8, 8])));
+    }
+
+    #[test]
+    fn a_window_is_placed_by_nearest_or_bilinear_and_a_quad_by_nearest() {
+        let corners = [[10.0, 5.0], [18.0, 5.0], [10.0, 13.0], [18.0, 13.0]];
+        let small = || Frame::new([0; 4], vec![Layer::picture(SMALL)]);
+        for resampling in [NEAREST, BILINEAR] {
+            assert!(one(Layer::sized_window(small(), corners, resampling, [8, 8])).is_ok());
+        }
+        for resampling in [1, 3, 4, 5] {
+            assert_unsupported(one(Layer::sized_window(
+                small(),
+                corners,
+                resampling,
+                [8, 8],
+            )));
+        }
+        assert_unsupported(one(Layer::quad(SMALL, corners, BILINEAR)));
     }
 }

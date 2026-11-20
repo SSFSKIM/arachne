@@ -32,3 +32,9 @@ class Unsupported(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(f"{self.code}: {reason}")
         self.reason = reason
+
+
+class SizeMismatch(ValueError):
+    """A frame refused whole: one of its pictures or masks is not of the size of the frame it is
+    in, the outermost frame's or a window's own. Nothing is drawn.
+    """

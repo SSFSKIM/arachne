@@ -200,4 +200,27 @@ mod tests {
             assert_eq!(placed(corners), Placement::Empty, "{corners:?}");
         }
     }
+
+    #[test]
+    fn whole_pixel_corners_spanning_the_textures_size_map_each_pixel_to_its_texel_exactly() {
+        // The rows are then a translation by whole pixels, exact in f32, so a pixel centre
+        // (x + 0.5, y + 0.5) lands on the centre of texel (x - x0, y - y0) under any resampling.
+        for (x0, y0) in [(0, 0), (1, 2), (37, 101), (1279, 719), (4095, 2047)] {
+            for (width, height) in [(1, 1), (3, 7), (49, 31), (160, 90), (1919, 1081), (4096, 1)] {
+                let (x1, y1) = (f64::from(x0 + width), f64::from(y0 + height));
+                let (x0f, y0f) = (f64::from(x0), f64::from(y0));
+                let corners = [[x0f, y0f], [x1, y0f], [x0f, y1], [x1, y1]];
+                let expected = [
+                    [1.0, 0.0, -x0f as f32, 0.0],
+                    [0.0, 1.0, -y0f as f32, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ];
+                assert_eq!(
+                    place(&corners, width, height),
+                    Placement::Mapped(expected),
+                    "({x0}, {y0}), {width} x {height}"
+                );
+            }
+        }
+    }
 }
