@@ -35,8 +35,9 @@ callback; a closed world's rows are the solver's alone, and it is computed
 to the tick a frame reads at any evaluation.
 
 A stay still open when the scene's script has ended is sealed when the
-record's bakes are first read (:meth:`Stay.settle`), through the scene's
-last tick. Before that, its computed rows are readable through the bakes as
+record's bakes are first read (:meth:`Stay.settle`): a closed world's
+through the scene's last tick, an open world's through the last tick its
+callbacks were called for. Before that, its computed rows are readable through the bakes as
 a sealed occurrence's are (:meth:`Stay.row`).
 """
 
@@ -420,11 +421,12 @@ class Stay:
             self.seal()
 
     def seal(self) -> None:
-        """Seal the stay through its last tick (a world still in the scene
-        is computed to the scene's): its rows as the bake's content, each
-        body's mobject bound to its rows.
+        """Seal the stay through its last tick (a closed world still in the
+        scene is computed to the scene's; an open one's callbacks ran while
+        the script did): its rows as the bake's content, each body's mobject
+        bound to its rows.
         """
-        if self.left_at is None:
+        if self.left_at is None and not self.crate.open:
             self.compute_through(self.now_tick())
         crate = self.crate
         count = self.last_tick - self.first_tick + 1
