@@ -287,8 +287,8 @@ _TABLE = (
         "AssetRemote",
         "an asset is named by an address that would be fetched, or its manifest"
         " names a file by anything but a plain path inside the asset's"
-        " directory: an address, an absolute path, a path with .. or one"
-        " through a link",
+        " directory: an address, an absolute path, a path with .. or a"
+        " backslash, or one through a link",
         "Copy the file into the asset's directory and name it by a plain path"
         " relative to it; assets are read from local directories only.",
         ("asset", "file"),

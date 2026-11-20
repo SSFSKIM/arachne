@@ -529,3 +529,158 @@ def test_a_round_or_bevel_join_is_drawn_as_the_file_says(tmp_path, join, drawn):
     )
     (shape,) = Rig(directory).part("needle").submobjects
     assert shape.joint_type is drawn
+
+
+def _needle(body: str) -> str:
+    """A dial needle file holding ``body``."""
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg"'
+        ' xmlns:x="http://example.org/x" viewBox="0 0 300 300">\n'
+        f"  {body}\n"
+        "</svg>\n"
+    )
+
+
+_FILLED = '<path d="M 140 100 L 160 100 L 150 200 Z" fill="#c0392b"/>'
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        '<metadata><rect x="0" y="0" width="300" height="300" fill="#000"/></metadata>',
+        '<x:layer><rect x="0" y="0" width="300" height="300" fill="#000"/></x:layer>',
+        '<title><rect x="0" y="0" width="300" height="300" fill="#000"/></title>',
+    ],
+    ids=["metadata", "other-namespace", "title"],
+)
+def test_a_shape_under_what_draws_nothing_is_not_drawn(tmp_path, hidden):
+    """What the reader passes over (metadata, another namespace's element)
+    is passed over by the drawing too: a part whose only shape sits there
+    draws nothing, and is refused for it.
+    """
+    directory = copied(tmp_path, "dial")
+    needle = directory / "pieces" / "needle.svg"
+    needle.write_text(_needle(hidden))
+    found = refused("asset.unreadable", lambda: Rig(directory))
+    assert "draws nothing" in found.detail["reason"]
+    needle.write_text(_needle(_FILLED + hidden))
+    assert len(Rig(directory).part("needle").submobjects) == 1
+
+
+_RIGHT_ANGLE = (
+    '<path d="M 100 100 L 200 100 L 200 200" fill="none" stroke="#000"'
+    ' stroke-width="2"/>'
+)
+
+
+@pytest.mark.parametrize(
+    "transform",
+    ["scale(2 1)", "skewX(20)", "matrix(1 0.5 0 1 0 0)"],
+)
+@pytest.mark.parametrize("on", ["shape", "group"])
+def test_a_stroke_under_an_uneven_transform_is_refused(tmp_path, transform, on):
+    """SVG strokes before the transform; the engine strokes at one width
+    after it, which is the same drawing only under a similarity.
+    """
+    directory = copied(tmp_path, "dial")
+    shape = (
+        _RIGHT_ANGLE.replace("<path ", f'<path transform="{transform}" ')
+        if on == "shape"
+        else f'<g transform="{transform}">{_RIGHT_ANGLE}</g>'
+    )
+    (directory / "pieces" / "needle.svg").write_text(_needle(shape))
+    found = refused("asset.unreadable", lambda: Rig(directory))
+    reason = found.detail["reason"]
+    assert "the part 'needle'" in reason
+    assert "apply the transform to the path, or stroke after it" in reason
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        f'<g transform="scale(2 1)">{_FILLED}</g>',
+        f'<g transform="rotate(30 150 150) scale(-1 1) translate(-300 0)">{_RIGHT_ANGLE}</g>',
+        f'<g transform="scale(2 1)">{_RIGHT_ANGLE.replace("#000", "none")}</g>',
+    ],
+    ids=["unstroked", "similarity", "stroke-none"],
+)
+def test_a_transform_the_stroke_survives_is_accepted(tmp_path, shape):
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").write_text(_needle(shape))
+    assert Rig(directory).part("needle").submobjects
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        '<circle cx="50" cy="50" r="10" fill="none" stroke="#000" stroke-width="2"'
+        ' transform="rotate(20) scale(3)"/>',
+        '<g transform="scale(3)"><path d="M 30 30 L 60 30 L 60 60" fill="none"'
+        ' stroke="#000" stroke-width="2"/></g>',
+    ],
+    ids=["circle", "path"],
+)
+def test_a_stroke_under_a_scale_is_drawn_as_wide_as_the_file_means(tmp_path, shape):
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").write_text(_needle(shape))
+    (drawn,) = load_asset(directory).rest("needle")
+    assert drawn.get_stroke_width() == pytest.approx(6)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        '<path d="M 100 100 L 200 100 L 200 200 L 100 100" fill="none" stroke="#000"/>',
+        '<polyline points="100 100 200 100 200 200 100 100" fill="none" stroke="#000"/>',
+        '<path d="M 150 100 L 167.364818 198.480775 L 132.635182 198.480775 L 150 100'
+        ' M 10 10 L 20 20" fill="#c0392b" stroke="#000"/>',
+    ],
+    ids=["path", "polyline", "sharp-seam"],
+)
+def test_an_open_stroke_ending_where_it_starts_is_refused(tmp_path, shape):
+    """SVG draws an open subpath with two caps even where its ends meet;
+    the engine joins ends that meet. Refused as what it is, not as a miter.
+    """
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").write_text(_needle(shape))
+    found = refused("asset.unreadable", lambda: Rig(directory))
+    reason = found.detail["reason"]
+    assert "close it with Z, or end it apart from its start" in reason
+    assert "miter" not in reason
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        '<path d="M 100 100 L 200 100 L 200 200 Z" fill="none" stroke="#000"/>',
+        '<path d="M 100 100 L 200 100 L 200 200 L 100 100" fill="#c0392b"/>',
+        '<polygon points="100 100 200 100 200 200 100 100" fill="none" stroke="#000"/>',
+    ],
+    ids=["closed", "unstroked", "polygon"],
+)
+def test_a_closed_or_unstroked_outline_meeting_itself_is_accepted(tmp_path, shape):
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").write_text(_needle(shape))
+    assert Rig(directory).part("needle").submobjects
+
+
+@pytest.mark.parametrize("file", ["pieces\\needle.svg", "pieces/..\\pieces/needle.svg"])
+def test_a_backslash_in_a_file_reference_is_refused(tmp_path, file):
+    """A backslash is a separator on one system and a name's character on
+    another: the reference would name two files.
+    """
+    directory = edited(
+        copied(tmp_path, "dial"), lambda d: d["parts"][1].update(file=file)
+    )
+    found = refused("asset.remote", lambda: Rig(directory))
+    assert found.detail["file"] == file
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs named pipes")
+def test_a_file_that_is_a_pipe_is_unreadable_without_waiting(tmp_path):
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").unlink()
+    os.mkfifo(directory / "pieces" / "needle.svg")
+    found = refused("asset.unreadable", lambda: Rig(directory))
+    assert found.detail["file"] == "pieces/needle.svg"
+    assert "not a regular file" in found.detail["reason"]

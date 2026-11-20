@@ -11,8 +11,11 @@ Coordinates are the file's user units, y down: the asset's canvas. The root's
 ``width`` and ``height`` scale nothing. Shapes are converted by the
 conversion :class:`~arachne.mobject.svg.svg_mobject.SVGMobject` uses, each
 an ordinary :class:`~arachne.mobject.types.vectorized_mobject.VMobject` with
-its file's flat paint and stroke join. A miter join the engine's own miter
-limit would draw otherwise than the file's is refused (:mod:`.joins`).
+its file's flat paint and stroke join, its stroke as wide as the file's
+transform makes it. A stroke the engine would draw otherwise than the file
+means is refused: one under a transform that is not a similarity, an open
+subpath ending where it starts, and a miter join the engine's own miter limit
+cuts otherwise than the file's (:mod:`.joins`).
 """
 
 from __future__ import annotations
@@ -30,11 +33,13 @@ import svgelements as se
 from ..constants import LineJointType
 from ..mobject.svg.svg_mobject import SVGMobject, VMobjectFromSVGPath
 from ..mobject.types.vectorized_mobject import VMobject
-from .joins import ENGINE_LIMIT, disagreeing_corner
-from .svg_check import VIEWPORT, Unreadable, check
+from .joins import ENGINE_LIMIT, disagreeing_corner, engine_closes
+from .svg_check import VIEWPORT, Unreadable, check, prune
 
 #: The miter limit a file means when it states none.
 SVG_LIMIT = 4.0
+#: How far from a similarity a transform may be, relative to its scale.
+_SIMILAR = 1e-9
 #: The joins other than miter the engine strokes as SVG does.
 _JOINS = {"round": LineJointType.ROUND, "bevel": LineJointType.BEVEL}
 
@@ -72,6 +77,7 @@ def read_svg(data: bytes) -> SvgFile:
         root = ET.fromstring(data)
     except ET.ParseError as error:
         raise Unreadable(f"it is not well-formed XML ({error})") from None
+    prune(root)
     check(root)
     view_box = _view_box(root.get("viewBox"))
     for name in VIEWPORT:
@@ -85,11 +91,12 @@ def read_svg(data: bytes) -> SvgFile:
 
 def structure(shapes: Sequence[VMobject]) -> list[list[tuple[int, bool]]]:
     """Each shape's subpaths, in order, as their point counts and whether
-    each is closed: what a stored outline shares with its rest outline.
+    the engine strokes each closed: what a stored outline shares with its
+    rest outline.
     """
     return [
         [
-            (len(subpath), bool(np.allclose(subpath[0], subpath[-1], atol=1e-9)))
+            (len(subpath), engine_closes(shape, subpath))
             for subpath in shape.get_subpaths()
         ]
         for shape in shapes
@@ -159,8 +166,89 @@ def _convert(shape: se.SVGElement) -> VMobject | None:
     SVGMobject.apply_style_to_mobject(mob, shape)
     if shape.apply:
         SVGMobject.handle_transform(mob, shape.transform)
-    _join(mob, shape)
+    if _stroked(mob):
+        _stroke(mob, shape)
     return mob
+
+
+def _stroked(mob: VMobject) -> bool:
+    return mob.get_stroke_width() > 0 and mob.get_stroke_opacity() > 0
+
+
+def _stroke(mob: VMobject, shape: se.Shape) -> None:
+    """Draw ``mob``'s stroke as its file means, or refuse it: SVG strokes a
+    shape in its own coordinates, then transforms it; the engine strokes the
+    transformed outline at one width, closing every subpath that ends where
+    it starts. The two agree under a similarity, at the width it scales
+    the stroke to, on a stroke whose open subpaths end apart from their
+    start, and at joins :func:`_join` accepts.
+    """
+    transform = str(shape.values.get("transform", "")).strip()
+    if not _similarity(se.Matrix(transform)):
+        raise Unreadable(
+            f"a stroke under the transform {transform!r}, which scales unevenly or"
+            " skews; SVG strokes before the transform, the engine at one width"
+            " after it: apply the transform to the path, or stroke after it"
+        )
+    mob.set_stroke(width=shape.implicit_stroke_width)
+    for start, end in _open_subpaths(shape):
+        if mob.consider_points_equals_2d(start, end):
+            raise Unreadable(
+                f"a stroked subpath ends at ({end[0]:g}, {end[1]:g}), where it"
+                " starts, without Z; SVG caps both ends and the engine joins"
+                " them: close it with Z, or end it apart from its start"
+            )
+    _join(mob, shape)
+
+
+def _similarity(matrix: se.Matrix) -> bool:
+    """Whether ``matrix`` keeps shapes: a uniform scale, rotation,
+    reflection and translation, its two columns at right angles and of one
+    length.
+    """
+    a, b, c, d = (float(v) for v in (matrix.a, matrix.b, matrix.c, matrix.d))
+    scale = a * a + b * b + c * c + d * d
+    slack = _SIMILAR * scale
+    return abs(a * c + b * d) <= slack and abs(a * a + b * b - c * c - d * d) <= slack
+
+
+def _open_subpaths(shape: se.Shape) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """The start and end, in canvas coordinates, of each subpath SVG draws
+    open (no ``Z``) that goes anywhere from its start; a closed shape has
+    none.
+    """
+    runs: list[tuple[se.Point, se.Point]] = []
+    if isinstance(shape, se.Path):
+        start: se.Point | None = None
+        end: se.Point | None = None
+        moved = False
+        for segment in shape:
+            if isinstance(segment, se.Move):  # ends an open subpath
+                if moved:
+                    runs.append((start, end))
+                start = end = segment.end
+                moved = False
+            elif isinstance(segment, se.Close):  # the next starts where it did
+                end = start
+                moved = False
+            else:
+                start = segment.start if start is None else start
+                end = segment.end
+                moved = moved or segment.length() > 0
+        if moved:
+            runs.append((start, end))
+    elif isinstance(shape, se.Polyline) and len(shape) > 1:
+        runs.append((shape[0], shape[-1]))
+    matrix = se.Matrix(shape.transform) if shape.apply else se.Matrix()
+    for first, last in runs:
+        yield (
+            np.array(_xy(matrix.point_in_matrix_space(first))),
+            np.array(_xy(matrix.point_in_matrix_space(last))),
+        )
+
+
+def _xy(point: se.Point) -> tuple[float, float]:
+    return (float(point.x), float(point.y))
 
 
 def _join(mob: VMobject, shape: se.SVGElement) -> None:
@@ -171,8 +259,6 @@ def _join(mob: VMobject, shape: se.SVGElement) -> None:
     join = str(shape.values.get("stroke-linejoin", "miter")).strip()
     if join != "miter":
         mob.joint_type = _JOINS[join]
-        return
-    if mob.get_stroke_width() == 0 or mob.get_stroke_opacity() == 0:
         return
     limit = float(str(shape.values.get("stroke-miterlimit", SVG_LIMIT)).strip())
     found = disagreeing_corner(mob, limit)

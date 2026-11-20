@@ -10,7 +10,7 @@ corners whose ratio lies between them. :func:`disagreeing_corner` finds one.
 
 from __future__ import annotations
 
-__all__ = ["ENGINE_LIMIT", "disagreeing_corner"]
+__all__ = ["ENGINE_LIMIT", "disagreeing_corner", "engine_closes"]
 
 import math
 from collections.abc import Iterator
@@ -52,6 +52,13 @@ def disagreeing_corner(
     return None
 
 
+def engine_closes(shape: VMobject, subpath: np.ndarray) -> bool:
+    """Whether the engine strokes ``shape``'s ``subpath`` closed: it does
+    wherever the subpath ends where it starts, by the camera's own test.
+    """
+    return bool(shape.consider_points_equals_2d(subpath[0], subpath[-1]))
+
+
 def _joints(shape: VMobject) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """Each joint's incoming and outgoing unit tangents, and its point."""
     for subpath in shape.get_subpaths():
@@ -63,7 +70,7 @@ def _joints(shape: VMobject) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarra
         ]
         for (_, incoming, point), (outgoing, _, _) in pairwise(curves):
             yield incoming, outgoing, point
-        if curves and shape.consider_points_equals_2d(subpath[0], subpath[-1]):
+        if curves and engine_closes(shape, subpath):
             yield curves[-1][1], curves[0][0], subpath[0, :2]
 
 

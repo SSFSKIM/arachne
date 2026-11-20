@@ -26,6 +26,7 @@ from __future__ import annotations
 __all__ = ["FIXTURES", "Asset", "load_asset"]
 
 import os
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -54,6 +55,9 @@ from .svg_parts import SvgFile, Unreadable, read_svg, structure
 #: for: ``fixture:<name>``.
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 _FIXTURE = "fixture:"
+#: Opens a file's bytes as they are, without waiting for a writer, where
+#: the system has these flags.
+_OPEN = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
 
 
 @dataclass(frozen=True, eq=False)
@@ -162,13 +166,24 @@ def load_asset(ref: str | os.PathLike[str] | Asset) -> Asset:
 
 
 def _bytes(directory: Path, file: str, label: str) -> bytes:
-    """The bytes of the asset's file ``file``; one that cannot be read (a
-    directory, one the process may not read) is ``asset.unreadable``.
+    """The bytes of the asset's file ``file``; one that cannot be read (not
+    a regular file, one the process may not read) is ``asset.unreadable``.
+    It is opened without waiting, so a pipe or a device never blocks the
+    read, and checked to be a regular file before a byte is read.
     """
     try:
-        return (directory / file).read_bytes()
+        handle = os.open(directory / file, _OPEN)
     except OSError as error:
         _unreadable(label, file, f"it cannot be read ({error.strerror or error})")
+    try:
+        if not stat.S_ISREG(os.fstat(handle).st_mode):
+            _unreadable(label, file, "it cannot be read: it is not a regular file")
+        with os.fdopen(handle, "rb", closefd=False) as opened:
+            return opened.read()
+    except OSError as error:
+        _unreadable(label, file, f"it cannot be read ({error.strerror or error})")
+    finally:
+        os.close(handle)
 
 
 def _copies(shapes: tuple[VMobject, ...]) -> tuple[VMobject, ...]:
@@ -236,8 +251,9 @@ def _addressed(reference: str) -> bool:
 
 def _local(file: str, directory: Path, label: str) -> None:
     """Refuse the file ``file`` a manifest names unless it is a plain path in
-    the asset's directory ``directory``: relative, with no ``..`` and through
-    no link, so that the path the manifest writes, the one opened and the
+    the asset's directory ``directory``: relative, with ``/`` alone between
+    names (a backslash separates on one system and not on another), with no
+    ``..`` and through no link, so that the path the manifest writes, the one opened and the
     one the digest names are one file.
     """
     parts = PurePosixPath(file).parts
@@ -247,6 +263,7 @@ def _local(file: str, directory: Path, label: str) -> None:
         or PureWindowsPath(file).is_absolute()
         or PureWindowsPath(file).drive != ""
         or ".." in parts
+        or "\\" in file
     )
     if not outside:
         place = directory
@@ -259,7 +276,8 @@ def _local(file: str, directory: Path, label: str) -> None:
         refuse(
             "asset.remote",
             f"the asset {label} names the file {file}, which is not a plain path"
-            " inside its directory (relative, with no .. and through no link)",
+            " inside its directory (relative, with / alone between names, with no .."
+            " and through no link)",
             asset=label,
             file=file,
         )

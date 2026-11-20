@@ -9,7 +9,9 @@ is refused, not passed over. What it lists:
 - the elements ``svg`` (the root only), ``g``, ``defs``, ``use``, ``path``,
   ``rect``, ``circle``, ``ellipse``, ``line``, ``polyline`` and ``polygon``;
   ``title``, ``desc`` and ``metadata``, whose contents nothing draws, and
-  elements and attributes of other namespaces, which nothing draws either;
+  elements and attributes of other namespaces, which nothing draws either
+  (:func:`prune` removes those elements before the check and the
+  conversion read the tree);
 - each element's own geometry, as plain numbers in user units (``px`` at
   most): no percentage and no other unit, since the canvas is the file's user
   units and its viewport is never applied; a ``d`` or ``points`` that parses
@@ -31,11 +33,11 @@ is refused, not passed over. What it lists:
 
 from __future__ import annotations
 
-__all__ = ["Unreadable", "check"]
+__all__ = ["Unreadable", "check", "prune"]
 
 import math
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from xml.etree import ElementTree as ET
 
 import svgelements as se
@@ -124,18 +126,27 @@ _FIXED: dict[str, str | float] = {
 }
 
 
+def prune(root: ET.Element) -> None:
+    """Remove from ``root``'s tree, in place, every subtree nothing draws:
+    ``title``, ``desc``, ``metadata`` and other namespaces' elements, with
+    all they hold. The check and the conversion then read one tree, so no
+    shape the check passes over is drawn.
+    """
+    for parent in list(root.iter()):
+        for child in list(parent):
+            if _inert(child):
+                parent.remove(child)
+
+
 def check(root: ET.Element) -> None:
-    """Refuse the part file whose tree is ``root`` unless the conversion
-    draws all of it exactly; raises :class:`Unreadable`.
+    """Refuse the part file whose tree, :func:`pruned <prune>`, is ``root``
+    unless the conversion draws all of it exactly; raises
+    :class:`Unreadable`.
     """
     if _local(root.tag) != "svg" or _namespace(root.tag) not in ("", SVG):
         raise Unreadable("its root element is not <svg>")
-    ids = {
-        found
-        for element in _drawn_elements(root)
-        if (found := element.get("id")) is not None
-    }
-    for element in _drawn_elements(root):
+    ids = {found for element in root.iter() if (found := element.get("id")) is not None}
+    for element in root.iter():
         name = _local(element.tag)
         if element is not root and name not in _GEOMETRY:
             raise Unreadable(
@@ -156,15 +167,15 @@ def _namespace(tag: str) -> str:
     return tag[1:].partition("}")[0] if tag.startswith("{") else ""
 
 
-def _drawn_elements(element: ET.Element) -> Iterator[ET.Element]:
-    """``element`` and the SVG elements below it, but those nothing draws."""
-    if not isinstance(element.tag, str) or _namespace(element.tag) not in ("", SVG):
-        return  # a comment, or another namespace's element
-    if _local(element.tag) in _INERT:
-        return
-    yield element
-    for child in element:
-        yield from _drawn_elements(child)
+def _inert(element: ET.Element) -> bool:
+    """Whether nothing in ``element`` is drawn: a comment, another
+    namespace's element, or one of :data:`_INERT`.
+    """
+    return (
+        not isinstance(element.tag, str)
+        or _namespace(element.tag) not in ("", SVG)
+        or _local(element.tag) in _INERT
+    )
 
 
 def _attribute(
