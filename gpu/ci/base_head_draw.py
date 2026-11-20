@@ -112,9 +112,14 @@ def main() -> None:
             session.close()
 
     result["files"] = published(roots)
-    empty = [name for name, frames in result["frames"].items() if not frames]
+    # A warm pass may take every play from the cache and write no frame.
+    empty = [
+        name
+        for name, frames in result["frames"].items()
+        if not frames and not any(found for _, found in result["lookups"][name])
+    ]
     if empty:
-        sys.exit(f"FAIL: no frame rendered from {', '.join(empty)}")
+        sys.exit(f"FAIL: nothing rendered or found in the cache for {', '.join(empty)}")
     out.write_text(json.dumps(result, indent=1))
     hits = sum(
         found for found_list in result["lookups"].values() for _, found in found_list

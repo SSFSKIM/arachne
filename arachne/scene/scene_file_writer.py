@@ -1032,7 +1032,10 @@ class SceneFileWriter:
                     section.get_clean_partial_movie_files(),
                     section_path,
                 )
-                sections_index.append(section.get_dict(self.sections_output_dir))
+                # Read where it was written: staging, until the render ends.
+                found = self.staging.find(section_path)
+                written_in = found.parents[len(Path(section.video).parts) - 1]
+                sections_index.append(section.get_dict(written_in))
         section_index = self.output_plan.section_index
         assert section_index is not None
         with self.staging.path(section_index).open("w") as file:
