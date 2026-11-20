@@ -6,10 +6,10 @@ moves, with a callout on one of its anchors and a readout counting, the rig
 drawn on twelve drawings a second with line boil. Nor does a scene with an
 effect between them change them: here, with no GPU, it answers its states
 and refuses its frames (``tests/effects/test_drawn.py`` draws it on a
-device). A scene of media
-objects runs between them too: here, on a host with no GPU, its states are
-answered and its frames refused (``render.gpu_required``);
-``tests/media/test_drawn.py`` draws it on a device between them.
+device). A scene of media objects runs between them too, and one whose clip
+runs on its clock: here, on a host with no GPU, their states are answered
+and their frames refused (``render.gpu_required``);
+``tests/media/test_drawn.py`` draws them on a device between them.
 """
 
 from __future__ import annotations
@@ -98,10 +98,23 @@ class WithMedia(Scene):
         self.wait(0.25)
 """
 
-#: Opens each old scene, then a scene that used an asset, one with an effect
-#: and one of media objects, then each old scene again, in one process, on a
-#: host with no GPU; prints each opening's routes and frames, and what the
-#: effect and media scenes answered.
+WITH_CLOCK = """\
+from arachne import *
+
+
+class WithClock(Scene):
+    def construct(self):
+        clip = VideoMobject("fixture:numbered-clip")
+        clip.run()
+        self.play(FadeIn(clip), run_time=0.5)
+        clip.loop(rate=-1)
+        self.wait(0.25)
+"""
+
+#: Opens each old scene, then a scene that used an asset, one with an effect,
+#: one of media objects and one whose clip runs on its clock, then each old
+#: scene again, in one process, on a host with no GPU; prints each opening's
+#: routes and frames, and what the effect and media scenes answered.
 PROGRAM = """\
 import hashlib, json, sys
 from arachne.compose import device
@@ -170,14 +183,42 @@ def media_answers():
         session.close()
 
 
+def clock_answers():
+    session = Session.open(f"{directory}/with_clock.py", "WithClock", config=config)
+    try:
+        times = []
+        for t in (0.25, 0.75):
+            state = session.state_at(t)
+            (clip,) = [n for n in state.nodes if n.type == "VideoMobject"]
+            numbers = {q.name: q.value for q in state.quantities[clip.id]}
+            times.append([str(state.as_of), numbers["media.time"]])
+        try:
+            session.frame(0.25)
+        except GpuRequired as refused:
+            frame = refused.code
+        else:
+            frame = "drawn"
+        return {"route": session.route, "times": times, "frame": frame}
+    finally:
+        session.close()
+
+
 fresh = {scene: opened("old.py", scene) for scene in ("OldSvg", "OldImage")}
 asset = opened("with_asset.py", "WithAsset")
 effect = refused("with_effect.py", "WithEffect")
 media = media_answers()
+clock = clock_answers()
 after = {scene: opened("old.py", scene) for scene in ("OldSvg", "OldImage")}
 print(
     json.dumps(
-        {"fresh": fresh, "asset": asset, "effect": effect, "media": media, "after": after}
+        {
+            "fresh": fresh,
+            "asset": asset,
+            "effect": effect,
+            "media": media,
+            "clock": clock,
+            "after": after,
+        }
     )
 )
 """
@@ -204,6 +245,7 @@ def _scenes(directory: Path) -> Path:
     (directory / "with_asset.py").write_text(textwrap.dedent(WITH_ASSET))
     (directory / "with_effect.py").write_text(textwrap.dedent(WITH_EFFECT))
     (directory / "with_media.py").write_text(textwrap.dedent(WITH_MEDIA))
+    (directory / "with_clock.py").write_text(textwrap.dedent(WITH_CLOCK))
     return directory
 
 
@@ -232,5 +274,12 @@ def test_an_svg_and_an_image_by_path_draw_the_same_with_or_without_a_manifest(
     assert bare["media"] == {
         "route": "gpu",
         "kinds": [["Still", "VideoMobject"]] * 2,
+        "frame": "render.gpu_required",
+    }
+    # At 4 frames a second: the clip runs forward, then loops backward from
+    # where it stands at 0.5 s.
+    assert bare["clock"] == {
+        "route": "gpu",
+        "times": [["1/4", 0.25], ["3/4", 0.25]],
         "frame": "render.gpu_required",
     }

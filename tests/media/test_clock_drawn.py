@@ -1,0 +1,255 @@
+"""The media clock drawn on a device, the launch mode's: the stamp read from
+a session's frame at an instant is the frame the clip's clock program names
+there, for the five programs, at every tick and between ticks, in any
+order; a clip runs on through its fade and a move, and through a window; a
+frame first needed late that decodes otherwise is refused, and so is a
+frame showing a clip whose clock ran out. Collected only where the GPU
+build is installed.
+"""
+
+from __future__ import annotations
+
+import math
+from fractions import Fraction
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from arachne.assets.reader import FIXTURES
+from arachne.mobject.media import frames
+from arachne.mobject.media.frames import FrameCache
+from arachne.server.dispatch import Dispatcher
+from arachne.server.protocol import REFUSED, RpcError
+
+from .clock_programs import CLIP, PROGRAMS, START, clip_time, frame_of
+from .conftest import SMALL, line_of
+
+SCENES = Path(__file__).parent / "clock_scenes.py"
+#: The test clip's stamp: six cells, least significant first, each this
+#: wide and tall, the first this far from the clip's left and top edges,
+#: each the next's this far apart (the fixture generator's numbers).
+CELL, AT, PITCH, BITS = (10, 8), (2, 2), 12, 6
+CLIP_PIXELS = (96, 54)
+#: A session's frames on every tick: its frame rate the tick's.
+EVERY_TICK = {"frame_rate": 60}
+
+
+def ticks(n: int) -> list[Fraction]:
+    """The ticks from 0 to ``n`` sixtieths."""
+    return [Fraction(k, 60) for k in range(n + 1)]
+
+
+def stamp(picture: np.ndarray, box: tuple[float, float, float, float]) -> int | None:
+    """The number the clip's stamp shows in ``picture``, where the clip
+    fills ``box`` (left, top, right, bottom, in pixels); ``None`` where the
+    clip is too faint to read. A set cell is brighter than an unset one in
+    any fade; a stamp whose cells all read alike is 0, the one such number
+    a clip of 48 frames has, read only where its strip is opaque.
+    """
+    left, top, right, bottom = box
+    across = (right - left) / CLIP_PIXELS[0]
+    down = (bottom - top) / CLIP_PIXELS[1]
+    values = []
+    for bit in range(BITS):
+        x = AT[0] + bit * PITCH + CELL[0] / 2
+        y = AT[1] + CELL[1] / 2
+        column = math.floor(left + x * across)
+        row = math.floor(top + y * down)
+        values.append(float(picture[row, column, :3].astype(int).mean()))
+    low, high = min(values), max(values)
+    if high - low < 40:
+        return 0 if abs(low - 32) <= 4 else None
+    middle = (low + high) / 2
+    return sum(1 << bit for bit, value in enumerate(values) if value > middle)
+
+
+def _stamps(session, instants, box=None) -> list[tuple[Fraction, int | None]]:
+    """Each instant's answer: the instant it is of, and the clip's stamp in
+    its frame (in ``box``, else where the clip is drawn).
+    """
+    found = []
+    for answer in session.answers(list(instants)):
+        if box is None:
+            (node,) = [n for n in answer.state.nodes if n.type == "VideoMobject"]
+            where = node.screen_box
+        else:
+            where = box
+        found.append((answer.state.as_of, stamp(np.asarray(answer.frame), where)))
+    return found
+
+
+def _evaluated(as_of: Fraction) -> Fraction:
+    """The last tick at or before ``as_of``: the instant whose frame the
+    clock's driver set, a play ending between two ticks ending on its last.
+    """
+    return Fraction(math.floor(as_of * 60), 60)
+
+
+#: Instants between ticks, and the first and last instants of the plays
+#: that start at 0.37 s.
+OFF_TICK = [START, START + 2, Fraction(1234, 1000), Fraction(61, 120)]
+
+
+@pytest.mark.parametrize("program", sorted(PROGRAMS))
+def test_the_stamp_is_the_frame_the_program_names(session_of, door, program):
+    session = session_of(program, SCENES, **EVERY_TICK)
+    instants = ticks(142) + OFF_TICK
+    found = _stamps(session, instants, box=(0, 0, *CLIP_PIXELS))
+    for t, (as_of, read) in zip(instants, found, strict=True):
+        # Until the first tick after 0.37 s the scene is a still frame,
+        # answered by its first state; 2.37 s is the scene's end.
+        first = _evaluated(t) if _evaluated(t) > START else 0
+        assert as_of in (first, START + 2), (t, as_of)
+        expected = frame_of(clip_time(program, _evaluated(as_of)), CLIP)
+        assert read == expected, (t, as_of)
+    # Asked out of order, each instant gives what it gave in order.
+    backward = _stamps(session, reversed(instants), box=(0, 0, *CLIP_PIXELS))
+    assert backward == found[::-1]
+
+
+def test_a_clip_at_24_a_second_shows_frame_k_times_24_over_60_at_tick_k(
+    session_of, door
+):
+    session = session_of("ClipRuns", SCENES, **EVERY_TICK)
+    found = _stamps(session, ticks(120), box=(0, 0, *CLIP_PIXELS))
+    assert [read for _, read in found] == [
+        min(math.floor(k * 24 / 60), 47) for k in range(121)
+    ]
+
+
+def test_a_clip_looped_at_rate_minus_one_wraps_downward(session_of, door):
+    session = session_of("LoopsBackward", SCENES, **EVERY_TICK)
+    found = _stamps(session, ticks(60), box=(0, 0, *CLIP_PIXELS))
+    expected = [math.floor((Fraction(-k, 60) % 2) * 24) for k in range(61)]
+    assert [read for _, read in found] == expected
+    assert expected[:3] == [0, 47, 47]
+
+
+def test_a_program_changed_between_plays_leaves_every_earlier_instant(session_of, door):
+    instants = ticks(120)
+    runs = session_of("ClipRuns", SCENES, **EVERY_TICK).answers(instants)
+    changes = session_of("ClipRunsThenChanges", SCENES, **EVERY_TICK).answers(instants)
+    for t, before, after in zip(instants, runs, changes, strict=True):
+        if t <= 1:
+            assert np.array_equal(np.asarray(before.frame), np.asarray(after.frame)), t
+        else:
+            media = (1 - (t - 1)) % 2
+            read = stamp(np.asarray(after.frame), (0, 0, *CLIP_PIXELS))
+            assert read == math.floor(media * 24), t
+
+
+def test_a_running_clip_runs_through_its_fade_in_and_a_move(session_of, door):
+    session = session_of("ClipFadedInAndMoved", SCENES, **EVERY_TICK)
+    found = _stamps(session, ticks(60))
+    for k, (as_of, read) in enumerate(found):
+        assert as_of == Fraction(k, 60)
+        if as_of >= Fraction(1, 4):
+            # Half faded in or more: the stamp reads.
+            assert read is not None, as_of
+        if read is not None:
+            assert read == math.floor(k * 24 / 60), as_of
+
+
+@pytest.mark.parametrize("scene", ["HeldBeforeTheFade", "RunThenHold"])
+def test_a_held_clip_shows_its_last_frame_through_its_fade(session_of, door, scene):
+    session = session_of(scene, SCENES, **EVERY_TICK)
+    instants = [Fraction(2) + Fraction(k, 60) for k in range(0, 13)]
+    found = _stamps(session, instants)
+    assert [read for _, read in found] == [47] * len(instants)
+
+
+def test_a_clip_the_scene_holds_and_a_window_shows_is_drawn_once_inside_it(
+    session_of, door
+):
+    session = session_of("ClipInWindow", SCENES, **EVERY_TICK)
+    half = CLIP_PIXELS[0] // 2
+    for k, answer in enumerate(session.answers(ticks(60))):
+        picture = np.asarray(answer.frame)
+        assert stamp(picture, (0, 0, half, CLIP_PIXELS[1])) == math.floor(k * 24 / 60)
+        # Nothing of it outside the window: the frame's right half is the
+        # camera's black background.
+        assert not picture[:, half:, :3].any(), k
+        quantities = answer.state.quantities
+        (node,) = [n for n in answer.state.nodes if n.type == "VideoMobject"]
+        numbers = {q.name: q.value for q in quantities[node.id]}
+        assert numbers == {
+            "media.frame": math.floor(k * 24 / 60),
+            "media.time": float(Fraction(k, 60)),
+        }
+
+
+def test_a_later_frame_that_decodes_otherwise_is_refused_when_first_needed(
+    tmp_path, monkeypatch, door
+):
+    """The frames before it draw; the first request that needs frame 20 is
+    refused with the line that made the clip, and draws nothing.
+    """
+    monkeypatch.setattr(frames, "cache", FrameCache())
+    twentieth = (FIXTURES / "numbered-clip" / "frames" / "0020.png").read_bytes()
+    decoded = frames.decode
+
+    def changed(data: bytes) -> np.ndarray:
+        pixels = decoded(data)
+        if data == twentieth:
+            pixels[30, 50, 0] ^= 2
+        return pixels
+
+    monkeypatch.setattr(frames, "decode", changed)
+    server = Dispatcher()
+    refused_at = tmp_path / "refused.png"
+    try:
+        server.handle(
+            "open",
+            {
+                "file": str(SCENES),
+                "scene": "ClipRuns",
+                "config": {**SMALL, **EVERY_TICK},
+            },
+        )
+        for k in range(20):
+            drawn = tmp_path / f"{k}.png"
+            # Frame k of the clip shows from k/24 s on.
+            server.handle("frame", {"t": float(Fraction(k, 24)), "path": str(drawn)})
+            assert drawn.exists()
+        before = door.draws
+        assert before == 20
+        with pytest.raises(RpcError) as refused:
+            server.handle("frame", {"t": 0.85, "path": str(refused_at)})
+    finally:
+        server.handle("close", {})
+    assert refused.value.code == REFUSED
+    finding = refused.value.data["finding"]
+    assert finding["code"] == "media.inexact"
+    assert finding["detail"]["reason"] == "digest"
+    assert finding["detail"]["file"] == "frames/0020.png"
+    assert finding["line"] == line_of("clip-runs", SCENES).line
+    assert door.draws == before
+    assert not refused_at.exists()
+
+
+def test_a_clip_added_back_after_its_clock_ran_out_refuses_its_frame(tmp_path, door):
+    """Added back after the last play, with no instant evaluated after it:
+    the scene builds and answers its states, and a frame showing the clip
+    is refused with the line that made it.
+    """
+    server = Dispatcher()
+    picture = tmp_path / "frame.png"
+    try:
+        server.handle(
+            "open",
+            {"file": str(SCENES), "scene": "RanOutAddedLast", "config": SMALL},
+        )
+        state = server.handle("state_at", {"t": 10})["state"]
+        assert "VideoMobject" in {node["kind"] for node in state["nodes"]}
+        assert server.handle("frame", {"t": 0.5, "path": str(tmp_path / "a.png")})
+        with pytest.raises(RpcError) as refused:
+            server.handle("frame", {"t": 10, "path": str(picture)})
+    finally:
+        server.handle("close", {})
+    assert refused.value.code == REFUSED
+    finding = refused.value.data["finding"]
+    assert finding["code"] == "media.clock_past_end"
+    assert finding["line"] == line_of("added-last", SCENES).line
+    assert finding["detail"]["media_time"] == 2.5
+    assert not picture.exists()

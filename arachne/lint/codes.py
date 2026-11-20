@@ -396,6 +396,18 @@ _TABLE = (
         " means this host decodes it otherwise and must not draw it.",
         ("asset", "file", "reason", "expected", "found"),
     ),
+    Code(
+        "media.clock_past_end",
+        "error",
+        "MediaClockPastEnd",
+        "a media object that is shown has a clock that reads before its clip's"
+        " first frame or after its last, in a program that neither loops nor"
+        " holds; raised at the instant the timeline evaluates it, and when a"
+        " frame showing such an object is drawn",
+        "End the object's stay before its clip ends, or say what follows: loop(),"
+        ' or run(then="hold").',
+        ("asset", "object", "t", "media_time", "duration"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

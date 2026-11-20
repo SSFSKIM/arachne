@@ -5,12 +5,15 @@ A media asset is a directory holding ``manifest.json`` (of the kind
 frame's digest listed (:mod:`arachne.assets.manifest`). :class:`Still`,
 :class:`VideoMobject` and :class:`Sprite` place one in a scene by naming it
 (:mod:`.objects`); its frames are read exactly, and checked each time one
-is decoded (:mod:`.frames`). Importing this package reads no asset and
-builds no object.
+is decoded (:mod:`.frames`). A clip's or a sprite's own time runs on a
+declared clock, kept by one driver per scene (:mod:`.clock`:
+:func:`media_driver`, :func:`hold_media`). Importing this package reads no
+asset and builds no object.
 """
 
 from __future__ import annotations
 
-__all__ = ["Sprite", "Still", "VideoMobject"]
+__all__ = ["Sprite", "Still", "VideoMobject", "hold_media", "media_driver"]
 
+from .clock import hold_media, media_driver
 from .objects import Sprite, Still, VideoMobject
