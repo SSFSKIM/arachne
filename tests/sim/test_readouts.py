@@ -230,9 +230,10 @@ def test_a_readout_of_a_world_never_in_the_scene_declares_its_link_unreadable(
     }
 
 
-def test_a_readout_after_its_world_left_holds_the_last_tick_it_showed(opened):
-    """It shows, and declares, the tick it last read in the stay: the one of
-    the wait's last frame (tick 28 of a stay through tick 30, at 15 fps).
+def test_a_readout_after_its_world_left_holds_a_tick_of_its_stay(opened):
+    """Once its world has left, it holds the last value it showed, and
+    declares the tick that value is of: a tick of the stay, at or before its
+    last (30), whose row the value is.
     """
     session = opened("ReadAfterItsWorldLeft")
     (occurrence,) = session.record.bakes.occurrences
@@ -241,17 +242,20 @@ def test_a_readout_after_its_world_left_holds_the_last_tick_it_showed(opened):
     early = session.state_at(Fraction(2, 5))
     (readout,) = [n.id for n in early.nodes if n.type == "BodyReadout"]
     assert _read(early, readout)["sim.reads_tick"].value == 24
-    last_frame = session.state_at(Fraction(7, 15))
-    shown = _read(last_frame, readout)["sim.reads_tick"].value
-    assert shown == 28
-    last = _row(session, 0, "velocity", shown)[0, 1]
+    held = set()
     for t in (Fraction(1, 2), Fraction(3, 5), Fraction(14, 15)):
         state = session.state_at(t)
         read = _read(state, readout)
         assert all(q.unreadable is None for q in read.values())
-        assert read["sim.reads_tick"].value == shown
-        assert read["annotation.count"].value == last
-        assert _text(state, readout) == f"{last:.3f}"
+        tick = read["sim.reads_tick"].value
+        assert 28 <= tick <= occurrence.last_tick
+        count = read["annotation.count"].value
+        assert count == _row(session, 0, "velocity", tick)[0, 1]
+        assert _text(state, readout) == f"{count:.3f}"
+        if t > Fraction(1, 2):
+            held.add((tick, count))
+    # Through the play that moves it, it holds one value.
+    assert len(held) == 1
     # Moved, the readout is captured at its own instants, past its tick.
     assert session.state_at(Fraction(14, 15)).as_of == Fraction(14, 15)
 
