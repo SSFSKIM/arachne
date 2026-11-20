@@ -230,20 +230,26 @@ def test_a_readout_of_a_world_never_in_the_scene_declares_its_link_unreadable(
     }
 
 
-def test_a_readout_after_its_world_left_holds_its_last_tick(opened):
+def test_a_readout_after_its_world_left_holds_the_last_tick_it_showed(opened):
+    """It shows, and declares, the tick it last read in the stay: the one of
+    the wait's last frame (tick 28 of a stay through tick 30, at 15 fps).
+    """
     session = opened("ReadAfterItsWorldLeft")
     (occurrence,) = session.record.bakes.occurrences
     assert occurrence.last_tick == 30
-    last = _row(session, 0, "velocity", 30)[0, 1]
     # While the world is in the scene, each capture's own tick.
     early = session.state_at(Fraction(2, 5))
     (readout,) = [n.id for n in early.nodes if n.type == "BodyReadout"]
     assert _read(early, readout)["sim.reads_tick"].value == 24
+    last_frame = session.state_at(Fraction(7, 15))
+    shown = _read(last_frame, readout)["sim.reads_tick"].value
+    assert shown == 28
+    last = _row(session, 0, "velocity", shown)[0, 1]
     for t in (Fraction(1, 2), Fraction(3, 5), Fraction(14, 15)):
         state = session.state_at(t)
         read = _read(state, readout)
         assert all(q.unreadable is None for q in read.values())
-        assert read["sim.reads_tick"].value == 30
+        assert read["sim.reads_tick"].value == shown
         assert read["annotation.count"].value == last
         assert _text(state, readout) == f"{last:.3f}"
     # Moved, the readout is captured at its own instants, past its tick.
@@ -260,7 +266,11 @@ def test_an_open_world_s_readout_shows_the_tick_the_world_has_stepped_to(opened)
         t = Fraction(k, 15)
         state = session.state_at(t)
         tick = math.floor(t * 60)
-        before, _, after = state.roots
+        # Told apart by their formats: four decimals before, five after.
+        before, after = sorted(
+            (n.id for n in state.nodes if n.type == "BodyReadout"),
+            key=lambda found: len(_text(state, found).split(".")[1]),
+        )
         shown_after = _read(state, after)
         assert shown_after["sim.reads_tick"].value == tick
         assert (

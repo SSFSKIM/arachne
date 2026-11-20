@@ -36,7 +36,8 @@ the readout comes after the world in the scene's update order (added after
 it), the tick before when it comes before. Outside its world's stays (its
 world removed from the scene, or an animation of the readout holding its
 updating) it holds the last value it showed, and ``sim.reads_tick`` the
-tick that value is of; before it has read any stay, ``sim.reads_body`` and
+tick that value is of: the last tick a frame read, which can be before the
+stay's last tick, where no frame read; before it has read any stay, ``sim.reads_body`` and
 ``sim.reads_tick`` are unreadable (the lint reports
 ``sim.quantity_unreadable``) and it shows 0.
 """
