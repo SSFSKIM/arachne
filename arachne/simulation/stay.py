@@ -105,12 +105,14 @@ class _Run:
     world and its open stay, until the run's stays are sealed.
     """
 
-    __slots__ = ("crate", "recorder", "stay")
+    __slots__ = ("crate", "recorder", "stay", "stays")
 
     def __init__(self, recorder: Recorder, crate: Any) -> None:
         self.recorder = recorder
         self.crate = crate
         self.stay: Stay | None = None
+        #: How many stays of the world have begun in the run.
+        self.stays = 0
 
     def settle(self) -> None:
         """Once the scene's script has ended and the world's stays are
@@ -289,6 +291,11 @@ class Stay:
         self.crate = run.crate
         #: The solver's row of the stay's first tick.
         self.base: int = int(self.crate.rows) - 1
+        #: Whether that row is the stay's own: it is the world's first stay
+        #: in the run. A later stay begins at the row an earlier one ended
+        #: at, which holds what was found there.
+        self.owns_first = run.stays == 0
+        run.stays += 1
         self.first_tick = first_tick
         self.ordinal = -1
         #: The instant the world left the scene, while it may enter again
@@ -481,7 +488,9 @@ class Stay:
         if name != "contact":
             return None
         count = min(self.last_tick, self.computed_tick) - self.first_tick + 1
-        return _window_contacts(self.crate.contacts(), self.base, self.base + count)
+        events = _window_contacts(self.crate.contacts(), self.base, self.base + count)
+        events.flags.writeable = False
+        return events
 
     def settle(self) -> None:
         """Seal the stay if the scene's script has ended."""
@@ -526,7 +535,9 @@ class Stay:
         for number, body in enumerate(ids):
             bindings.append(Binding(body, "pose", number))
             bindings.append(Binding(body, "velocity", number))
-        found = occurrence_findings(crate, start, stop, self.first_tick, ids)
+        found = occurrence_findings(
+            crate, start, stop, self.first_tick, ids, owns_first=self.owns_first
+        )
         declared = hashlib.blake2b(digest_size=16)
         for part in (
             crate.declaration_bytes()

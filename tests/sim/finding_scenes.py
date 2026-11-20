@@ -21,6 +21,8 @@ from arachne import (
     World,
 )
 
+#: What a scene found as it ran, by name.
+FOUND: dict[str, object] = {}
 #: Where the floor's top is, and the radius of the balls dropped on it.
 FLOOR_TOP = -1.0
 RADIUS = 0.2
@@ -110,6 +112,26 @@ class Dropped(Scene):
             world.body(ball, restitution=0.5)
         self.add(world)
         self.wait(0.75)
+        # The stay is open: its contact events are read from what computes it.
+        record = self._arachne_timeline.ensure_record()
+        live = record.bakes.events(world._bake.ordinal, "contact")
+        FOUND["live contacts"] = (live.tolist(), live.flags.writeable)
+
+
+class HeldAfterItsWorld(Scene):
+    """A falling point's world removed at 1/2 s, the point's mobject left on
+    screen unmoving through a wait: the wait is held as one capture, of 1/2 s.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2)
+        world.body(dot, shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
 
 
 class ShownAfterItsWorld(Scene):
@@ -138,3 +160,48 @@ class ShownWithItsWorld(ShownAfterItsWorld):
     """The twin of :class:`ShownAfterItsWorld`: the world stays."""
 
     leaves = False
+
+
+class ReenteredAtOnce(Scene):
+    """A point above its world's limit as declared, its world added and
+    removed at once (that stay holds the world's first row only), then added
+    again after a wait: the second stay begins at the row the first ended at.
+    """
+
+    def construct(self):
+        world = World(speed_limit=1.0)
+        world.body(Dot(), shape=None, mass=1.0, velocity=RIGHT * 2)
+        self.add(world)
+        self.remove(world)
+        self.wait(0.5)
+        self.add(world)
+        self.wait(0.5)
+
+
+class EndsAtTheCrossing(Scene):
+    """A point pushed at 10 u/s each second in a world limited to 4.95 u/s:
+    4.83 at tick 29, 5.0 at tick 30, the last tick of the first wait.
+    """
+
+    def construct(self):
+        world = World(speed_limit=4.95)
+        point = world.body(Dot(), shape=None, mass=1.0)
+        world.add_force(ConstantForce(point, force=RIGHT * 10))
+        self.add(world)
+        self.wait(0.5)  # @first
+        self.wait(0.5)  # @second
+
+
+class ArrivesTooFast(Scene):
+    """A point declared above its world's limit, its world added at 0.1 s,
+    between two frames of the 15 fps grid: the frame on screen at its first
+    tick, 1/15 s, is from before it entered.
+    """
+
+    def construct(self):
+        self.wait(0.1)
+        world = World(speed_limit=1.0)
+        dot = Dot()  # @made
+        world.body(dot, shape=None, mass=1.0, velocity=RIGHT * 2)
+        self.add(world)
+        self.wait(0.5)  # @entered

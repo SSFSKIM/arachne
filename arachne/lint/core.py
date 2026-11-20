@@ -10,13 +10,16 @@ instant of a record kept on another grid than the render's, whose frame
 hooks and dt updaters ran at other instants than the render's. Every
 mobject at each instant is read for its declared quantities, and one that
 cannot be read is a ``sim.quantity_unreadable`` finding
-(:mod:`.quantities`). What the record's bakes found (a simulation gone
-unstable, two bodies that passed through each other) becomes a finding at
-its tick (:mod:`.bakes`). The session's divergences become ``replay.diverged``
+(:mod:`.quantities`). The session's divergences become ``replay.diverged``
 findings (a probe's a note, an execution's an error), and a stale session a
 ``source.changed`` note. The caller's time range and exemptions then leave
 findings out, look-alikes fold, and the result is data: nothing the lint
 finds ends the process.
+
+What the record's bakes found (a simulation gone unstable, two bodies that
+passed through each other) becomes a finding at its tick (:mod:`.bakes`),
+read only when its tick is in the time range, so it asks for no frame past
+what the caller asked for.
 """
 
 from __future__ import annotations
@@ -175,7 +178,7 @@ def lint(
     frames = Frames(session, lint_instants=instants)
     _request_parts(frames, instants)
     request_quantities(frames, instants)
-    baked = request_bake_frames(frames, record)
+    baked = request_bake_frames(frames, record, t_range)
     # The scene's own checks (:mod:`.bridge`), whatever the rules.
     checks = Checks(rules)
     checks.request_frames(frames)

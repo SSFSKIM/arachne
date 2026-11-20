@@ -12,9 +12,11 @@ step. A stay's occurrence holds those of its rows as
   (none for a non-finite state);
 - ``sim.tunnelled`` about two bodies.
 
-Each carries the scene's ``tick``. A stay that begins where an earlier one
-left the world shares that row with it: the earlier stay holds what was
-found there.
+Each carries the scene's ``tick``. A speed the solver scaled down to its cap
+during a step is found though the step's last velocity is under the limit,
+its value then at least the cap (:meth:`arachne_sim.World.finding_values`).
+A stay that begins where an earlier one left the world shares that row with
+it: the earlier stay holds what was found there.
 """
 
 from __future__ import annotations
@@ -24,8 +26,6 @@ __all__ = ["occurrence_findings"]
 import math
 from collections.abc import Sequence
 from typing import Any
-
-import numpy as np
 
 from arachne.timeline.bake import BakeFinding
 
@@ -39,48 +39,40 @@ _KINDS = {
 
 
 def occurrence_findings(
-    crate: Any, start: int, stop: int, first_tick: int, ids: Sequence[str]
+    crate: Any,
+    start: int,
+    stop: int,
+    first_tick: int,
+    ids: Sequence[str],
+    *,
+    owns_first: bool,
 ) -> tuple[BakeFinding, ...]:
-    """What ``crate`` found at its rows ``start`` to ``stop`` (row ``start``
-    only when it is the world's first), by the stay's rows, which begin at
-    the scene's ``first_tick``; ``ids`` are the bodies' mobjects' stable ids.
+    """What ``crate`` found at its rows ``start`` to ``stop``, by the stay's
+    rows, which begin at the scene's ``first_tick``; ``ids`` are the bodies'
+    mobjects' stable ids. Row ``start`` is the stay's only when it
+    ``owns_first``: when no earlier stay of the world holds it.
     """
     found = crate.findings()
-    lower = start + 1 if start > 0 else 0
-    window = found[(found[:, 0] >= lower) & (found[:, 0] < stop)]
-    if not len(window):
-        return ()
-    velocity = crate.velocity(start, stop)
-    planar = crate.dimension == 2
+    values = crate.finding_values()
+    lower = start if owns_first else start + 1
+    within = (found[:, 0] >= lower) & (found[:, 0] < stop)
     out = []
-    for solver_row, kind, a, b in window.tolist():
+    for (solver_row, kind, a, b), value in zip(
+        found[within].tolist(), values[within].tolist(), strict=True
+    ):
         code, signal = _KINDS[kind]
         row = solver_row - start
         detail: dict[str, Any] = {"tick": first_tick + row}
         if code == "sim.unstable":
-            value, limit = _measured(signal, velocity[row, a], planar, crate)
-            detail.update(signal=signal, value=value, limit=limit)
+            limit = None
+            if signal == "speed":
+                limit = float(crate.speed_limit)
+            elif signal == "angular_speed":
+                limit = float(crate.angular_speed_limit)
+            measured = None if limit is None or not math.isfinite(value) else value
+            detail.update(signal=signal, value=measured, limit=limit)
             bodies: tuple[str, ...] = (ids[a],)
         else:
             bodies = (ids[a], ids[b])
         out.append(BakeFinding(code, row, bodies, detail))
     return tuple(out)
-
-
-def _measured(
-    signal: str | None, velocity: np.ndarray, planar: bool, crate: Any
-) -> tuple[float | None, float | None]:
-    """The speed found and the world's limit for ``signal``; none for a
-    non-finite state.
-    """
-    if signal == "speed":
-        linear = velocity[:2] if planar else velocity[:3]
-        return _norm(linear), float(crate.speed_limit)
-    if signal == "angular_speed":
-        angular = velocity[2:3] if planar else velocity[3:6]
-        return _norm(angular), float(crate.angular_speed_limit)
-    return None, None
-
-
-def _norm(values: np.ndarray) -> float:
-    return math.sqrt(math.fsum(float(v) * float(v) for v in values))

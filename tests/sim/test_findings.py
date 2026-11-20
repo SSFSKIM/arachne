@@ -6,7 +6,7 @@ its bodies with their boxes, with a clean twin that reports nothing.
 from __future__ import annotations
 
 import json
-import re
+import math
 from fractions import Fraction
 from pathlib import Path
 
@@ -18,12 +18,15 @@ pytest.importorskip("arachne_sim")
 from jsonschema import Draft202012Validator  # noqa: E402
 
 from arachne import World, api_json  # noqa: E402
+from arachne.lint import bakes as bakes_module  # noqa: E402
+from arachne.lint import frames as frames_module  # noqa: E402
 from arachne.lint import lint  # noqa: E402
 from arachne.session import Session  # noqa: E402
 from arachne.timeline import admission  # noqa: E402
 
 from . import finding_scenes, world_scenes  # noqa: E402
 
+SCENES = Path(finding_scenes.__file__)
 SMALL = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15}
 G = 9.8
 TICK = 1 / 60
@@ -59,8 +62,15 @@ def _bodies(session: Session) -> list[str]:
     return [b.id for b in occurrence.bindings if b.channel == "pose"]
 
 
-def _simulation(session: Session):
-    result = lint(session, rules=())
+def _line(tag: str) -> int:
+    for number, line in enumerate(SCENES.read_text().splitlines(), start=1):
+        if line.rstrip().endswith(f"# @{tag}"):
+            return number
+    raise LookupError(tag)
+
+
+def _simulation(session: Session, **options):
+    result = lint(session, rules=(), **options)
     _valid("lint_result", api_json.lint(result))
     return result, [f for f in result.findings if f.code.startswith("sim.")]
 
@@ -118,6 +128,21 @@ def test_a_bouncing_body_s_contact_times_are_the_closed_form_s_within_a_tick(ope
         assert read["sim.contact_count"].value == 1
         (found,) = read["sim.contact_times"].value
         assert abs(found - expected) <= TICK + 1e-9, (found, expected)
+    # Each is the instant of the tick its contact began at, as baked.
+    bakes = session.record.bakes
+    (occurrence,) = bakes.occurrences
+    events = bakes.events(occurrence.ordinal, "contact")
+    began = [
+        float(Fraction(occurrence.first_tick + int(row), 60))
+        for row, a, b, kind in events.tolist()
+        if kind == 1 and floor in (_bodies(session)[a], _bodies(session)[b])
+    ]
+    assert list(times) == began
+    # Read while the stay was open, from what computed it: the same table,
+    # read-only.
+    live, writeable = session.module.FOUND["live contacts"]
+    assert live == events.tolist()
+    assert not writeable
     # Before the second ball lands, the floor has met only the first.
     early = _read(session.state_at(Fraction(1, 2)), floor)
     assert early["sim.contact_count"].value == 1
@@ -137,17 +162,46 @@ def test_a_body_in_three_dimensions_turns_about_three_axes(opened):
     assert len(read["sim.position"].value) == 3
 
 
+def test_a_body_held_on_screen_after_its_world_left_reads_as_of_its_capture(opened):
+    """A quantity is read as of its capture. A wait over a body left unmoving
+    after its world left at 1/2 s is held as the one capture of 1/2 s, whose
+    tick, 30, is the stay's last (inclusive): it reads that row throughout.
+    (An open world removed before its callback ran at that tick would hold
+    only the tick before it.)
+    """
+    session = opened("HeldAfterItsWorld")
+    (body,) = _bodies(session)
+    bakes = session.record.bakes
+    (occurrence,) = bakes.occurrences
+    assert occurrence.last_tick == 30
+    channels = bakes.contents[occurrence.content].channels
+    state = session.state_at(Fraction(3, 4))
+    assert state.as_of == Fraction(1, 2)
+    read = _read(state, body)
+    assert all(q.unreadable is None for q in read.values())
+    x, y = channels["pose"].values[30, 0, :2].astype(float)
+    vx, vy = channels["velocity"].values[30, 0, :2].astype(float)
+    assert read["sim.position"].value == (x, y, 0.0)
+    assert read["sim.velocity"].value == (vx, vy, 0.0)
+    assert read["sim.angular_velocity"].value == 0.0
+    assert read["sim.contact_times"].value == ()
+    assert read["sim.contact_count"].value == 0
+    assert read == _read(session.state_at(Fraction(1, 2)), body)
+
+
 def test_a_body_shown_after_its_world_left_is_unreadable(opened):
     session = opened("ShownAfterItsWorld")
     (body,) = _bodies(session)
-    # Past the stay's last tick, 30.
-    (quantity, *_) = session.state_at(Fraction(3, 4)).quantities[body]
-    assert quantity.value is None
-    shown = re.fullmatch(
-        r"no bake holds tick (\d+) of this body's stay", quantity.unreadable
-    )
-    assert shown is not None, quantity.unreadable
-    assert int(shown[1]) > 30
+    # Moved, each frame is captured at its own instant, past the stay's last
+    # tick, 30: every quantity names the tick it is read at.
+    state = session.state_at(Fraction(3, 4))
+    tick = math.floor(state.as_of * 60)
+    assert tick > 30
+    quantities = state.quantities[body]
+    assert len(quantities) == 5
+    for quantity in quantities:
+        assert quantity.value is None
+        assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
     result, found = _simulation(session)
     assert {f.code for f in found} == {"sim.quantity_unreadable"}
     assert all(f.objects[0].id == body for f in found)
@@ -181,7 +235,7 @@ def test_a_world_gone_non_finite_is_unstable_and_its_twin_is_not(opened):
             "value": None,
             "limit": None,
         }
-        assert "went non-finite at tick 1" in finding.message
+        assert finding.message.endswith("went non-finite at tick 1")
         assert "finite" in finding.fix
         assert finding.line is not None
         # Boxed as the frame on screen at its tick shows it: the first one.
@@ -218,7 +272,10 @@ def test_a_body_through_a_thin_wall_tunnelled_and_its_twin_did_not(opened):
     assert [thing.id for thing in finding.objects] == [wall, disc]
     assert finding.detail == {"tick": 1}
     assert finding.t_start == Fraction(1, 60)
-    assert "passed through each other" in finding.message
+    assert finding.message == (
+        f"{wall} and {disc} passed through each other in the step to tick 1, with"
+        " no contact between them"
+    )
     assert "continuous_collision" in finding.fix
     assert all(thing.bbox is not None for thing in finding.objects)
     twin = opened("StoppedByTheWall")
@@ -236,6 +293,71 @@ def test_findings_never_end_the_recording(opened):
     (occurrence,) = session.record.bakes.occurrences
     assert (occurrence.first_tick, occurrence.last_tick) == (0, 30)
     assert [each.code for each in occurrence.findings] == ["sim.unstable"] * 2
+
+
+def test_a_finding_on_a_stay_s_first_row_belongs_to_the_world_s_first_stay(opened):
+    """A stay that left before a tick passed ends at the world's first row;
+    the next stay begins there, and does not report it again.
+    """
+    session = opened("ReenteredAtOnce")
+    first, second = session.record.bakes.occurrences
+    assert (first.first_tick, first.last_tick) == (0, 0)
+    assert second.first_tick == 30
+    assert [len(first.findings), len(second.findings)] == [1, 0]
+    (found,) = first.findings
+    assert (found.code, found.row, found.detail["tick"]) == ("sim.unstable", 0, 0)
+    _, (finding,) = _simulation(session)
+    assert (finding.code, finding.t_start) == ("sim.unstable", 0)
+
+
+def test_a_finding_at_a_play_s_last_tick_names_that_play(opened):
+    """The step to a play's last tick is the play's: a finding there names
+    its line, not the next play's.
+    """
+    session = opened("EndsAtTheCrossing")
+    _, (finding,) = _simulation(session)
+    assert (finding.t_start, finding.detail["tick"]) == (Fraction(1, 2), 30)
+    assert finding.line == _line("first")
+
+
+def test_a_body_the_frame_does_not_draw_keeps_its_id_and_line(opened):
+    """A world that entered between two frames: the frame on screen at its
+    first tick does not draw its body, which the finding still names with its
+    creating line and kind, its boxes null; its declared state is the play's
+    that was running as it entered.
+    """
+    session = opened("ArrivesTooFast")
+    (body,) = _bodies(session)
+    _, (finding,) = _simulation(session)
+    assert (finding.code, finding.t_start) == ("sim.unstable", Fraction(1, 10))
+    (thing,) = finding.objects
+    assert (thing.id, thing.source_line, thing.kind) == (body, _line("made"), "Dot")
+    assert (thing.bbox, thing.screen_bbox) == (None, None)
+    assert finding.line == _line("entered")
+
+
+def test_a_finding_outside_the_lint_s_range_asks_for_no_frame(opened, monkeypatch):
+    """The speeding point's finding is at 31/60 s: a lint over the first
+    quarter second neither reports it nor asks for a frame of it.
+    """
+    session = opened("Speeding")
+    asked: list[tuple[object, list[Fraction]]] = []
+    request = frames_module.Frames.request
+
+    def spied(self, owner, times, read, **options):
+        asked.append((owner, list(times)))
+        return request(self, owner, times, read, **options)
+
+    monkeypatch.setattr(frames_module.Frames, "request", spied)
+    _, found = _simulation(session, t_range=(0, 0.25))
+    assert found == []
+    assert [times for owner, times in asked if owner == bakes_module.OWNER] == []
+    asked.clear()
+    _, (finding,) = _simulation(session)
+    assert finding.t_start == Fraction(31, 60)
+    assert [times for owner, times in asked if owner == bakes_module.OWNER] == [
+        [Fraction(7, 15)]
+    ]
 
 
 # Authoring
