@@ -337,6 +337,17 @@ _TABLE = (
         " admit it again.",
         ("asset", "reason", "checks", "expected", "found"),
     ),
+    Code(
+        "annotation.detached",
+        "error",
+        "AnnotationDetached",
+        "an annotation points more than a reference pixel from its anchor at an"
+        " instant the lint reads: it reads the anchor before what moves the"
+        " anchor's object, a frame late",
+        "Add the annotation to the scene after what it points at (and after"
+        " whatever moves that with an updater), so its updater runs after theirs.",
+        ("distance", "allowed", "anchor"),
+    ),
 )
 
 #: Every code, by its string, in the order they were added.

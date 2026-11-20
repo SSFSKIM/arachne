@@ -1,7 +1,7 @@
 """The instant rules: what a sweep of one frame finds.
 
-Each is an :class:`InstantRule`, which :func:`arachne.lint.lint` runs only
-when it is passed one, at the times it is asked for and under the terms a
+Each but :data:`anchored` is an :class:`InstantRule`, which
+:func:`arachne.lint.lint` runs only when it is passed one, at the times it is asked for and under the terms a
 scene declares::
 
     lint(session, rules=(sweep.where(at=[t], text_gap=0.3),))
@@ -11,6 +11,8 @@ scene declares::
 - :data:`occlusion`: ``occlusion.glyph``, text something is drawn over;
 - :data:`sweep`: the three at once, one sweep of the frame;
 - :data:`text_small`: ``text.small``, a note;
+- :data:`anchored`: ``annotation.detached``, an annotation pointing more
+  than a reference pixel from its anchor, read at its own instants;
 - :data:`diagram_clear`: ``overlap.text``, ``gap.text``,
   ``clip.frame_edge`` and ``text.small`` for the labels inside a diagram,
   whose pieces the pair rules let touch.
@@ -26,6 +28,7 @@ __all__ = [
     "DEFAULT_PAD",
     "InstantRule",
     "Terms",
+    "anchored",
     "contact",
     "diagram_clear",
     "frame_edge",
@@ -39,6 +42,7 @@ from ..findings import Finding
 from ..parts import Parts
 from ._pairs import pair_findings
 from ._rule import DEFAULT_PAD, InstantRule, Terms
+from .anchored import anchored
 from .contact import contact
 from .diagram_clear import diagram_clear
 from .frame_edge import edge_findings, frame_edge

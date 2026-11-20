@@ -49,6 +49,7 @@ from .camera.multi_camera import *
 from .camera.three_d_camera import *
 from .constants import *
 from .manager import *
+from .mobject.annotation import *
 from .mobject.diagram import *
 from .mobject.frame import *
 from .mobject.geometry.arc import *

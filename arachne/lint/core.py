@@ -168,7 +168,7 @@ def lint(
         )
     instants = lint_instants(record, fps, at=at)
     rules = tuple(rules)
-    frames = Frames(session)
+    frames = Frames(session, lint_instants=instants)
     _request_parts(frames, instants)
     request_quantities(frames, instants)
     # The scene's own checks (:mod:`.bridge`), whatever the rules.
