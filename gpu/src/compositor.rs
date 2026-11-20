@@ -409,6 +409,7 @@ impl Compositor {
             width: self.width,
             height: self.height,
             max_dimension: self.max_dimension,
+            sized: false,
             size_of: &size_of,
         };
         let stack = plan(frame, &canvas, 0)?;
