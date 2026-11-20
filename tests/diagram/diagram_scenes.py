@@ -243,3 +243,41 @@ class FlowMadeBeforeASuspendingPlay(Scene):
             run_time=1,
         )
         self.wait(0.5)
+
+
+def labelled_flow(inside: bool) -> tuple[Diagram, Flow, Circle]:
+    """Two nodes joined straight by a labelled connector with a flow on it,
+    the flow inside the diagram when ``inside``; and a marker to move.
+    """
+    diagram = Diagram()
+    a = Node("A").move_to(LEFT * 3)
+    b = Node("B").move_to(RIGHT * 3)
+    diagram.add(a, b)
+    edge = diagram.connect(
+        (a, "right"), (b, "left"), route="straight", tip=False, label="signal"
+    )
+    flow = Flow(edge, speed=1.0, tokens=4)
+    if inside:
+        diagram.add(flow)
+    marker = Circle(radius=0.3).move_to(DOWN * 3 + LEFT * 5)
+    return diagram, flow, marker
+
+
+class FlowUnderALabel(Scene):
+    """A flow on a labelled connector, added after the diagram, while
+    something else plays.
+    """
+
+    def construct(self):
+        diagram, flow, marker = labelled_flow(inside=False)
+        self.add(diagram, flow, marker)
+        self.play(marker.animate.shift(RIGHT), run_time=0.5)
+
+
+class FlowInsideUnderALabel(Scene):
+    """:class:`FlowUnderALabel` with the flow added to the diagram."""
+
+    def construct(self):
+        diagram, flow, marker = labelled_flow(inside=True)
+        self.add(diagram, marker)
+        self.play(marker.animate.shift(RIGHT), run_time=0.5)

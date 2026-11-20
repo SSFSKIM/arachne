@@ -27,14 +27,14 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from arachne import ORIGIN, Readout, Text, tempconfig
+from arachne import DL, DOWN, LEFT, ORIGIN, RIGHT, UL, UP, UR, Readout, Text, tempconfig
 from arachne.camera.camera import Camera
 from arachne.session import Session
 from arachne.timeline import admission
 from arachne.timeline.clock import frames_in
 
 from . import annotation_scenes
-from .annotation_scenes import COUNT_FONT_SIZE, COUNTS
+from .annotation_scenes import COUNT_FONT_SIZE, COUNTS, WORDED_FONT_SIZE
 
 SCENES = Path(annotation_scenes.__file__)
 RATES = (15, 30, 60)
@@ -93,14 +93,16 @@ def test_as_of_answers_the_last_frame_of_the_record_s_grid(opened, key):
     assert answers[60] == (Fraction(1, 12), _shown(key, Fraction(1, 12)))
 
 
-def _rendered(name: str, fps: int, media: Path) -> list[np.ndarray]:
+def _rendered(
+    name: str, fps: int, media: Path, picture: dict[str, int] = PICTURE
+) -> list[np.ndarray]:
     """The frames a render of the scene ``name`` at ``fps`` delivers, in
-    order.
+    order, at the size ``picture``.
     """
     scene = getattr(annotation_scenes, name)
     with tempconfig(
         {
-            **PICTURE,
+            **picture,
             "frame_rate": fps,
             "media_dir": str(media),
             "format": "png-sequence",
@@ -330,3 +332,316 @@ def test_a_count_s_target_is_set_without_its_easing_s_last_value():
     count.interpolate(0.5)
     count.finish()
     assert gauge.value == 1.0
+
+
+#: A format with a leading word, as a sheet labels a number.
+WORDED = "swell {:.0f}%"
+#: The picture a worded count is rendered at: twice :data:`PICTURE`, so
+#: its glyphs at :data:`WORDED_FONT_SIZE` span as many pixels as a count's.
+WORDED_PICTURE = {"pixel_width": 384, "pixel_height": 216}
+
+
+def _on_one_line(placed: Readout) -> None:
+    """A precondition of a worded render: the widest text the count shows
+    stays on one line (a text wider than its layout wraps, and where it
+    wraps depends on the machine's fonts).
+    """
+    widest = Readout(100, format=WORDED, font_size=WORDED_FONT_SIZE)
+    assert widest.label.height == pytest.approx(placed.label.height, rel=0.25)
+
+
+def _drawn_alone(mobject) -> np.ndarray:
+    """``mobject`` drawn by the camera alone, on the scene's background:
+    what a frame shows of it.
+    """
+    with tempconfig(PICTURE):
+        camera = Camera()
+        camera.capture_mobjects([mobject])
+        return np.asarray(camera.pixel_array[..., :3], dtype=float)
+
+
+def _frame_size() -> tuple[float, float]:
+    """The scene's frame, in scene units, as a render of :data:`PICTURE`
+    frames it: read in the render's own configuration, not the session's,
+    which another test may have left changed.
+    """
+    from arachne import config
+
+    with tempconfig(PICTURE):
+        return float(config.frame_width), float(config.frame_height)
+
+
+def _column(frame: np.ndarray, x: float) -> int:
+    """The column of ``frame`` the scene's ``x`` falls in."""
+    return int((x / _frame_size()[0] + 0.5) * frame.shape[1])
+
+
+def _pixel(frame: np.ndarray, point: np.ndarray) -> np.ndarray:
+    """The colour ``frame`` draws at the scene point ``point``."""
+    row = int((0.5 - point[1] / _frame_size()[1]) * frame.shape[0])
+    return frame[row, _column(frame, point[0])]
+
+
+def _over_first_glyph(reading: Readout) -> np.ndarray:
+    """A point of the plate that no glyph covers: above the first glyph (a
+    lower-case letter), under the plate's top edge.
+    """
+    label = reading.label
+    plates = {id(m) for m in label.background_rectangle.get_family()}
+    first = next(m for m in label.family_members_with_points() if id(m) not in plates)
+    top = label.background_rectangle.get_top()[1]
+    return np.array([first.get_center()[0], (first.get_top()[1] + top) / 2, 0])
+
+
+def test_a_readout_s_plate_is_drawn_through_its_count():
+    from arachne import CountUp
+    from arachne.mobject.annotation.callout import PILL_COLOR
+    from arachne.utils.color import ManimColor
+
+    reading = Readout(0, format=WORDED, pill=True, font_size=COUNT_FONT_SIZE)
+    plate_rgb = np.array(ManimColor(PILL_COLOR).to_int_rgb(), dtype=float)
+    spot = _over_first_glyph(reading)
+    assert np.abs(_pixel(_drawn_alone(reading), spot) - plate_rgb).max() <= 1
+    count = CountUp(reading, 100, rate_func=lambda a: a)
+    count.begin()
+    for alpha in (0.05, 0.5, 1.0):
+        count.interpolate(alpha)
+        plate = reading.label.background_rectangle
+        assert plate in reading.label.family_members_with_points()
+        drawn = _pixel(_drawn_alone(reading), _over_first_glyph(reading))
+        assert np.abs(drawn - plate_rgb).max() <= 1, (alpha, drawn)
+
+
+def _prefix_xs(reading: Readout, glyphs: int) -> np.ndarray:
+    """The left edges of the label's first ``glyphs`` glyphs."""
+    label = reading.label
+    plate = getattr(label, "background_rectangle", None)
+    plates = set() if plate is None else {id(m) for m in plate.get_family()}
+    shown = [m for m in label.family_members_with_points() if id(m) not in plates]
+    return np.array([m.get_left()[0] for m in shown[:glyphs]])
+
+
+def _prefix_corners(reading: Readout, glyphs: int) -> np.ndarray:
+    """The lower left corners of the label's first ``glyphs`` glyphs."""
+    label = reading.label
+    plate = getattr(label, "background_rectangle", None)
+    plates = set() if plate is None else {id(m) for m in plate.get_family()}
+    shown = [m for m in label.family_members_with_points() if id(m) not in plates]
+    return np.array([m.get_corner(DOWN + LEFT) for m in shown[:glyphs]])
+
+
+@pytest.mark.parametrize("pill", [False, True])
+def test_a_leading_word_stays_still_as_the_number_widens(pill):
+    from arachne import CountUp
+
+    reading = Readout(0, format=WORDED, pill=pill, font_size=COUNT_FONT_SIZE)
+    reading.shift(LEFT + UP)
+    before = _prefix_corners(reading, 5)
+    count = CountUp(reading, 100, rate_func=lambda a: a)
+    count.begin()
+    # Every number the count shows: digits of other heights, and other
+    # widths, never move the word, across or up and down.
+    for value in range(101):
+        count.interpolate(value / 100)
+        moved = np.abs(_prefix_corners(reading, 5) - before).max()
+        assert moved < 1e-9, (reading.label.original_text, moved)
+    assert reading.label.original_text == "swell 100%"
+
+
+@pytest.mark.parametrize(("offset", "pill"), [(UR, False), (RIGHT, True)])
+def test_an_attached_leading_word_stays_still_as_it_follows(offset, pill):
+    from arachne import CountUp, Dot, anchor
+
+    dot = Dot(LEFT)
+    reading = Readout(0, format=WORDED, at=anchor(dot), offset=offset, pill=pill)
+    before = _prefix_corners(reading, 5) - dot.get_center()
+    count = CountUp(reading, 100, rate_func=lambda a: a)
+    count.begin()
+    for value in range(101):
+        dot.shift(0.01 * RIGHT)
+        count.interpolate(value / 100)
+        reading.attach()
+        moved = np.abs(_prefix_corners(reading, 5) - dot.get_center() - before)
+        assert moved.max() < 1e-9, reading.label.original_text
+
+
+def test_a_bare_number_stays_centred_where_it_was_put():
+    from arachne import CountUp
+
+    reading = Readout(0, format="{:.0f}").move_to(2 * RIGHT)
+    count = CountUp(reading, 1000, rate_func=lambda a: a)
+    count.begin()
+    count.interpolate(1.0)
+    assert reading.label.original_text == "1000"
+    assert reading.label.get_center()[0] == pytest.approx(2.0, abs=1e-9)
+
+
+def test_a_readout_held_by_its_right_edge_grows_leftward():
+    from arachne import CountUp
+
+    reading = Readout(0, format="{:.0f} km", hold=RIGHT)
+    right = reading.label.get_right()[0]
+    count = CountUp(reading, 1000, rate_func=lambda a: a)
+    count.begin()
+    count.interpolate(1.0)
+    assert reading.label.get_right()[0] == pytest.approx(right, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("offset", "edge"),
+    [
+        (UR, LEFT),
+        (RIGHT, LEFT),
+        (UL, RIGHT),
+        (LEFT, RIGHT),
+        (UP, ORIGIN),
+        (DOWN, ORIGIN),
+    ],
+)
+def test_an_attached_readout_grows_away_from_its_anchor(offset, edge):
+    from arachne import CountUp, Dot, anchor
+
+    dot = Dot(LEFT)
+    reading = Readout(0, format="{:.0f}", at=anchor(dot), offset=offset)
+    gap = reading.label.get_critical_point(edge)[0] - dot.get_center()[0]
+    count = CountUp(reading, 1000, rate_func=lambda a: a)
+    count.begin()
+    for alpha in (0.5, 1.0):
+        dot.shift(0.25 * RIGHT)
+        count.interpolate(alpha)
+        reading.attach()  # its updater, which a count keeps running
+        held = reading.label.get_critical_point(edge)[0] - dot.get_center()[0]
+        assert held == pytest.approx(gap, abs=1e-9), alpha
+    assert reading.label.original_text == "1000"
+
+
+def test_a_count_on_a_plate_draws_the_plate_in_every_frame(tmp_path):
+    from arachne.mobject.annotation.callout import PILL_COLOR
+    from arachne.utils.color import ManimColor
+
+    plate_rgb = np.array(ManimColor(PILL_COLOR).to_int_rgb(), dtype=float)
+    placed = Readout(0, format=WORDED, pill=True, font_size=WORDED_FONT_SIZE)
+    _on_one_line(placed)
+    spot = _over_first_glyph(placed)
+    frames = _rendered("CountOnAPlate", 15, tmp_path, WORDED_PICTURE)
+    assert len(frames) == 15
+    for index, frame in enumerate(frames):
+        assert np.abs(_pixel(frame, spot) - plate_rgb).max() <= 2, index
+
+
+def test_a_count_with_a_leading_word_draws_the_word_still(tmp_path):
+    frames = _rendered("CountAfterAWord", 15, tmp_path, WORDED_PICTURE)
+    assert len(frames) == 15
+    placed = Readout(0, format=WORDED, font_size=WORDED_FONT_SIZE)
+    _on_one_line(placed)
+    # The columns the word "swell" covers, and a margin left of it.
+    glyphs = placed.label.family_members_with_points()
+    word_start = min(m.get_left()[0] for m in glyphs[:5])
+    word_end = max(m.get_right()[0] for m in glyphs[:5])
+    left = max(_column(frames[0], word_start) - 2, 0)
+    right = _column(frames[0], word_end) + 1
+    word = frames[0][:, left:right]
+    assert word.max() > 0  # the word is drawn there
+    for index, frame in enumerate(frames[1:], start=1):
+        moved = np.argwhere(np.abs(frame[:, left:right] - word).max(axis=2) > 1)
+        assert not len(moved), (
+            index,
+            (left, right),
+            moved[:, 1].min() + left if len(moved) else None,
+            moved[:, 1].max() + left if len(moved) else None,
+            _ink_runs(frames[0]),
+            _ink_runs(frame),
+        )
+
+
+def _ink_runs(frame: np.ndarray) -> list[tuple[int, int]]:
+    """The runs of columns ``frame`` draws ink in: what a failure reports."""
+    inked = (frame.max(axis=2) > 64).any(axis=0)
+    runs, start = [], None
+    for col, on in enumerate([*inked, False]):
+        if on and start is None:
+            start = col
+        elif not on and start is not None:
+            runs.append((start, col - 1))
+            start = None
+    return runs
+
+
+@pytest.mark.parametrize(
+    "hold",
+    [
+        (2, 0, 0),
+        (0.5, 0),
+        (float("nan"), 0, 0),
+        (float("inf"), 0),
+        (1, 0, 1),
+        (1, 0, 0, 0),
+        (1,),
+        [[1, 0, 0]],
+        "left",
+    ],
+)
+def test_a_hold_is_one_of_the_nine_points_of_a_box(hold):
+    with pytest.raises(ValueError, match="hold is a point of a box"):
+        Readout(0, format="{:.0f}", hold=hold)
+
+
+@pytest.mark.parametrize("hold", [LEFT, UR, (1, -1), (0, 0, 0), (-1.0, 1.0, 0.0)])
+def test_a_hold_given_as_a_point_of_the_box_is_taken(hold):
+    reading = Readout(0, format="{:.0f}", hold=hold)
+    expected = np.zeros(3)
+    expected[:2] = np.asarray(hold, dtype=float)[:2]
+    np.testing.assert_array_equal(reading.hold, expected)
+
+
+@pytest.mark.parametrize("fmt", [WORDED, "{:.0f}", "{:.0f} mV"])
+@pytest.mark.parametrize(("hold", "side"), [(UP, "top"), (DL, "bottom")])
+def test_a_hold_up_or_down_holds_that_edge_for_any_format(fmt, hold, side):
+    reading = Readout(0, format=fmt, hold=hold, font_size=COUNT_FONT_SIZE)
+    edge = getattr(reading.label, f"get_{side}")()[1]
+    assert reading.held_point(reading.label)[1] == pytest.approx(edge, abs=1e-12)
+
+
+def test_a_readout_s_held_point_is_a_hook_with_one_signature():
+    from arachne import CountUp, Dot, anchor
+
+    calls: list[str] = []
+
+    class Marked(Readout):
+        def held_point(self, body):
+            calls.append(type(body).__name__)
+            return super().held_point(body)
+
+    dot = Dot(LEFT)
+    reading = Marked(0, format="{:.0f}", at=anchor(dot), offset=RIGHT)
+    assert calls  # called while it is constructed
+    count = CountUp(reading, 100, rate_func=lambda a: a)
+    count.begin()
+    count.interpolate(1.0)  # a new digit: the hook measures the new text
+    reading.attach()
+    assert reading.label.original_text == "100"
+    assert set(calls) == {"Text"}
+    np.testing.assert_allclose(reading.points_at(), dot.get_center(), atol=1e-9)
+
+
+def test_a_readout_s_hold_is_in_the_content_keys():
+    from arachne import Dot, anchor
+
+    from ..helpers.declared import apart, keyed
+
+    # The same text at the same place, held by different points.
+    left = Readout(0, format="{:.0f}", hold=LEFT)
+    right = Readout(0, format="{:.0f}", hold=RIGHT)
+    np.testing.assert_array_equal(left.label.points, right.label.points)
+    assert apart(keyed(left, "hold"), keyed(right, "hold"))
+    dot = Dot()
+    near = Readout(0, format="{:.0f}", at=anchor(dot), offset=RIGHT, hold=LEFT)
+    far = Readout(0, format="{:.0f}", at=anchor(dot), offset=RIGHT, hold=RIGHT)
+    assert apart(keyed(near, "_held_from_place"), keyed(far, "_held_from_place"))
+    assert apart(keyed(near, "_held_from_centre"), keyed(far, "_held_from_centre"))
+
+
+@pytest.mark.parametrize("hold", [np.array([1 + 2j, 0]), [1j, 0, 0], (1 + 0j, 0)])
+def test_a_complex_hold_is_refused(hold):
+    with pytest.raises(ValueError, match="hold is a point of a box"):
+        Readout(0, format="{:.0f}", hold=hold)

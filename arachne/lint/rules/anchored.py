@@ -153,14 +153,19 @@ def _read(
 
 
 def _pointed(mob: Any, attached: Any) -> np.ndarray | None:
-    """Where an annotation points: its leader's end, or its body's centre
-    less its offset when it follows; ``None`` when it does neither.
+    """Where an annotation points: its leader's end, or, when it follows,
+    the anchor's point its body's placement says
+    (:func:`~arachne.mobject.annotation.attach.placed_point`, read from the
+    fields placement wrote and the body's points, the record's alone: no
+    code of the scene's runs); ``None`` when it does neither.
     """
+    from arachne.mobject.annotation.attach import placed_point
+
     leader = mob.leader
     if leader is not None and len(leader.points):
         return np.array(leader.points[-1])
     if attached.follow and any(len(m.points) for m in mob.body.get_family()):
-        return mob.body.get_center() - np.array(attached.offset)
+        return placed_point(mob)
     return None
 
 

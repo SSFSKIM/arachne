@@ -287,3 +287,42 @@ def test_a_flow_first_taken_over_by_a_suspending_play_keeps_the_scene_s_time(
         ), float(t)
         checked += 1
     assert checked == 3 * fps // 2
+
+
+def test_a_labelled_connector_s_label_lies_above_its_flow_s_tokens():
+    from .diagram_scenes import labelled_flow
+
+    diagram, flow, _ = labelled_flow(inside=False)
+    label = diagram.edges[0].label
+    top = max(token.z_index for token in flow.submobjects)
+    assert all(member.z_index > top for member in label.get_family())
+
+
+def test_a_flow_on_an_unlabelled_connector_leaves_every_depth_as_it_was():
+    diagram, straight_flow, elbow_flow = flowing_diagram()
+    for member in [*diagram.get_family(), *straight_flow.get_family()]:
+        assert member.z_index == 0
+    assert all(m.z_index == 0 for m in elbow_flow.get_family())
+
+
+@pytest.mark.parametrize("scene", ["FlowUnderALabel", "FlowInsideUnderALabel"])
+def test_a_flow_s_tokens_are_painted_beneath_its_connector_s_label(scene):
+    # A frame draws its play's static picture, then its moving list in
+    # order: every token must come before the label's plate and glyphs.
+    admission.DEMOTED.clear()
+    session = Session.open(SCENES, scene, config={**SMALL, "frame_rate": 15})
+    try:
+        record = session.record
+        flow = next(m for m in record.mobjects() if isinstance(m, Flow))
+        label = flow.edge.label
+        play = record.plays[-1]
+        for t in (Fraction(1, 15), Fraction(7, 15)):
+            capture = play.capture_at(t)
+            order = {id(m): i for i, m in enumerate(capture.moving)}
+            tokens = [order[id(token)] for token in flow.submobjects]
+            covers = [order.get(id(m)) for m in label.get_family() if len(m.points)]
+            assert None not in covers, t  # the label is not in the static picture
+            assert max(tokens) < min(covers), t
+    finally:
+        session.close()
+        admission.DEMOTED.clear()

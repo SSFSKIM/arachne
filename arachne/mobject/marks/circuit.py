@@ -90,15 +90,102 @@ class Switch(VGroup):
         self.set_closed(self.closed)
 
     def set_closed(self, closed: bool) -> Switch:
-        """Draw the switch closed or open, where its contacts are now."""
+        """Draw the switch closed or open, where its contacts are now: the
+        blade pivots on the first contact and runs from its ring's edge to
+        the second ring's edge, or as far lifted, so it draws nothing inside
+        a ring. Each edge is where the blade's line meets the ring as drawn,
+        so a switch stretched unevenly or turned still meets its rings.
+        Open, the blade stops short of the far ring wherever its line would
+        cross it, by half that ring's reach.
+        """
         self.closed = bool(closed)
         first, second = (c.get_center() for c in self.contacts)
         u = direction(first, second)
         length = float(np.linalg.norm(second - first))
         angle = 0.0 if self.closed else self.open_angle
-        tip = first + length * (u * math.cos(angle) + normal(u) * math.sin(angle))
-        self.blade.set_points(line(first, tip))
+        along = u * math.cos(angle) + normal(u) * math.sin(angle)
+        first_ring, second_ring = self.contacts
+        near = _rim_reach(first_ring, first, along)
+        far = _rim_reach(second_ring, second, -u)
+        reach = length - far
+        if not self.closed:
+            # Lifted, it may still pass through or by the far ring (a small
+            # angle, a ring stretched across it): it stops where it would
+            # come within half the ring's own reach of the ring, so it reads
+            # as open and never enters it.
+            reach = _clear_reach(second_ring, first, along, near, reach, far / 2)
+        self.blade.set_points(line(first + along * near, first + along * reach))
         return self
+
+
+def _rim_reach(ring: VMobject, centre: np.ndarray, way: np.ndarray) -> float:
+    """How far from ``centre`` along the unit direction ``way`` the outline
+    of ``ring`` lies, read off its drawn curves (so a ring stretched unevenly
+    or turned is met where it is drawn); 0 when the ray meets none of it.
+    """
+    met = _ray_hits(ring, centre, way)
+    return float(met.max()) if len(met) else 0.0
+
+
+def _outline(ring: VMobject) -> tuple[np.ndarray, np.ndarray]:
+    """``ring``'s drawn outline as the starts and ends of a polyline's
+    segments, in the plane.
+    """
+    curves = np.asarray(ring.points, dtype=float).reshape(-1, 4, 3)
+    # Fine enough that a chord lies within 1e-6 of a unit ring's curve.
+    t = np.linspace(0.0, 1.0, 257)[:, None, None]
+    outline = (
+        (1 - t) ** 3 * curves[:, 0]
+        + 3 * (1 - t) ** 2 * t * curves[:, 1]
+        + 3 * (1 - t) * t**2 * curves[:, 2]
+        + t**3 * curves[:, 3]
+    )
+    return outline[:-1].reshape(-1, 3)[:, :2], outline[1:].reshape(-1, 3)[:, :2]
+
+
+def _clear_reach(
+    ring: VMobject,
+    origin: np.ndarray,
+    way: np.ndarray,
+    start: float,
+    reach: float,
+    clearance: float,
+) -> float:
+    """The furthest a segment from ``origin + start * way`` along ``way``
+    may run, up to ``reach``, while every point of it stays ``clearance``
+    or more from ``ring``'s drawn outline; ``start`` when none of it may.
+    """
+    starts, ends = _outline(ring)
+    course = ends - starts
+    lengths = np.maximum(np.einsum("ij,ij->i", course, course), 1e-18)
+    steps = np.linspace(start, reach, 513)
+    points = origin[:2] + steps[:, None] * way[:2]
+    rel = points[:, None, :] - starts[None, :, :]
+    share = np.clip(np.einsum("pij,ij->pi", rel, course) / lengths, 0.0, 1.0)
+    nearest = starts[None] + share[..., None] * course[None]
+    apart = np.linalg.norm(points[:, None, :] - nearest, axis=2).min(axis=1)
+    close = np.nonzero(apart < clearance)[0]
+    if not len(close):
+        return reach
+    return float(steps[max(close[0] - 1, 0)])
+
+
+def _ray_hits(ring: VMobject, centre: np.ndarray, way: np.ndarray) -> np.ndarray:
+    """How far from ``centre`` along the unit direction ``way`` the ray
+    meets ``ring``'s drawn outline, at each place it does.
+    """
+    starts, ends = _outline(ring)
+    starts = starts - centre[:2]
+    ends = ends - centre[:2]
+    edge = ends - starts
+    # Solve centre + s * way = start + r * edge, for s >= 0 and 0 <= r <= 1.
+    cross = way[0] * edge[:, 1] - way[1] * edge[:, 0]
+    usable = np.abs(cross) > 1e-15
+    safe = np.where(usable, cross, 1.0)
+    s = (starts[:, 0] * edge[:, 1] - starts[:, 1] * edge[:, 0]) / safe
+    r = (starts[:, 0] * way[1] - starts[:, 1] * way[0]) / safe
+    hit = usable & (s >= 0) & (r >= -1e-12) & (r <= 1 + 1e-12)
+    return np.asarray(s[hit], dtype=float)
 
 
 class OneWayMark(VMobject):

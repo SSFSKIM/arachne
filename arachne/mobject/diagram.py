@@ -295,7 +295,8 @@ class Flow(VGroup):
     whatever animates the edge, the diagram the flow is in or the flow
     itself, until :meth:`stop`. It reads the edge's own points (a
     connector's wire, not its head) as they are. Style keywords go to the
-    tokens.
+    tokens. A connector's label (:meth:`Diagram.connect`) is drawn above the
+    tokens, which pass under its pill.
     """
 
     def __init__(
@@ -323,6 +324,7 @@ class Flow(VGroup):
         self.stopped = False
         self.add(*(Dot(radius=radius, color=color) for _ in range(tokens)))
         apply_style(self.submobjects, style)
+        _lift_label(edge, self.submobjects)
         self.show_at(0.0)
         self.add_updater(_start_flow)
         _run_in_scene(self)
@@ -363,6 +365,21 @@ class Flow(VGroup):
         # the flow by then.
         _run_in_scene(self)
         return super().suspend_updating(recursive)
+
+
+def _lift_label(edge: VMobject, tokens: Sequence[VMobject]) -> None:
+    """Put ``edge``'s label, if it has one, a depth above ``tokens``, so
+    they pass under its pill. The scene draws by depth, and a frame's moving
+    mobjects are its depth-ordered list from the first that moves, so the
+    label, deeper than a moving token, is drawn after it wherever the flow
+    stands in the scene. Nothing else moves in depth.
+    """
+    label = getattr(edge, "label", None)
+    if label is None:
+        return
+    above = max(token.z_index for token in tokens) + 1
+    if min(member.z_index for member in label.get_family()) < above:
+        label.set_z_index(above)
 
 
 quantities.register("diagram.", owner="arachne.mobject.diagram", units=("u/s",))
