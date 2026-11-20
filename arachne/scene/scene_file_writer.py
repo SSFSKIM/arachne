@@ -270,10 +270,9 @@ class SceneFileWriter:
         self._inflight_by_path: dict[str, _PartialMovieEncodeJob] = {}
         self._current_encode_job: _PartialMovieEncodeJob | None = None
         #: Where each segment being encoded is meant to go, by the path it
-        #: is encoded to; and the segments whose encodes completed, which a
-        #: render that raised keeps (:meth:`discard`).
+        #: is encoded to. A completed one is noted in the staging, which a
+        #: render keeps across its executions (:meth:`discard`).
         self._segment_finals: dict[str, Path] = {}
-        self._completed_segments: list[Path] = []
         self.init_audio()
         self.frame_count = 0
         self.partial_movie_files: list[str | None] = []
@@ -625,7 +624,7 @@ class SceneFileWriter:
                 if keep_segments and self.output_spec.is_video:
                     # Only segments whose encodes completed: no concat
                     # manifest, no movie, nothing half written.
-                    self.staging.publish(only=self._completed_segments)
+                    self.staging.publish(only=self.staging.completed)
             finally:
                 self.staging.discard()
 
@@ -675,7 +674,7 @@ class SceneFileWriter:
         if not job.aborted:
             final = self._segment_finals.get(str(job.path))
             if final is not None:
-                self._completed_segments.append(final)
+                self.staging.completed.append(final)
 
     def _join_job_and_drain_on_failure(
         self,

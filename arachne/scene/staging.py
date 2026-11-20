@@ -44,6 +44,11 @@ class Staging:
     """
 
     def __init__(self) -> None:
+        #: The segments whose encodes completed this render, by final path:
+        #: what a render that raised keeps (:meth:`publish` ``only``). Kept
+        #: here, with the files, for the whole render, however many
+        #: executions and file writers it takes.
+        self.completed: list[Path] = []
         self._root: Path | None = None
         #: Every directory a final file is meant for, with its directory in
         #: staging, in the order first staged.
@@ -152,6 +157,9 @@ class InPlace:
 
     #: Files are where they are meant to be as soon as they are written.
     waits = False
+
+    def __init__(self) -> None:
+        self.completed: list[Path] = []
 
     def path(self, final: Path) -> Path:
         final = Path(final)

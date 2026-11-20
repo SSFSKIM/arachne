@@ -14,9 +14,10 @@ from arachne.renderer import cairo_renderer
 from arachne.routing import GpuLive, GpuRequired
 from arachne.scene.scene_file_writer import SceneFileWriter
 from arachne.scene.video_segment_encoder import VideoSegmentEncoder
+from arachne.session import Session
 
 from .compose_scenes import AfterLastPlay, LastPlay, Live, NoPlay, Plain
-from .conftest import render, snapshot
+from .conftest import SCENES, SMALL, render, snapshot
 
 
 @pytest.fixture
@@ -181,3 +182,38 @@ def test_a_scene_holding_nothing_renders_and_publishes_everything(tmp_path):
     # Again into the cache it left: both plays from the cache, the same files.
     render(Plain, media)
     assert snapshot(media).keys() == found.keys()
+
+
+class _Untouchable(dict):
+    """A record's nodes, which a check that has nothing new to inspect must
+    not read.
+    """
+
+    def _read(self, *args, **kwargs):
+        raise AssertionError("the check read every node's versions again")
+
+    values = items = keys = __iter__ = _read
+
+
+def test_the_render_check_inspects_only_what_it_has_not_inspected():
+    """Checked again with no new capture, the render's check reads nothing
+    of the record: its cost follows the captures added, not the record's
+    size, so checking at every capture of a growing record stays linear.
+    """
+    session = Session.open(SCENES, "DeclaredUnseen", config=SMALL)
+    record = session.record
+    try:
+        guard.check_render(record)
+        nodes, walk = record._nodes, record._walk
+
+        def walked(*args, **kwargs):
+            raise AssertionError("the check walked a capture again")
+
+        record._nodes, record._walk = _Untouchable(nodes), walked
+        try:
+            guard.check_render(record)
+            guard.check_render(record)
+        finally:
+            record._nodes, record._walk = nodes, walk
+    finally:
+        session.close()

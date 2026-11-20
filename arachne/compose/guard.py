@@ -23,6 +23,7 @@ from __future__ import annotations
 __all__ = ["RECORD_FIRST", "check_render"]
 
 from typing import TYPE_CHECKING
+from weakref import WeakKeyDictionary
 
 from arachne import routing
 
@@ -40,6 +41,11 @@ RECORD_FIRST = (
 )
 
 
+#: How many of each record's captures a check has found holding nothing:
+#: a capture is never changed once recorded, so none is inspected twice.
+_inspected: WeakKeyDictionary[Record, int] = WeakKeyDictionary()
+
+
 def check_render(record: Record, live: str | None = None) -> None:
     """Refuse a render whose ``record``, as far as it has run (its final
     capture too, once the script has ended), holds a capability; ``live``
@@ -48,9 +54,14 @@ def check_render(record: Record, live: str | None = None) -> None:
     if not routing.ever_declared():
         # No object of this process ever held a capability.
         return
-    found = routing.capabilities(record)
-    if not found:
+    # Each capture once: a render checks at every capture of a growing record.
+    captures = record._captures
+    start = _inspected.get(record, 0)
+    if not routing.holds_any(record, captures[start:]):
+        _inspected[record] = len(captures)
         return
+    # Refused: where each capability first appears, from the whole record.
+    found = routing.capabilities(record)
     cause = live if live is not None else record.refusal
     if cause is not None:
         raise routing.GpuLive(found, cause)

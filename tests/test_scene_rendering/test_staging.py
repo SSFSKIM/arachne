@@ -8,9 +8,21 @@ import errno
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from arachne import Circle, Create, FadeIn, Scene, Square, tempconfig
+from arachne import (
+    Circle,
+    Create,
+    Dot,
+    FadeIn,
+    Scene,
+    Square,
+    ValueTracker,
+    VGroup,
+    linear,
+    tempconfig,
+)
 from arachne.scene import staging
 from arachne.scene.scene_file_writer import SceneFileWriter
 from arachne.scene.staging import Staging
@@ -27,6 +39,34 @@ class TwoPlays(Scene):
 class Still(Scene):
     def construct(self):
         self.add(Square())
+
+
+class _OwnFill(Dot):
+    """A dot whose fill its own method gives: the record can't draw it."""
+
+    def get_fill_rgbas(self):
+        return np.array([[1.0, 0.0, 0.0, 1.0]])
+
+
+class RetriedThenRaises(Scene):
+    """A play drawn from the record; then a play an updater adds that dot to
+    halfway, which the scene is executed again to draw as it runs; then an
+    ordinary error.
+    """
+
+    def construct(self):
+        self.play(Create(Square()))
+        tracker = ValueTracker(0)
+        holder = VGroup()
+
+        def show(group):
+            if tracker.get_value() >= 0.5 and not group.submobjects:
+                group.add(_OwnFill(radius=0.3))
+
+        holder.add_updater(show)
+        self.add(holder)
+        self.play(tracker.animate.set_value(1), rate_func=linear)
+        raise RuntimeError("raised after the plays")
 
 
 def _render(scene: type, media: Path, **options) -> None:
@@ -125,3 +165,19 @@ def test_across_filesystems_a_file_is_renamed_into_place_from_a_sibling(
     assert sibling != target
     assert sorted(path.name for path in target.parent.iterdir()) == ["movie.mp4"]
     assert not staged.exists()
+
+
+def test_a_render_executed_again_keeps_the_segments_its_first_execution_finished(
+    tmp_path,
+):
+    """The first execution finished the first play's segment; the second,
+    executed to draw the next play as it runs, finds it in staging; the
+    render then raises, and both finished segments stay in the cache.
+    """
+    media = tmp_path / "media"
+    with pytest.raises(RuntimeError, match="raised after the plays"):
+        _render(RetriedThenRaises, media)
+    found = _files(media)
+    assert len(found) == 2
+    assert all("/partial_movie_files/" in name for name in found)
+    assert all(name.endswith(".mp4") for name in found)

@@ -4,7 +4,7 @@ scripts, for the compose tests.
 
 from __future__ import annotations
 
-from arachne import BLUE, RED, Circle, Create, Dot, FadeIn, Scene, Square
+from arachne import BLUE, RED, RIGHT, Circle, Create, Dot, FadeIn, Scene, Square
 from arachne.routing import declare
 
 
@@ -61,6 +61,19 @@ class Live(Scene):
         dot = HashDot()
         declare(dot, "effect.blur")
         self.play(FadeIn(dot))
+
+
+class DeclaredUnseen(Scene):
+    """A capability declared on a square never shown, and a few plays of a
+    dot: nothing drawn holds a capability.
+    """
+
+    def construct(self):
+        declare(Square(), "effect.blur")
+        dot = Dot()
+        self.add(dot)
+        for _ in range(4):
+            self.play(dot.animate.shift(RIGHT), run_time=0.5)
 
 
 class Plain(Scene):

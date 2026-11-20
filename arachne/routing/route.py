@@ -9,12 +9,20 @@ then is the GPU build imported.
 
 from __future__ import annotations
 
-__all__ = ["Where", "cache_token", "capabilities", "gpu", "pin_for", "route"]
+__all__ = [
+    "Where",
+    "cache_token",
+    "capabilities",
+    "gpu",
+    "holds_any",
+    "pin_for",
+    "route",
+]
 
 import hashlib
 import importlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Literal
@@ -86,6 +94,17 @@ def capabilities(record: Record) -> dict[str, Where]:
         if len(found) == len(declared):
             break
     return found
+
+
+def holds_any(record: Record, captures: Iterable[Capture]) -> bool:
+    """Whether an object a frame of one of ``captures`` paints holds a
+    capability there: :func:`capabilities`' walk, over those captures only.
+    """
+    return any(
+        ATTRIBUTE in state.keys and state.get(ATTRIBUTE)
+        for capture in captures
+        for _, state in record._walk(capture, _drawn(record, capture))
+    )
 
 
 def route(record: Record) -> Route:
