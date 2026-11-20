@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from arachne import (
     BLUE,
     DOWN,
@@ -31,6 +33,8 @@ from arachne import (
     FadeIn,
     FadeOut,
     Flow,
+    Group,
+    ImageMobject,
     Line,
     MaintainPositionRelativeTo,
     MorphParts,
@@ -40,6 +44,7 @@ from arachne import (
     Pose,
     Rig,
     Scene,
+    ShowIncreasingSubsets,
     Sprite,
     Square,
     Succession,
@@ -606,6 +611,42 @@ class RedrawnWithinOneDrawing(Scene):
         set_timing(square, SLOW)
         self.wait(0.4)
         self.play(Create(square, rate_func=linear), run_time=0.2)
+        self.wait(0.5)
+
+
+class LayeredBackBetweenDrawings(Scene):
+    """A declared square raised by the scene's code between two boundaries,
+    then put back by a move that ends between two boundaries: the method
+    the move replays as it ends writes the z-index on display, 0.
+    """
+
+    def construct(self) -> None:
+        square = Square()
+        self.add(square)
+        set_timing(square, SLOW)
+        self.wait(0.4)
+        square.set_z_index(1)
+        self.play(square.animate.set_z_index(0), run_time=0.2)
+        self.wait(0.5)
+
+
+def _pictures() -> Group:
+    pixels = np.full((4, 4, 4), 255, dtype=np.uint8)
+    return Group(ImageMobject(pixels), ImageMobject(pixels)).arrange(RIGHT)
+
+
+class PicturesShownInTurn(Scene):
+    """Two declared pictures, on display, shown one by one again by a play
+    between two boundaries: each picture's opacity is set to the literal 0
+    or 1, which its drawing on display holds.
+    """
+
+    def construct(self) -> None:
+        pictures = _pictures()
+        self.add(pictures)
+        set_timing(pictures, SLOW)
+        self.wait(0.4)
+        self.play(ShowIncreasingSubsets(pictures, rate_func=linear), run_time=0.2)
         self.wait(0.5)
 
 

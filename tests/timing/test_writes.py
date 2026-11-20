@@ -103,3 +103,33 @@ def test_an_animation_ending_on_the_points_on_display_is_written(opened):
         points = np.asarray(_held(session, square, t).get("_points"))
         assert points.shape == whole.shape, t
         assert np.abs(points - whole).max() < 1e-9, t
+
+
+def test_a_method_a_move_replays_as_it_ends_writes_the_value_on_display(opened):
+    # The square is raised to 1 between plays, off the grid, so the drawing
+    # on display still holds 0; the move puts it back to 0 as it ends, off
+    # the grid too. From 2/3 on, and at the scene's end, it is at 0.
+    session = opened("LayeredBackBetweenDrawings", 60)
+    square = _of(session, Square)
+    for t in [*_ticks(session), session.record.duration]:
+        z = _held(session, square, t).get("z_index")
+        assert z == 0, t
+
+
+def test_a_picture_s_opacity_set_to_the_value_on_display_is_written(opened):
+    # Each picture's opacity is written whole, its pixels' alpha with its
+    # stroke opacity, though the literal it is set to is the one on display:
+    # the two agree at every tick and at the scene's end.
+    session = opened("PicturesShownInTurn", 60)
+    record = session.record
+    pictures = [m for m in record.mobjects() if type(m).__name__ == "ImageMobject"]
+    assert len(pictures) == 2
+    for t in [*_ticks(session), record.duration]:
+        for picture in pictures:
+            state = _held(session, picture, t)
+            alpha = np.asarray(state.get("_pixel_array"))[:, :, 3].max() / 255
+            assert float(state.get("stroke_opacity")) == alpha, t
+    # Both shown at the end.
+    for picture in pictures:
+        state = _held(session, picture, record.duration)
+        assert np.asarray(state.get("_pixel_array"))[:, :, 3].max() == 255
