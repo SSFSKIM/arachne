@@ -93,19 +93,48 @@ class Switch(VGroup):
         """Draw the switch closed or open, where its contacts are now: the
         blade pivots on the first contact and runs from its ring's edge to
         the second ring's edge, or as far lifted, so it draws nothing inside
-        a ring.
+        a ring. Each edge is where the blade's line meets the ring as drawn,
+        so a switch stretched unevenly or turned still meets its rings.
         """
         self.closed = bool(closed)
         first, second = (c.get_center() for c in self.contacts)
-        near, far = (c.width / 2 for c in self.contacts)
         u = direction(first, second)
         length = float(np.linalg.norm(second - first))
         angle = 0.0 if self.closed else self.open_angle
         along = u * math.cos(angle) + normal(u) * math.sin(angle)
+        near = _rim_reach(self.contacts[0], first, along)
+        far = _rim_reach(self.contacts[1], second, -u)
         self.blade.set_points(
             line(first + along * near, first + along * (length - far))
         )
         return self
+
+
+def _rim_reach(ring: VMobject, centre: np.ndarray, way: np.ndarray) -> float:
+    """How far from ``centre`` along the unit direction ``way`` the outline
+    of ``ring`` lies, read off its drawn curves (so a ring stretched unevenly
+    or turned is met where it is drawn); 0 when the ray meets none of it.
+    """
+    curves = np.asarray(ring.points, dtype=float).reshape(-1, 4, 3)
+    # Fine enough that a chord lies within 1e-6 of a unit ring's curve.
+    t = np.linspace(0.0, 1.0, 257)[:, None, None]
+    outline = (
+        (1 - t) ** 3 * curves[:, 0]
+        + 3 * (1 - t) ** 2 * t * curves[:, 1]
+        + 3 * (1 - t) * t**2 * curves[:, 2]
+        + t**3 * curves[:, 3]
+    )
+    starts = outline[:-1].reshape(-1, 3)[:, :2] - centre[:2]
+    ends = outline[1:].reshape(-1, 3)[:, :2] - centre[:2]
+    edge = ends - starts
+    # Solve centre + s * way = start + r * edge, for s >= 0 and 0 <= r <= 1.
+    cross = way[0] * edge[:, 1] - way[1] * edge[:, 0]
+    usable = np.abs(cross) > 1e-15
+    safe = np.where(usable, cross, 1.0)
+    s = (starts[:, 0] * edge[:, 1] - starts[:, 1] * edge[:, 0]) / safe
+    r = (starts[:, 0] * way[1] - starts[:, 1] * way[0]) / safe
+    hit = usable & (s >= 0) & (r >= -1e-12) & (r <= 1 + 1e-12)
+    return float(s[hit].max()) if hit.any() else 0.0
 
 
 class OneWayMark(VMobject):

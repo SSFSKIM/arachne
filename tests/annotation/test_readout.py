@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from arachne import DOWN, LEFT, ORIGIN, RIGHT, UL, UP, UR, Readout, Text, tempconfig
+from arachne import DL, DOWN, LEFT, ORIGIN, RIGHT, UL, UP, UR, Readout, Text, tempconfig
 from arachne.camera.camera import Camera
 from arachne.session import Session
 from arachne.timeline import admission
@@ -565,3 +565,76 @@ def _ink_runs(frame: np.ndarray) -> list[tuple[int, int]]:
             runs.append((start, col - 1))
             start = None
     return runs
+
+
+@pytest.mark.parametrize(
+    "hold",
+    [
+        (2, 0, 0),
+        (0.5, 0),
+        (float("nan"), 0, 0),
+        (float("inf"), 0),
+        (1, 0, 1),
+        (1, 0, 0, 0),
+        (1,),
+        [[1, 0, 0]],
+        "left",
+    ],
+)
+def test_a_hold_is_one_of_the_nine_points_of_a_box(hold):
+    with pytest.raises(ValueError, match="hold is a point of a box"):
+        Readout(0, format="{:.0f}", hold=hold)
+
+
+@pytest.mark.parametrize("hold", [LEFT, UR, (1, -1), (0, 0, 0), (-1.0, 1.0, 0.0)])
+def test_a_hold_given_as_a_point_of_the_box_is_taken(hold):
+    reading = Readout(0, format="{:.0f}", hold=hold)
+    expected = np.zeros(3)
+    expected[:2] = np.asarray(hold, dtype=float)[:2]
+    np.testing.assert_array_equal(reading.hold, expected)
+
+
+@pytest.mark.parametrize("fmt", [WORDED, "{:.0f}", "{:.0f} mV"])
+@pytest.mark.parametrize(("hold", "side"), [(UP, "top"), (DL, "bottom")])
+def test_a_hold_up_or_down_holds_that_edge_for_any_format(fmt, hold, side):
+    reading = Readout(0, format=fmt, hold=hold, font_size=COUNT_FONT_SIZE)
+    edge = getattr(reading.label, f"get_{side}")()[1]
+    assert reading.held_point(reading.label)[1] == pytest.approx(edge, abs=1e-12)
+
+
+def test_a_readout_s_held_point_is_a_hook_with_one_signature():
+    from arachne import CountUp, Dot, anchor
+
+    calls: list[str] = []
+
+    class Marked(Readout):
+        def held_point(self, body):
+            calls.append(type(body).__name__)
+            return super().held_point(body)
+
+    dot = Dot(LEFT)
+    reading = Marked(0, format="{:.0f}", at=anchor(dot), offset=RIGHT)
+    assert calls  # called while it is constructed
+    count = CountUp(reading, 100, rate_func=lambda a: a)
+    count.begin()
+    count.interpolate(1.0)  # a new digit: the hook measures the new text
+    reading.attach()
+    assert reading.label.original_text == "100"
+    assert set(calls) == {"Text"}
+    np.testing.assert_allclose(reading.points_at(), dot.get_center(), atol=1e-9)
+
+
+def test_a_readout_s_hold_is_in_the_content_keys():
+    from arachne import Dot, anchor
+
+    from ..helpers.declared import apart, keyed
+
+    # The same text at the same place, held by different points.
+    left = Readout(0, format="{:.0f}", hold=LEFT)
+    right = Readout(0, format="{:.0f}", hold=RIGHT)
+    np.testing.assert_array_equal(left.label.points, right.label.points)
+    assert apart(keyed(left, "hold"), keyed(right, "hold"))
+    dot = Dot()
+    near = Readout(0, format="{:.0f}", at=anchor(dot), offset=RIGHT, hold=LEFT)
+    far = Readout(0, format="{:.0f}", at=anchor(dot), offset=RIGHT, hold=RIGHT)
+    assert apart(keyed(near, "_held_from_place"), keyed(far, "_held_from_place"))

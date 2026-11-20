@@ -35,6 +35,7 @@ CLEAN = [
     "AnnotatedShape",
     "CalloutAfterMovingDot",
     "FollowingReadoutAndGauge",
+    "WideningReadouts",
 ]
 
 

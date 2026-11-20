@@ -490,3 +490,22 @@ class CountAfterAWord(Scene):
         reading = Readout(0, format="swell {:.0f}%", font_size=WORDED_FONT_SIZE)
         self.add(reading)
         self.play(CountUp(reading, 100, rate_func=linear), run_time=1)
+
+
+class WideningReadouts(Scene):
+    """Two leaderless readouts attached to a moving dot, one to its right
+    and one to its left, counting from one digit to six: each widens away
+    from the dot, its centre moving while its edge facing the dot keeps its
+    gap.
+    """
+
+    def construct(self) -> None:
+        dot = _moving_dot()
+        right = Readout(0, format="{:.0f}", at=anchor(dot), offset=1.2 * RIGHT)
+        left = Readout(0, format="{:.0f}", at=anchor(dot), offset=1.2 * LEFT + UP)
+        self.add(dot, right, left)
+        self.play(
+            CountUp(right, 100000, rate_func=linear),
+            CountUp(left, 100000, rate_func=linear),
+            run_time=1,
+        )

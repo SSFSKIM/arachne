@@ -16,24 +16,9 @@ draws the format of the declared value at its own instant; and the exact
 target is in a delivered frame only when a frame instant at or after the
 play's end exists, so a count followed by a wait shows it.
 
-As its text widens or narrows, a readout keeps one point of its box still,
-its *hold*, so what the reader has found does not move under the eye:
-
-- attached to an anchor, the edge facing the anchor: an offset to the right
-  holds its left edge, one to the left its right edge, one straight up or
-  down its centre. The gap to what it labels (and its leader's length) stays
-  as it was set, and the text grows away from its anchor, never over it;
-- placed by hand, its start (left edge) when its format begins with a word
-  or a sign before the number (``"swell {:.0f}%"``), which the reader has
-  already read and must not slide; otherwise (a bare number, a number
-  before its unit) its centre, where ``move_to`` put it;
-- ``hold`` names it outright, for a placement the readout cannot see: a
-  number right-aligned in a column holds ``RIGHT``.
-
-Up and down it keeps its baseline: the bottom of a glyph its format shows
-in every text (the first of a leading word, else the last of a trailing
-unit), which digits of other heights or a dipping round digit never move;
-a bare number keeps its centre's height.
+As its text widens or narrows, a readout keeps one point still, its
+*hold*, so what the reader has found does not move under the eye. The full
+rule, on both axes, is :class:`Readout`'s.
 
 A readout declares its value as ``annotation.count``
 (:mod:`arachne.quantities`), read from the value a capture holds: the
@@ -148,7 +133,7 @@ def _hold_for(
     hold: Sequence[float] | np.ndarray | None,
 ) -> Sequence[float] | np.ndarray:
     """The point of a readout's box that stays still as its text changes
-    (the module's rule): ``hold`` when given.
+    (:class:`Readout`'s rule): ``hold`` when given.
     """
     if hold is not None:
         return hold
@@ -164,10 +149,41 @@ class Readout(Annotation):
     with a leader line with ``leader``), its text on a pill with ``pill``.
 
     Its value is :attr:`value`; :meth:`set_value` changes it and rebuilds
-    the text, and :class:`CountUp` runs it to a target. As the text changes
-    it keeps the point ``hold`` of its box still (``LEFT``, ``ORIGIN`` or
-    ``RIGHT``); by default the edge facing its anchor, or, placed by hand,
-    its start when its format begins with a word and its centre otherwise.
+    the text, and :class:`CountUp` runs it to a target.
+
+    As the text changes it keeps one point still, its :attr:`hold`, one of
+    the nine points of its box (:func:`~.attach.checked_hold`; ``ValueError``
+    for anything else). Across, the hold's first coordinate picks the box's
+    left edge (-1), centre (0) or right edge (1):
+
+    - attached to an anchor, by default the edge facing the anchor: an
+      offset with a part to the right holds the left edge, one to the left
+      the right edge, one straight up or down (no part across) the centre.
+      The text grows away from what it labels, never over it;
+    - placed by hand (``move_to``, ``next_to``), by default its start (the
+      left edge) when its format shows something before the number
+      (``"swell {:.0f}%"``), which the reader has already read; otherwise
+      (a bare number, a number before its unit) its centre, where
+      ``move_to`` put it;
+    - ``hold`` given names it outright, for a placement the readout cannot
+      see: a number right-aligned in a column holds ``RIGHT``.
+
+    Up and down, a hold with no part up or down (every default) keeps the
+    baseline: the bottom of a glyph the format shows in every text (the
+    first of what comes before the number, else the last of what comes
+    after it), which digits of other heights never move; a bare number,
+    which has no such glyph, keeps its box's middle. A hold with a part up
+    or down (``UP``, ``DL``) keeps that edge of the box, the top or the
+    bottom, for any format.
+
+    Attached and following, the held point keeps where it stood from the
+    anchor's point plus the offset as the anchor moves; with ``follow``
+    false the readout is placed once and the held point stays where it
+    was put. Either way the gap across from the anchor to the held edge
+    stays as set, but a leader, which runs from the box's edge toward the
+    anchor, changes its length as the box widens unless it runs straight
+    across. :meth:`held_point` reads the held point of a text; a subclass
+    that overrides it keeps its signature.
     """
 
     def __init__(
@@ -204,17 +220,16 @@ class Readout(Annotation):
             name=name,
         )
 
-    def _held_point(self, label: Text | None = None) -> np.ndarray:
-        """Where the label's (or ``label``'s) :attr:`hold` point stands:
-        across, that point of its box; up and down, the bottom of the glyph
-        its format always shows (its baseline), or its box's when it shows
-        none.
+    def held_point(self, body: Mobject) -> np.ndarray:
+        """Where the text ``body`` (the label, or a text about to replace
+        it) puts the point the readout holds (the class's rule): across,
+        the point :attr:`hold` of its box; up and down, the baseline or the
+        edge the hold names.
         """
-        label = self.label if label is None else label
-        point = np.array(label.get_critical_point(self.hold), dtype=float)
+        point = np.array(body.get_critical_point(self.hold), dtype=float)
         fixed = _fixed_glyph(self.format)
-        glyphs = _glyphs(label)
-        if fixed is not None and glyphs:
+        glyphs = _glyphs(body) if isinstance(body, Text) else []
+        if self.hold[1] == 0 and fixed is not None and glyphs:
             point[1] = glyphs[fixed].get_bottom()[1]
         return point
 
@@ -236,7 +251,7 @@ class Readout(Annotation):
         label = self.label
         if said != label.original_text:
             made = self._label_class(said, font_size=label.font_size)
-            made.shift(self._held_point() - self._held_point(made))
+            made.shift(self.held_point(label) - self.held_point(made))
             _restyle(made, label)
             # A play draws its moving mobjects as listed when it began (CE's
             # moving list), so the glyphs replaced draw nothing from now on,

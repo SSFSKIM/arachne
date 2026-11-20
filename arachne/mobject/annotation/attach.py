@@ -37,6 +37,7 @@ __all__ = [
     "LeaderLine",
     "PointAt",
     "anchor",
+    "checked_hold",
     "keep_attached",
 ]
 
@@ -48,6 +49,7 @@ import numpy as np
 from arachne.assets.anchor import Anchor
 from arachne.constants import ORIGIN, UR
 from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
+from arachne.mobject.values import FrozenArray, freeze
 from arachne.utils.color import WHITE, ParsableManimColor
 
 if TYPE_CHECKING:
@@ -212,11 +214,15 @@ class Annotation(VGroup):
     (``None``: placed by hand, and no leader) at ``offset``, following it
     unless ``follow`` is false.
 
-    ``hold`` is the point of the body's box that following keeps in place
-    (``ORIGIN``, its centre, by default; ``LEFT``, its left edge): the body
-    is first put with its centre at the anchor's point plus the offset, and
-    from then on that point of its box keeps where it stood relative to the
-    anchor, whatever the body's width does.
+    ``hold`` names the point of the body that following keeps in place, as
+    one of the nine points of its box (:func:`checked_hold`): ``ORIGIN``, its
+    centre, by default; ``LEFT``, the middle of its left edge; ``UR``, its
+    upper right corner. The body is first put with its centre at the
+    anchor's point plus the offset; from then on, whatever its size does,
+    following keeps :meth:`held_point` where it stood then from the anchor's
+    point plus the offset. With ``follow`` false the body is placed so once
+    and stays. :meth:`points_at` reads the anchor's point back from the
+    body, as the lint rule ``anchored`` does.
     """
 
     def __init__(
@@ -246,10 +252,12 @@ class Annotation(VGroup):
         if self.leader is not None:
             self.add(self.leader)
         self.add(body)
-        #: The point of the body's box that following keeps in place.
-        self.hold = _direction(hold)
-        #: Where that point stands from the anchor's point plus the offset.
-        self._held_from_place = np.zeros(3)
+        #: The point of the body's box that following keeps in place: a
+        #: read-only array, so that it is part of the content key.
+        self.hold = checked_hold(hold)
+        #: Where the held point stands from the anchor's point plus the
+        #: offset, read-only for the same reason.
+        self._held_from_place: FrozenArray = freeze(np.zeros(3), FrozenArray)
         #: How the annotation is attached, or ``None`` when it is not.
         self.attached: Attached | None = None
         if at is None:
@@ -268,14 +276,33 @@ class Annotation(VGroup):
             return
         # Placed at its anchor first, whether it follows or stays there.
         body.move_to(point + place)
-        self._held_from_place = self._held_point() - (point + place)
+        self._held_from_place = freeze(
+            self.held_point(body) - (point + place), FrozenArray
+        )
         if self.attached.follow or self.leader is not None:
             self.add_updater(keep_attached)
         self.attach()
 
-    def _held_point(self) -> np.ndarray:
-        """Where the body's :attr:`hold` point stands now."""
-        return np.asarray(self.body.get_critical_point(self.hold))
+    def held_point(self, body: Mobject) -> np.ndarray:
+        """Where ``body`` (this annotation's body, or one about to replace
+        it) puts the point that following holds: here, the point
+        :attr:`hold` of its box. A subclass that holds another point
+        overrides it with this signature. It is called while
+        :class:`Annotation` is constructed, once the body is first placed,
+        so what an override reads must be set before ``Annotation.__init__``
+        runs; then at every :meth:`attach`, and by :meth:`points_at`.
+        """
+        return np.array(body.get_critical_point(self.hold), dtype=float)
+
+    def points_at(self) -> np.ndarray | None:
+        """The anchor's point that the body's placement says, by the held
+        point; ``None`` when the annotation is not attached. Following puts
+        the body where this is the anchor's point.
+        """
+        if self.attached is None:
+            return None
+        held = self.held_point(self.body)
+        return held - self._held_from_place - np.array(self.attached.offset)
 
     def attach(self) -> None:
         """Put the body at the anchor's point plus the offset, when it
@@ -290,17 +317,33 @@ class Annotation(VGroup):
             return
         if attached.follow:
             place = point + np.array(attached.offset) + self._held_from_place
-            self.body.shift(place - self._held_point())
+            self.body.shift(place - self.held_point(self.body))
         if self.leader is not None:
             self.leader.put_between(_edge_toward(self.body, point), point)
 
 
-def _direction(given: Sequence[float] | np.ndarray) -> np.ndarray:
-    """``given`` as a direction of three coordinates."""
-    direction = np.zeros(3)
-    flat = np.asarray(given, dtype=float).ravel()
-    direction[: min(len(flat), 3)] = flat[:3]
-    return direction
+def checked_hold(given: Sequence[float] | np.ndarray) -> FrozenArray:
+    """``given`` as a read-only point of a box, when it is one: two or three
+    numbers, the first two each -1, 0 or 1 (``LEFT``, ``ORIGIN``, ``UR``,
+    ...) and the third, if given, 0; :class:`ValueError` naming it
+    otherwise.
+    """
+    try:
+        flat = np.asarray(given, dtype=float)
+    except (TypeError, ValueError):
+        flat = np.full(1, np.nan)
+    if (
+        flat.ndim != 1
+        or len(flat) not in (2, 3)
+        or not np.isin(flat[:2], (-1.0, 0.0, 1.0)).all()
+        or (len(flat) == 3 and flat[2] != 0)
+    ):
+        raise ValueError(
+            "hold is a point of a box: two or three numbers, each of the first"
+            " two -1, 0 or 1 and the third 0, as LEFT, ORIGIN or UR; not"
+            f" {given!r}."
+        )
+    return freeze(np.array([flat[0], flat[1], 0.0]) + 0.0, FrozenArray)
 
 
 def _edge_toward(body: Mobject, point: np.ndarray) -> np.ndarray:

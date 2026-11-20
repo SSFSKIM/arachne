@@ -634,4 +634,38 @@ def test_a_switchs_blade_draws_nothing_inside_its_rings(closed):
     ends = np.asarray(switch.blade.points)[[0, -1], :2]
     for end, ring in zip(ends, switch.contacts, strict=True):
         radius = ring.width / 2
-        assert np.linalg.norm(end - ring.get_center()[:2]) == pytest.approx(radius)
+        # On the ring as drawn: a Bezier circle, within 1e-4 of its radius.
+        assert np.linalg.norm(end - ring.get_center()[:2]) == pytest.approx(
+            radius, rel=1e-4
+        )
+
+
+def _off_outline(ring, point: np.ndarray) -> float:
+    """How far ``point`` lies from ``ring``'s drawn outline, read as a dense
+    polyline through its curves.
+    """
+    outline = np.concatenate([_bezier_polyline(c, 400) for c in _curves(ring)])
+    starts, course = outline[:-1], np.diff(outline, axis=0)
+    share = np.clip(
+        np.einsum("ij,ij->i", point - starts, course)
+        / np.maximum(np.einsum("ij,ij->i", course, course), 1e-18),
+        0.0,
+        1.0,
+    )
+    return float(np.linalg.norm(starts + course * share[:, None] - point, axis=1).min())
+
+
+def test_a_switch_stretched_unevenly_closes_onto_its_rings_as_drawn():
+    # A diagonal switch stretched across: its rings are ellipses, which the
+    # blade must meet where they are drawn, leaving no gap and entering
+    # neither.
+    switch = Switch(LEFT + DOWN, RIGHT + UP, contact_radius=0.1)
+    switch.stretch(2.0, 0)
+    for closed in (True, False):
+        switch.set_closed(closed)
+        ends = np.asarray(switch.blade.points)[[0, -1], :2]
+        gap = _off_outline(switch.contacts[0], ends[0])
+        assert gap < 1e-5, (closed, gap)
+        if closed:
+            gap = _off_outline(switch.contacts[1], ends[1])
+            assert gap < 1e-5, gap
