@@ -4,12 +4,19 @@
 site directory: every Python process of that environment loads it (the command line, a session
 server, a forked worker), and it appends one JSON line (the process id, its command line) to
 ``<log>`` whenever the process tries to import ``arachne_gpu``, whether or not the import succeeds.
+Installed again, the hook writes to the new log.
+
+``python3 tripwire.py marker`` prints the comment a deliberate import carries in its command line,
+by which the log tells it from any other.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+#: The comment a deliberate import carries in its command line.
+MARKER = "cpu-bytes: the deliberate import"
 
 HOOK = '''\
 """cpu-bytes' import tripwire: records every attempt to import arachne_gpu."""
@@ -49,6 +56,9 @@ def install(site: Path, log: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4 or sys.argv[1] != "install":
+    if sys.argv[1:] == ["marker"]:
+        print(MARKER)
+    elif len(sys.argv) == 4 and sys.argv[1] == "install":
+        install(Path(sys.argv[2]), Path(sys.argv[3]))
+    else:
         sys.exit(__doc__)
-    install(Path(sys.argv[2]), Path(sys.argv[3]))

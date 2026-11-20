@@ -1,14 +1,18 @@
-"""Compares the two arms of ``cpu_bytes.sh``: the frame digests must be identical, and each arm's
-tripwire log must hold the one deliberate import and nothing else.
+"""Compares the arms of the bytes comparison (``cpu_bytes_arm.sh``): every arm's frame digests
+must be identical, each arm's tripwire log must hold its one deliberate import and nothing else,
+and at least one arm must be without the GPU build and one with it.
 
-``python3 cpu_bytes_compare.py <without.json> <with.json> <without.log> <with.log> <marker>``
+``python3 cpu_bytes_compare.py <arm directory> <arm directory> [<arm directory>...]``
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
+
+from tripwire import MARKER
 
 
 def records(log: Path) -> list[dict]:
@@ -16,18 +20,31 @@ def records(log: Path) -> list[dict]:
 
 
 def main() -> None:
-    without, with_gpu, log_without, log_with, marker = sys.argv[1:]
-    a, b = json.loads(Path(without).read_text()), json.loads(Path(with_gpu).read_text())
+    arms = [Path(arm) for arm in sys.argv[1:]]
+    if len(arms) < 2:
+        sys.exit(__doc__)
+    digests = {arm: json.loads((arm / "digests.json").read_text()) for arm in arms}
+    builds = {
+        arm: json.loads((arm / "arm.json").read_text())["gpu_build"] for arm in arms
+    }
+    first = arms[0]
     problems = []
-    problems += [
-        f"{path}: the frames differ with and without the GPU build"
-        for path in sorted(set(a) | set(b))
-        if a.get(path) != b.get(path)
-    ]
-    for log in (log_without, log_with):
-        found = records(Path(log))
-        deliberate = [r for r in found if marker in r["command"]]
-        others = [r for r in found if marker not in r["command"]]
+    if set(builds.values()) != {"absent", "present"}:
+        problems.append(
+            f"the arms are not with and without the GPU build: {sorted(builds.values())}"
+        )
+    for arm in arms[1:]:
+        a, b = digests[first], digests[arm]
+        problems += [
+            f"{path}: the frames differ between {first.name} and {arm.name}"
+            for path in sorted(set(a) | set(b))
+            if a.get(path) != b.get(path)
+        ]
+    for arm in arms:
+        log = arm / "tripwire.log"
+        found = records(log)
+        deliberate = [r for r in found if MARKER in r["command"]]
+        others = [r for r in found if MARKER not in r["command"]]
         print(f"tripwire {log}: {len(deliberate)} deliberate, {len(others)} other")
         if len(deliberate) != 1:
             problems.append(
@@ -38,8 +55,12 @@ def main() -> None:
         print(f"FAIL: {problem}")
     if problems:
         sys.exit(1)
-    frames = sum(repeat for frames in a.values() for _, repeat in frames)
-    scenes = len({path.split(" ", 1)[1] for path in a})
+    listed = digests[first]
+    frames = sum(repeat for frames in listed.values() for _, repeat in frames)
+    scenes = len({path.split(" ", 1)[1] for path in listed})
+    canonical = json.dumps(listed, sort_keys=True, separators=(",", ":")).encode()
+    print(f"arms: {', '.join(f'{arm.name} (build {builds[arm]})' for arm in arms)}")
+    print(f"frames sha256: {hashlib.sha256(canonical).hexdigest()}")
     print(
         f"cpu-bytes: {frames} frames of {scenes} scenes byte-identical with and without the GPU build"
     )
