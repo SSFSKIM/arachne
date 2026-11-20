@@ -190,6 +190,14 @@ IMMUTABLE_TYPES: dict[str, str] = {
         "A depth reference point the record made at a capture, its centre a "
         "read-only array."
     ),
+    "arachne.assets.reader.Asset": (
+        "An asset, loaded: a frozen dataclass whose manifest is deep-immutable "
+        "and whose shapes it gives as fresh copies; its digest is the media "
+        "object's recorded ``_digest``."
+    ),
+    "arachne.mobject.media.objects._Made": (
+        "The line that made a media object, a frozen dataclass of one number."
+    ),
 }
 
 #: A value of a recorded state whose drawing inputs the record keeps apart.
@@ -293,6 +301,24 @@ TERM_ENDS = (
 
 #: Files a draw opens, by extension, and why the record need not hold them.
 FILES: dict[str, str] = {}
+
+#: Functions that read a file while a frame is drawn, by ``module:qualname``,
+#: and why the record need not hold its bytes. Only a file under the
+#: directory of the asset the function was given (its ``asset`` argument) is
+#: reviewed, and the descriptor that read opens.
+CHECKED_READS: dict[str, str] = {
+    "arachne.mobject.media.frames:checked_frame": (
+        "A media object's frame, read afresh at every decode that is not a "
+        "cache hit (``reader.read_file``, frames.py:205), its form, size "
+        "(frames.py:218) and decoded pixels' frame digest checked against the "
+        "digest the asset's manifest lists for that file (frames.py:236-237), "
+        "each failure ``media.inexact`` with the constructing line, and only "
+        "then cached. The record holds the object's ``_digest`` and ``_frame``, "
+        "which fix that manifest and that file: the pixels drawn are the pixels "
+        "the digest fixed, or nothing is drawn. A clip's frames are not copied "
+        "into the record, which would hold every frame's pixels."
+    ),
+}
 
 #: Functions whose reads are not drawing reads of the scene, by
 #: ``module:qualname``, and why.
@@ -729,6 +755,8 @@ class Tracer:
             if caller.f_code.co_filename.startswith("<frozen importlib"):
                 return  # a module imported while drawing
             path = str(args[0])
+            if _checked_read(caller, args[0]):
+                return
             if os.path.splitext(path)[1].lower() not in FILES:
                 self.found.setdefault(
                     Read(
@@ -1164,6 +1192,28 @@ def _held_by_reference(name: str, value: Any, record: Any) -> str | None:
 
 #: Plain values: nothing changes one in place.
 _PLAIN = (type(None), bool, int, float, complex, str, bytes, np.generic, enum.Enum)
+
+
+def _checked_read(caller: types.FrameType | None, opened: Any) -> bool:
+    """Whether a file opened while a frame is drawn is a reviewed read
+    (:data:`CHECKED_READS`): opened within one of its functions, and either
+    the descriptor that function's read opened or a path under the directory
+    of the asset it was given.
+    """
+    frame = caller
+    while frame is not None:
+        name = f"{frame.f_globals.get('__name__')}:{frame.f_code.co_qualname}"
+        if name in CHECKED_READS:
+            directory = getattr(frame.f_locals.get("asset"), "directory", None)
+            if directory is None:
+                return False
+            if isinstance(opened, int):
+                return True
+            found = os.path.realpath(os.fspath(opened))
+            root = os.path.realpath(os.fspath(directory))
+            return os.path.commonpath([found, root]) == root
+        frame = frame.f_back
+    return False
 
 
 def _immutable(value: Any) -> bool:

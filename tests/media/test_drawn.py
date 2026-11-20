@@ -191,3 +191,30 @@ def test_old_scenes_draw_the_same_bytes_after_a_scene_drew_clips(tmp_path):
     assert found["drawn"] == 4
     assert found["fresh"] == found["after"]
     assert all(scene["route"] == "cpu" for scene in found["fresh"].values())
+
+
+def test_a_clip_drawn_from_the_record_under_the_trace_reads_only_what_it_holds(
+    session_of, door, monkeypatch
+):
+    """Each frame of a moved clip is decoded while it is drawn (a fresh frame
+    cache), and the draw-reads trace finds no read the record does not hold:
+    the frame file is a read the trace reviews (``CHECKED_READS``).
+    """
+    from tests.helpers import draw_reads
+
+    monkeypatch.setattr(frames, "cache", FrameCache())
+    shared = draw_reads._TRACER
+    tracer = shared if shared is not None else draw_reads.Tracer()
+    if shared is None:
+        tracer.install()
+    try:
+        tracer.take()
+        session = session_of("ClipMoved")
+        before = tracer.traced
+        for t in (Fraction(1, 5), Fraction(1)):
+            assert _pixels(session, t).shape == (54, 96, 4)
+        assert tracer.traced > before
+        assert tracer.take() == []
+    finally:
+        if shared is None:
+            tracer.uninstall()
