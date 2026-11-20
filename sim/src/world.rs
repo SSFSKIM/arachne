@@ -77,12 +77,15 @@ pub mod finding {
 }
 
 /// What a step's engine reports with a row: the pairs of bodies touching, the bodies its solver
-/// stopped for a non-finite state, and the pairs that passed through each other in the step.
+/// stopped for a non-finite state, the pairs that passed through each other in the step, and
+/// whether the solver scaled each body's speed, and its angular speed, down to its caps during
+/// the step (empty where the engine has no caps).
 #[derive(Default)]
 pub(crate) struct Recorded {
     pub touching: Vec<(u32, u32)>,
     pub quarantined: Vec<u32>,
     pub tunnelled: Vec<(u32, u32)>,
+    pub capped: Vec<(bool, bool)>,
 }
 
 /// A body's flags as of the last row: which of the unstable conditions hold for it.
@@ -119,6 +122,9 @@ pub struct World {
     /// Each body's flags as of the last row (`ABOVE_SPEED`, ...).
     flags: Vec<u8>,
     findings: Vec<[u32; 4]>,
+    /// The value of each finding, in order: the speed or angular speed found above its limit;
+    /// NaN for the others.
+    finding_values: Vec<f32>,
 }
 
 impl World {
@@ -177,6 +183,7 @@ impl World {
             events: Vec::new(),
             flags: Vec::new(),
             findings: Vec::new(),
+            finding_values: Vec::new(),
         })
     }
 
@@ -682,14 +689,16 @@ impl World {
     /// What was found at the last row: for each moving body, a non-finite state (once, at the
     /// row it began), and a speed or an angular speed above the world's limit (at each row at
     /// which it rises above, after a row at which it did not); and each pair that passed through
-    /// each other in the step to the row.
+    /// each other in the step to the row. A speed is above the limit when the row's is, or when
+    /// the solver scaled it down to its cap during the step (the cap is above the limit); its
+    /// value is then at least the cap, and the cap is what is known of it.
     fn find(&mut self, row: u32, recorded: &Recorded) {
         let n = self.bodies.len();
         let (pw, vw) = (self.pose_width(), self.velocity_width());
         let pose = &self.pose[self.pose.len() - n * pw..];
         let velocity = &self.velocity[self.velocity.len() - n * vw..];
         let (limit, angular_limit) = (self.settings.speed_limit, self.settings.angular_speed_limit);
-        let mut found = Vec::new();
+        let mut found: Vec<([u32; 4], f32)> = Vec::new();
         for (b, &fixed) in self.bodies.iter().enumerate() {
             if fixed {
                 continue;
@@ -701,10 +710,20 @@ impl World {
                     .chain(v)
                     .all(|x| x.is_finite());
             let mut now = self.flags[b] & NON_FINITE;
+            let (mut speed, mut angular) = (f32::NAN, f32::NAN);
             if !finite {
                 now |= NON_FINITE;
             } else if now == 0 {
-                let (speed, angular) = speeds(v, self.dim);
+                (speed, angular) = speeds(v, self.dim);
+                if let Some(&(linear, turning)) = recorded.capped.get(b) {
+                    // Scaled down to the cap: it was above the cap, and so above the limit.
+                    if linear {
+                        speed = speed.max(self.settings.speed_cap());
+                    }
+                    if turning {
+                        angular = angular.max(self.settings.angular_speed_cap());
+                    }
+                }
                 if speed > limit {
                     now |= ABOVE_SPEED;
                 }
@@ -712,13 +731,13 @@ impl World {
                     now |= ABOVE_ANGULAR_SPEED;
                 }
             }
-            for (flag, kind) in [
-                (NON_FINITE, finding::NON_FINITE),
-                (ABOVE_SPEED, finding::SPEED),
-                (ABOVE_ANGULAR_SPEED, finding::ANGULAR_SPEED),
+            for (flag, kind, value) in [
+                (NON_FINITE, finding::NON_FINITE, f32::NAN),
+                (ABOVE_SPEED, finding::SPEED, speed),
+                (ABOVE_ANGULAR_SPEED, finding::ANGULAR_SPEED, angular),
             ] {
                 if now & flag != 0 && self.flags[b] & flag == 0 {
-                    found.push([row, kind, b as u32, b as u32]);
+                    found.push(([row, kind, b as u32, b as u32], value));
                 }
             }
             self.flags[b] = now;
@@ -727,10 +746,13 @@ impl World {
             recorded
                 .tunnelled
                 .iter()
-                .map(|&(a, b)| [row, finding::TUNNELLED, a, b]),
+                .map(|&(a, b)| ([row, finding::TUNNELLED, a, b], f32::NAN)),
         );
-        found.sort_unstable();
-        self.findings.extend(found);
+        found.sort_unstable_by_key(|&(key, _)| key);
+        for (key, value) in found {
+            self.findings.push(key);
+            self.finding_values.push(value);
+        }
     }
 
     /// What was found, by row: `[row, kind, a, b]` (kind one of [`finding`]), sorted. A body's
@@ -744,6 +766,15 @@ impl World {
     /// not checked. None of it is in the trace bytes.
     pub fn findings(&self) -> &[[u32; 4]] {
         &self.findings
+    }
+
+    /// The value of each of [`World::findings`], in order: the speed (units per second) or
+    /// angular speed (radians per second) found above its limit: the row's, or, when the solver
+    /// scaled it down to its cap in the step, the larger of the row's and the cap (it was at
+    /// least that); NaN for a non-finite state and for two bodies that passed through each
+    /// other.
+    pub fn finding_values(&self) -> &[f32] {
+        &self.finding_values
     }
 
     /// The contacts that began and ended: `[row, a, b, kind]`, `a < b` bodies by number, kind 1

@@ -169,6 +169,13 @@ expose.
 At the release, the probe imported `acosf asinf atan2f cosf expf log2f powf sincosf sinf` on Linux.
 At the pinned commits it imports none, on Linux, macOS and Windows.
 
+The one local change to the solver's sources (`vendor/VENDORED.md`, `vendor/rapier-speed-caps.patch`:
+`rapier/src/dynamics/solver/solver_body.rs`, `solver/staged_island_solver/worker.rs` and
+`rigid_body.rs`) sets and copies integer flags where the speed caps scale a velocity down, so the
+crate can find a speed above its limit that the step's last velocity no longer shows. It adds and
+changes no floating-point operation and no call, so this audit's conclusions hold for it; the
+probe's digests do not move.
+
 In the table, † marks a call site `ci/imports.py --where` resolved in the build at the release;
 ‡ one read in the source only (that run resolved no site for `cosf` and `log2f`, and the constant
 `sin_cos` may have been folded at compile time, which no import list can see).

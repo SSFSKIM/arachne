@@ -563,6 +563,17 @@ impl PyWorld {
         Ok((PyBytes::new(py, &data), found.len()))
     }
 
+    /// The value of each finding, as little-endian float32 bytes.
+    fn _finding_values<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let world = self.world()?;
+        let data: Vec<u8> = world
+            .finding_values()
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        Ok(PyBytes::new(py, &data))
+    }
+
     /// The units of the ``pose`` and ``velocity`` channels, one per number of a body's row.
     fn units(&self) -> PyResult<(&'static str, &'static str)> {
         Ok(self.world()?.units())

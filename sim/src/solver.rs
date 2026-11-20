@@ -46,6 +46,51 @@ struct Motion {
     enabled: bool,
 }
 
+/// Two shapes swept through a step: each one's motion, the most their distance can shrink over
+/// the whole step (`rate`), and the allowance kept for rounding and the distance query.
+struct Sweep<'a> {
+    motions: (query::NonlinearRigidMotion, query::NonlinearRigidMotion),
+    shapes: (&'a dyn Geometry, &'a dyn Geometry),
+    rate: f32,
+    allowance: f32,
+}
+
+impl Sweep<'_> {
+    /// Whether the two shapes come within the allowance of each other at some instant of the
+    /// step, by conservative advancement: at each instant the distance between them is
+    /// measured, and the next instant is as far on as the distance, less half the allowance,
+    /// lets them close at `rate`. Between two instants they stay half the allowance apart, less
+    /// what rounding and the query lose (far less than that at a scene's scales). A distance the
+    /// query cannot measure, or an advance too small to move the instant on, counts as meeting:
+    /// what is not shown apart is never taken to be.
+    fn advanced(&self) -> bool {
+        let (m1, m2) = &self.motions;
+        let mut t = 0.0f32;
+        loop {
+            let apart = query::distance(
+                &m1.position_at_time(t),
+                self.shapes.0,
+                &m2.position_at_time(t),
+                self.shapes.1,
+            );
+            let Ok(d) = apart else {
+                return true;
+            };
+            if d.distance <= self.allowance {
+                return true;
+            }
+            let next = t + (d.distance - self.allowance / 2.0) / self.rate;
+            if next >= 1.0 {
+                return false;
+            }
+            if next <= t {
+                return true;
+            }
+            t = next;
+        }
+    }
+}
+
 impl Solver {
     pub fn new(settings: &Settings) -> Self {
         let mut world = PhysicsWorld::new();
@@ -308,6 +353,11 @@ impl Solver {
         if let Some(before) = self.before.take() {
             recorded.quarantined = self.quarantined();
             recorded.tunnelled = self.tunnelled(&before, &shapes);
+            recorded.capped = self
+                .bodies
+                .iter()
+                .map(|&h| self.world.bodies[h].speeds_capped())
+                .collect();
         }
         recorded.touching = shapes
             .iter()
@@ -348,14 +398,20 @@ impl Solver {
     /// neither end of the step (`now`, and the last row's), with no contact between them in the
     /// solver's step, and that met when swept through the step's motion (`Motion`).
     ///
-    /// Only candidates are swept, and each test that rules a pair out is one no pair that meets
-    /// can fail: a point of a shape is never farther from where it began than its body's
-    /// centre moved plus its turn's angle times the shape's reach. So two shapes meet only if
-    /// their boxes at the start, each grown by that much, overlap; if the gap between their
-    /// spheres at the start is under the relative travel of the centres plus each turn's angle
-    /// times the reach; and if the distance between the shapes at the start is under the same.
+    /// Two shapes meet when they come within half the allowed linear error of each other
+    /// (`Settings::allowed_linear_error`), overlapping included. No test rules out a pair that
+    /// meets: over any part of the step, the distance between two shapes shrinks by at most the
+    /// relative travel of their bodies' centres plus each turn's angle times its shape's reach
+    /// (`rate`, over the whole step), so the distance at one instant bounds it everywhere near.
+    /// Every rejection keeps a further allowance of the allowed linear error for rounding and
+    /// for the distance query's own tolerance. A pair is ruled out when its boxes at the start,
+    /// each grown by how far its points may move, do not overlap; when the gap between their
+    /// spheres, or the distance between the shapes, at the start is at least the rate plus the
+    /// allowance; and otherwise only by conservative advancement through the whole step
+    /// (`advanced`): never by a single sweep's answer.
     fn tunnelled(&mut self, before: &[Pose], now: &[(u32, u32)]) -> Vec<(u32, u32)> {
         self.measure_reach();
+        let allowance = self.world.integration_parameters.allowed_linear_error();
         let motions: Vec<Motion> = self
             .bodies
             .iter()
@@ -388,7 +444,7 @@ impl Solver {
                 let aabb = self.world.colliders[handle]
                     .shape()
                     .compute_aabb(&pose)
-                    .loosened(moves);
+                    .loosened(moves + allowance);
                 (pose, aabb, moves)
             })
             .collect();
@@ -411,9 +467,10 @@ impl Solver {
                 if travel == 0.0 && turning == 0.0 {
                     continue;
                 }
+                let rate = travel + turning;
                 let gap = (mb.from - ma.from).length() - self.reach[i] - self.reach[k];
                 let shapes = (i as u32, k as u32);
-                if gap >= travel + turning
+                if gap >= rate + allowance
                     || self.touching.binary_search(&shapes).is_ok()
                     || now.binary_search(&shapes).is_ok()
                 {
@@ -424,7 +481,7 @@ impl Solver {
                     self.world.colliders[handle2].shape(),
                 );
                 let apart = query::distance(&swept[i].0, shape1, &swept[k].0, shape2);
-                if matches!(apart, Ok(d) if d.distance >= travel + turning) {
+                if matches!(apart, Ok(d) if d.distance >= rate + allowance) {
                     continue;
                 }
                 let contact = self
@@ -445,16 +502,13 @@ impl Solver {
                         m.turn,
                     )
                 };
-                let met = query::cast_shapes_nonlinear(
-                    &motion(i, ma),
-                    shape1,
-                    &motion(k, mb),
-                    shape2,
-                    0.0,
-                    1.0,
-                    true,
-                );
-                if matches!(met, Ok(Some(_))) {
+                let sweep = Sweep {
+                    motions: (motion(i, ma), motion(k, mb)),
+                    shapes: (shape1, shape2),
+                    rate,
+                    allowance,
+                };
+                if sweep.advanced() {
                     found.push(pair);
                 }
             }

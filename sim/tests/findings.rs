@@ -155,6 +155,7 @@ fn a_body_pushed_past_the_speed_limit_is_found_where_it_rises_above() {
     .expect("a push");
     w.advance_to(90).expect("the rows");
     assert_eq!(w.findings(), &[[31, finding::SPEED, 0, 0]]);
+    assert!((w.finding_values()[0] - 31.0 / 6.0).abs() < 1e-4);
 }
 
 #[test]
@@ -406,4 +407,122 @@ fn bodies_that_touch_and_rest_find_nothing() {
     w.advance_to(300).expect("5 s");
     assert!(!w.contacts().is_empty());
     assert_eq!(w.findings(), NONE);
+}
+
+// A speed the solver scales down
+
+/// A solver's world with the default limits (200 u/s, 40 rad/s) and one free body: a point mass
+/// of 1 at the origin, pushed by `force`, or a disc of radius 0.5 turned by `torque`.
+fn pushed(force: [f32; 2], torque: f32) -> (World, u32) {
+    let mut w = World::new(2, Integrator::Solver, false).expect("a world");
+    let b = if torque == 0.0 {
+        moving(&mut w, &[0.0, 0.0], &[0.0, 0.0], &[0.0], 1.0)
+    } else {
+        let b = moving(&mut w, &[0.0, 0.0], &[0.0, 0.0], &[0.0], 0.0);
+        shaped(&mut w, b, ball(0.5), 1.0);
+        b
+    };
+    w.add_force(Force::Constant {
+        body: b,
+        force: force.to_vec(),
+        torque: vec![torque],
+    })
+    .expect("a push");
+    (w, b)
+}
+
+#[test]
+fn a_speed_the_solver_scales_down_is_found_at_least_at_its_cap() {
+    // 30000 on a mass of 1 is 500 u/s after one tick, which the solver scales down to 400.
+    let (mut w, b) = pushed([30000.0, 0.0], 0.0);
+    w.advance_to(5).expect("the rows");
+    assert_eq!(w.findings(), &[[1, finding::SPEED, b, b]]);
+    // The row's speed is the cap's, to rounding.
+    assert!((w.finding_values()[0] - w.speed_cap()).abs() < 1e-3);
+    assert!(w.finding_values()[0] >= w.speed_cap());
+    // A disc of radius 0.5 and density 1 has an inertia of pi/32; this torque turns it at 60
+    // rad/s after one tick, which the solver scales down to 45 degrees a tick.
+    let inertia = std::f32::consts::PI / 32.0;
+    let (mut spun, d) = pushed([0.0, 0.0], 3600.0 * inertia);
+    spun.advance_to(5).expect("the rows");
+    assert_eq!(spun.findings(), &[[1, finding::ANGULAR_SPEED, d, d]]);
+    assert!((spun.finding_values()[0] - spun.angular_speed_cap()).abs() < 1e-3);
+    assert!(spun.finding_values()[0] >= spun.angular_speed_cap());
+}
+
+#[test]
+fn a_speed_the_solver_scales_to_nothing_is_found_though_its_row_is_at_rest() {
+    // A push so large that the speed's square overflows: the solver scales the velocity by its
+    // cap over an infinite length, to zero, so every row is at rest, under the limit.
+    let (mut w, b) = pushed([1.0e38, 0.0], 0.0);
+    w.advance_to(5).expect("the rows");
+    let rows = common::velocities(&w, b);
+    assert!(rows.iter().all(|v| v[0] == 0.0 && v[1] == 0.0), "{rows:?}");
+    assert_eq!(w.findings(), &[[1, finding::SPEED, b, b]]);
+    assert_eq!(w.finding_values(), &[w.speed_cap()]);
+}
+
+// A grazing turn
+
+/// A bar 2 long and 0.04 thick about its centre at the origin, at -0.23 rad and turning 0.73
+/// rad a tick (43.8 rad/s, under a limit of 45), beside a fixed wall 1 thick whose near face is
+/// at x = `face`. The bar's end reaches x = 1 at angle 0, early in the step, and is back to
+/// 0.89 by its end: at 0.999 it enters the wall and leaves it within the step.
+fn grazing(face: f32) -> World {
+    let mut w = World::with_options(
+        2,
+        Integrator::Solver,
+        false,
+        Options {
+            speed_limit: None,
+            angular_speed_limit: Some(45.0),
+            continuous_collision: false,
+        },
+    )
+    .expect("a world");
+    let bar = w
+        .add_body(Body {
+            fixed: false,
+            position: vec![0.0, 0.0],
+            rotation: vec![-0.23],
+            velocity: vec![0.0, 0.0],
+            angular_velocity: vec![43.8],
+            mass: 0.0,
+            gravity_scale: 1.0,
+        })
+        .expect("a bar");
+    shaped(
+        &mut w,
+        bar,
+        ShapeKind::Cuboid {
+            half_extents: vec![1.0, 0.02],
+        },
+        1.0,
+    );
+    let wall = body(
+        &mut w,
+        true,
+        &[f64::from(face) + 0.5, 0.0],
+        &[0.0, 0.0],
+        0.0,
+    );
+    shaped(
+        &mut w,
+        wall,
+        ShapeKind::Cuboid {
+            half_extents: vec![0.5, 2.0],
+        },
+        1.0,
+    );
+    w
+}
+
+#[test]
+fn a_turn_that_grazes_through_a_wall_between_its_ends_is_found() {
+    let mut w = grazing(0.999);
+    w.advance_to(1).expect("the row");
+    assert_eq!(w.findings(), &[[1, finding::TUNNELLED, 0, 1]]);
+    let mut twin = grazing(1.03);
+    twin.advance_to(1).expect("the row");
+    assert_eq!(twin.findings(), NONE, "a near miss");
 }

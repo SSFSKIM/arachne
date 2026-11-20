@@ -2,6 +2,7 @@
 
 use rapier3d::parry::bounding_volume::{Aabb, BoundingVolume};
 use rapier3d::parry::query;
+use rapier3d::parry::shape::Shape as Geometry;
 use rapier3d::prelude::*;
 
 use crate::encode::Settings;

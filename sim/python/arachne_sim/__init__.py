@@ -84,3 +84,10 @@ class World(_World):
         """
         data, count = self._findings()
         return np.frombuffer(data, dtype="<u4").reshape((count, 4))
+
+    def finding_values(self) -> npt.NDArray[np.float32]:
+        """The value of each of :meth:`findings`, in order, read-only: the speed (u/s) or
+        angular speed (rad/s) found above its limit, the largest the solver scaled down to its
+        cap when it did (infinite when it overflowed); NaN for the other kinds.
+        """
+        return np.frombuffer(self._finding_values(), dtype="<f4")

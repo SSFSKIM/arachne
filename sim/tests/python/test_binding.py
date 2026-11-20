@@ -161,7 +161,12 @@ def test_a_world_s_limits_and_what_it_found():
     assert found.dtype == np.uint32
     assert not found.flags.writeable
     assert found.tolist() == [[0, arachne_sim.SPEED, 0, 0]]
+    values = w.finding_values()
+    assert values.dtype == np.float32
+    assert not values.flags.writeable
+    assert values.tolist() == [3.0]
     assert World(2).findings().shape == (0, 4)
+    assert World(2).finding_values().shape == (0,)
 
 
 def test_other_threads_run_while_a_world_advances():
