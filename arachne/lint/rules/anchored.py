@@ -72,7 +72,7 @@ class _Miss:
     anchor: str | None
 
 
-def _attached(record: Record) -> bool:
+def holds_attached(record: Record) -> bool:
     """Whether ``record`` holds an annotation attached to an anchor."""
     from arachne.mobject.annotation.attach import Annotation
 
@@ -200,7 +200,7 @@ class AnchoredRule:
         annotation in its record.
         """
         record = frames.session.record
-        if not _attached(record):
+        if not holds_attached(record):
             return
         frames.request(self._owner, self._times(record, frames.lint_instants), _read)
 
