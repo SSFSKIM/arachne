@@ -5,13 +5,16 @@ circuit and logic symbols.
 Every mark is an ordinary vector object with the usual style arguments;
 one that carries a number keeps it as a plain attribute (a vessel's
 ``level``, a scatter's ``count``, wavefronts' ``spacing``, a trail's
-``interval``, a wavy line's ``wavelengths``, a flow arrow's ``magnitude``).
+``interval``, a wavy line's ``wavelengths``, a flow arrow's ``magnitude``,
+a particle's ``charge``) and declares it as ``mark.<attribute>``
+(:mod:`._declared`).
 A block, a node and a logic gate have named ports a connector attaches to
 (:meth:`~.ports.Ported.port`).
 """
 
 from __future__ import annotations
 
+from . import _declared  # noqa: F401  (registers the marks' declared numbers)
 from .arrows import *
 from .blocks import *
 from .circuit import *

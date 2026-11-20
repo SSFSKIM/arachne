@@ -64,6 +64,13 @@ boiled drawing, on its outline as painted: :mod:`.anchor`); the annotation
 itself is never stepped. A copy of a declared mobject carries its mark, and
 is declared too when it enters the scene that declared it.
 
+The declared mobject declares its timing (:mod:`arachne.quantities`),
+read from the mark a capture holds: ``timing.rate``, its drawings a second,
+and with boil ``timing.boil_rate`` and ``timing.boil_amplitude``, in
+changes a second (``1/s``) and in ``px``: one 1080th of the frame's shorter
+side, ``min(frame_width, frame_height) / 1080`` scene units, not a device
+pixel of the rendered frame.
+
 Stated limit. A frozen frame (``pause``, ``wait(frozen_frame=True)``) runs
 no updater, so it shows the family as true when it begins, without boil:
 after an off-grid play end, the final state before its boundary.
@@ -132,14 +139,16 @@ import functools
 import math
 import numbers
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
+from .. import quantities
 from ..mobject.values import FrozenPoints, adopt
+from ..quantities import At, Quantity
 from ..timeline.record import NodeState
 
 if TYPE_CHECKING:
@@ -182,9 +191,11 @@ def _rate(value: Any, what: str) -> int:
 @dataclass(frozen=True)
 class Boil:
     """Line boil: an illustration's outlines redrawn ``rate`` times a second
-    (a divisor of 60), each point moved by at most ``amplitude`` pixels of
-    the 1080-pixel reference picture, by a wobble that is a function of the
-    boil's step (``floor(t * rate)``), the point's place and ``seed``.
+    (a divisor of 60), each point moved by at most ``amplitude`` ``px``, a
+    ``px`` being one 1080th of the frame's shorter side,
+    ``min(frame_width, frame_height) / 1080`` scene units, not a device pixel
+    of the rendered frame; by a wobble that is a function of the boil's step
+    (``floor(t * rate)``), the point's place and ``seed``.
 
     The wobble is one smooth field over the picture, so points that
     coincide move together: a closed outline stays closed and parts that
@@ -205,7 +216,8 @@ class Boil:
             or amplitude < 0
         ):
             raise ValueError(
-                f"A boil's amplitude is a finite number of pixels, 0 or more, not"
+                f"A boil's amplitude is a finite number of px (1080ths of the frame's"
+                f" shorter side), 0 or more, not"
                 f" {amplitude!r}."
             )
         object.__setattr__(self, "amplitude", float(amplitude))
@@ -300,6 +312,45 @@ def timing_of(mobject: Mobject) -> Timing | None:
     state the record installed, it is the timing declared then.
     """
     return _timing(mobject.__dict__.get(MARK))
+
+
+# Declared quantities
+
+#: The prefix of an illustration's declared quantities.
+PREFIX = "timing."
+quantities.register(PREFIX, owner="arachne.assets", units=("1/s", "px"))
+
+
+@dataclass(frozen=True, slots=True)
+class TimingNumbers:
+    """The source of a declared mobject's timing quantities. It holds
+    nothing: what it answers is read from the mark the capture holds, so a
+    mobject declared again answers its new timing from then.
+    """
+
+
+@quantities.source(TimingNumbers)
+def _declared(
+    found: TimingNumbers, held: Mapping[str, Any], at: At
+) -> Iterable[Quantity]:
+    timing = _timing(held.get(MARK))
+    if timing is None:
+        return ()
+    numbers = [Quantity(f"{PREFIX}rate", timing.drawings_per_second, "1/s")]
+    boil = timing.boil
+    if boil is not None:
+        numbers += [
+            Quantity(f"{PREFIX}boil_rate", boil.rate, "1/s"),
+            Quantity(f"{PREFIX}boil_amplitude", boil.amplitude, "px"),
+        ]
+    return numbers
+
+
+def _declare_numbers(root: Mobject) -> None:
+    """Have ``root`` declare its timing's numbers, once."""
+    held = root.__dict__.get(quantities.SOURCES, ())
+    if not any(type(each) is TimingNumbers for each in held):
+        quantities.attach(root, TimingNumbers())
 
 
 # Scene drivers
@@ -1075,6 +1126,7 @@ class TimingClock:
         now = scene.time
         mark = timing.mark
         root.__dict__[MARK] = mark
+        _declare_numbers(root)
         self._marks.append(mark)
         illustration = self.illustration_of(root)
         if illustration is not None:

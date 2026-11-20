@@ -36,6 +36,12 @@ and during a play that poses it from the scene's settle (:mod:`.motion`). A
 part moved directly returns to its posed place at the next settle: parts
 move through parameters. A rig scaled to nothing has no ``F`` and is not
 settled until it has a size again.
+
+A rig declares its values (:mod:`arachne.quantities`), read from the values
+a capture holds: ``rig.param.<parameter>`` for each parameter, in its
+manifest's unit, and ``rig.slot.<slot>`` for each slot, the name of the
+drawing it shows (:func:`~.reader.load_asset` registers the units). On a rig held to stepped timing (:mod:`.timing`) they are
+the values of the drawing on display.
 """
 
 from __future__ import annotations
@@ -50,17 +56,22 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import numpy as np
 
+from .. import quantities
 from ..mobject.types.vectorized_mobject import VectorizedPoint, VGroup, VMobject
 from ..mobject.values import FrozenPoints, adopt
+from ..quantities import Quantity
 from ..utils.paths import straight_path
+from .manifest import QUANTITY_PREFIX as PREFIX
 from .manifest import PartSpec, refuse
-from .pose import CanvasMap, RigValues, model_of, posed_with, transforms
+from .pose import CanvasMap, Model, RigValues, model_of, posed_with, transforms
 from .reader import Asset, load_asset
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
     from typing import Self
 
     from ..mobject.mobject import Mobject
+    from ..quantities import At
     from .anchor import Anchor
 
 #: The points of a shape that draws nothing.
@@ -533,3 +544,20 @@ def _write(
 ) -> None:
     for shape, points in zip(shapes, posed, strict=True):
         shape.points = adopt(placement(points), FrozenPoints)
+
+
+@quantities.provider(Rig)
+def _declared(held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
+    """A rig's parameter values and slot choices, as ``held`` holds them."""
+    model: Model = held["model"]
+    found = [
+        Quantity(f"{PREFIX}param.{spec.name}", float(value), spec.unit)
+        for spec, value in zip(model.parameters, held["_values"], strict=True)
+    ]
+    shown: str = held["_shown"]
+    slots = held["asset"].manifest.slots
+    found += [
+        Quantity(f"{PREFIX}slot.{slot.name}", drawing, "name")
+        for slot, drawing in zip(slots, shown.split(",") if shown else (), strict=True)
+    ]
+    return found
