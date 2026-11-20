@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from .. import api_json
+from ..compose.stack import Unsupported as StackUnsupported
 from ..constants import QUALITIES
 from ..errors import SceneError, explain, message_of
 from ..frame_ir.cairo_painter import Unsupported
@@ -540,9 +541,18 @@ class Dispatcher:
         last) or every play, at ``quality``, to ``out``, checked against the
         summary of the session's execution at the render's frame rate and
         pixel aspect: the store's, kept as it executed, else the session's
-        own when it was executed so.
+        own when it was executed so. A scene on the ``gpu`` route is refused
+        before anything of it runs (:func:`.compose.session.refuse_render`).
         """
         assert self._opened is not None
+        if self.session is not None or (
+            self.stored is not None and self.stored.route != "cpu"
+        ):
+            # A scene on the gpu route is refused before anything of it runs,
+            # from the session's own complete record.
+            from ..compose.session import refuse_render
+
+            refuse_render(self.live())
         file, scene, _ = self._opened
         # What the scene's code found for the lint refuses every render of
         # it, the plays before the finding too: read from its whole record,
@@ -662,7 +672,8 @@ def _changed(file: str, read: tuple[tuple[str, str], ...]) -> bool:
 #: capability on a host with no GPU (``GpuRequired``, ``render.gpu_required``)
 #: or drawn as it runs (``GpuLive``, ``render.gpu_live``), and a finding
 #: raised while the scene's code ran (``RaisedFinding``), whose answer
-#: carries the finding.
+#: carries the finding; and a frame a GPU stack does not draw
+#: (``Unsupported`` of :mod:`arachne.compose.stack`, ``render.unsupported``).
 REFUSALS: tuple[type[Exception], ...] = (
     SceneHookRefused,
     RecordRefused,
@@ -672,6 +683,7 @@ REFUSALS: tuple[type[Exception], ...] = (
     GpuRequired,
     GpuLive,
     RaisedFinding,
+    StackUnsupported,
 )
 
 
@@ -836,7 +848,10 @@ def _lint(server: Dispatcher, params: Params) -> dict[str, Any]:
     # Key frames are files the store does not keep.
     session = server.live()
     forms = answer(session)
-    forms["key_frames"] = api_json.key_frames(session.key_frames(out_dir))
+    # Drawings beside a lint, which answers on every host: a picture this
+    # host can't draw carries its refusal in place of its file.
+    drawn = session.key_frames(out_dir, keep_refusals=True)
+    forms["key_frames"] = api_json.key_frames(drawn)
     server.linted()
     return server.answer(**forms)
 
@@ -894,7 +909,12 @@ def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
     # The answer is the same picture wherever it is written.
     asked = {name: value for name, value in params.given.items() if name != "path"}
     store, stored = server.store, server.stored
-    if server.session is None and store is not None and stored is not None:
+    if (
+        server.session is None
+        and store is not None
+        and stored is not None
+        and stored.route == "cpu"
+    ):
         found_form = store.answer(stored, "frame", asked)
         picture = store.answer_file(stored, "frame", asked)
         if found_form is not None and picture is not None:
@@ -906,7 +926,10 @@ def _frame(server: Dispatcher, params: Params) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     found.frame.save(path, format="PNG")
     form = api_json.frame(found, path)
-    server.keep("frame", asked, {"frame": form}, path.read_bytes())
+    if found.renderer is None:
+        # A picture drawn on the GPU is drawn anew each time it is asked
+        # for, by a session that checks the route and the device.
+        server.keep("frame", asked, {"frame": form}, path.read_bytes())
     return server.answer(frame=form)
 
 

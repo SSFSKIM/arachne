@@ -139,10 +139,22 @@ def lint(
     (:func:`.arming.armed`), the hold watch sampling at ``sample_fps``,
     which is theirs alone: raises :class:`ValueError` for a ``sample_fps``
     given with any other rules.
+
+    A scene holding a GPU-only capability whose record refuses drawing
+    could be read only from a run drawing as it runs, which it may not: its
+    lint is the one error ``render.gpu_live``, on every host.
     """
     started = time.perf_counter()
     exemptions = Exemptions.parse(exempt)
     record = session.record
+    from arachne.compose.session import live_refusal
+
+    refused = live_refusal(session)
+    if refused is not None:
+        # Every answer about the scene comes from a run drawing as it runs,
+        # which a scene holding a GPU-only capability may not: that one
+        # error, on every host.
+        return _live_lint(session, refused.finding, started)
     if isinstance(rules, str):
         if rules != "armed":
             raise ValueError(f"rules are rules or 'armed', not {rules!r}")
@@ -184,6 +196,25 @@ def lint(
     return LintResult(
         tuple(fold(kept, timeline=[span.t_start for span in timeline])),
         instants,
+        timeline,
+        session.stale,
+        time.perf_counter() - started,
+        target_resolution(session),
+    )
+
+
+def _live_lint(session: Session, finding: Finding, started: float) -> LintResult:
+    """The lint of a scene refused ``render.gpu_live``: that finding, and
+    the session's staleness.
+    """
+    found = [finding, _stale(session)] if session.stale else [finding]
+    timeline = tuple(
+        Span(play.index, play.kind, play.start, play.end)
+        for play in session.record.plays
+    )
+    return LintResult(
+        tuple(found),
+        (),
         timeline,
         session.stale,
         time.perf_counter() - started,

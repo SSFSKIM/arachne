@@ -141,13 +141,15 @@ class Answer:
     """The scene at ``t`` as a session answers it: its state, and its frame
     when asked for. ``fallback`` says why the record could not answer, for
     an answer a forward run gave (``state.answer == "forward"``), and is
-    ``None`` for the record's own.
+    ``None`` for the record's own. ``renderer`` names the renderer that drew
+    the frame and the pin of its device, for a frame drawn on the GPU.
     """
 
     t: Fraction
     state: State
     frame: Image.Image | None
     fallback: Fallback | None = None
+    renderer: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

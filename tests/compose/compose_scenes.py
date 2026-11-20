@@ -4,7 +4,28 @@ scripts, for the compose tests.
 
 from __future__ import annotations
 
-from arachne import BLUE, RED, RIGHT, Circle, Create, Dot, FadeIn, Scene, Square
+import numpy as np
+
+from arachne import (
+    BLUE,
+    DOWN,
+    LEFT,
+    RED,
+    RIGHT,
+    UP,
+    WHITE,
+    Circle,
+    Create,
+    Dot,
+    FadeIn,
+    ImageMobject,
+    Rectangle,
+    Scene,
+    Square,
+    ValueTracker,
+    VGroup,
+)
+from arachne.compose.layer import LayerSpec, set_layer
 from arachne.routing import declare
 
 
@@ -82,3 +103,164 @@ class Plain(Scene):
     def construct(self):
         self.play(Create(Square()))
         self.play(FadeIn(Circle()))
+
+
+# Scenes whose objects are layers of their own (the layer seam).
+
+
+class EffectLast(Scene):
+    """A square, then a circle blurred in the last play only; with
+    ``effect`` unset the circle is not a layer, and the scene uses nothing
+    new.
+    """
+
+    effect = True
+
+    def construct(self):
+        self.play(Create(Square()))  # @effect-last-first
+        circle = Circle()
+        if self.effect:
+            set_layer(circle, LayerSpec(blur=0.2))
+        self.play(FadeIn(circle))  # @effect-last-blur
+
+
+class EffectLastRemoved(EffectLast):
+    """:class:`EffectLast` with its effect removed."""
+
+    effect = False
+
+
+class BlurredEdge(Scene):
+    """A white half-plane blurred by ``sigma`` scene units: its edge, at
+    x = 0, is a step blurred to a declared width.
+    """
+
+    sigma = 0.25
+
+    def construct(self):
+        plane = Rectangle(
+            width=20, height=20, fill_color=WHITE, fill_opacity=1, stroke_width=0
+        ).shift(10 * LEFT)
+        set_layer(plane, LayerSpec(blur=self.sigma))
+        self.add(plane)
+        self.wait(0.2)
+
+
+#: A translucent colour, straight RGBA.
+TINT = (200, 120, 40, 128)
+
+
+def tinted_still(width: int, height: int) -> ImageMobject:
+    """A still of one translucent colour covering the frame exactly, drawn
+    with nearest resampling.
+    """
+    pixels = np.empty((height, width, 4), dtype=np.uint8)
+    pixels[:] = TINT
+    still = ImageMobject(pixels, scale_to_resolution=height)
+    still.set_resampling_algorithm(0)
+    return still
+
+
+class TintedStill(Scene):
+    """The translucent still over the frame; with ``hidden_layer`` set, a
+    blurred layer painting nothing puts the scene on the gpu route.
+    """
+
+    hidden_layer = True
+
+    def construct(self):
+        from arachne import config
+
+        self.add(tinted_still(config.pixel_width, config.pixel_height))
+        if self.hidden_layer:
+            unseen = Dot(fill_opacity=0, stroke_width=0)
+            set_layer(unseen, LayerSpec(blur=0.1))
+            self.add(unseen)
+        self.wait(0.2)
+
+
+class TintedStillAlone(TintedStill):
+    """:class:`TintedStill` with no layer: drawn by the camera alone."""
+
+    hidden_layer = False
+
+
+class MovingMask(Scene):
+    """A white square cut out by a circle never added to the scene, which
+    moves between plays; and a frame showing a dot, never added, which moves
+    likewise.
+    """
+
+    def construct(self):
+        square = Square(side_length=6, fill_color=WHITE, fill_opacity=1)
+        mask = Circle(radius=1, fill_opacity=1).shift(2 * LEFT)
+        set_layer(square, LayerSpec(mask=mask, mask_feather=0.1))
+        frame = Rectangle(width=3, height=2, stroke_width=0).shift(3 * UP + 4 * RIGHT)
+        dot = Dot(radius=0.8, color=RED).shift(2 * LEFT)
+        set_layer(frame, LayerSpec(window=(dot,)))
+        self.add(square, frame)
+        self.wait(0.5)
+        mask.shift(4 * RIGHT)
+        dot.shift(4 * RIGHT)
+        self.wait(0.5)
+
+
+class LayerComesAndGoes(Scene):
+    """A square, plain, then blurred, then blurred more, then plain again,
+    each for one wait.
+    """
+
+    def construct(self):
+        square = Square(side_length=3, fill_color=WHITE, fill_opacity=1)
+        self.add(square)
+        self.wait(0.5)
+        set_layer(square, LayerSpec(blur=0.1))
+        self.wait(0.5)
+        set_layer(square, LayerSpec(blur=0.3))
+        self.wait(0.5)
+        set_layer(square, None)
+        self.wait(0.5)
+
+
+class Nested(Scene):
+    """A layer within another's family, which only a window may hold."""
+
+    def construct(self):
+        inner = Circle()
+        set_layer(inner, LayerSpec(blur=0.1))
+        group = VGroup(Square(), inner)
+        set_layer(group, LayerSpec(blur=0.2))
+        self.add(group)
+        self.wait(0.2)
+
+
+class LiveLayer(Scene):
+    """A scene drawn as it runs, holding a blurred layer."""
+
+    def construct(self):
+        dot = HashDot()
+        set_layer(dot, LayerSpec(blur=0.1))
+        self.play(FadeIn(dot))
+
+
+SHIFT = 0.0
+
+
+class ReboundLayer(Scene):
+    """An updater reading a module global the scene rebinds between plays,
+    so an instant of the first play is answered by a forward run; the
+    circle shown in the last play is blurred.
+    """
+
+    def construct(self):
+        global SHIFT
+        SHIFT = 0.0
+        tracker = ValueTracker(0)
+        dot = Dot().add_updater(lambda m: m.set_x(tracker.get_value() + SHIFT))
+        self.add(dot)
+        self.play(tracker.animate.set_value(2), run_time=1)
+        SHIFT = 1.0
+        self.play(tracker.animate.set_value(0), run_time=1)
+        circle = Circle().shift(DOWN)
+        set_layer(circle, LayerSpec(blur=0.2))
+        self.play(FadeIn(circle))

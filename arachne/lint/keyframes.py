@@ -17,6 +17,13 @@ A session recorded on another grid than the render's gives that recording's
 own frames at the render's frame times, which may differ from the render's
 where a frame hook or dt updater ran at other instants.
 
+A scene holding a GPU-only capability is drawn on the GPU; where it can't be
+(``render.gpu_required`` on a host with no GPU, ``render.gpu_live``), the
+key frames raise that refusal and write nothing, unless they are drawn
+beside a lint (``keep_refusals``), whose findings answer on every host:
+then each picture carries the refusal in place of its file, as a painter's
+refusal does.
+
 :func:`key_frames` writes one PNG per play; :func:`storyboard` lays the same
 frames out six to a sheet, each a :data:`TILE` of 960 by 540 pixels (large
 enough that a defect a viewer would see is seen), labelled under it with its
@@ -50,8 +57,10 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from arachne.compose.stack import Unsupported as StackUnsupported
 from arachne.frame_ir.cairo_painter import Unsupported
 from arachne.frame_ir.lint import raise_finding
+from arachne.routing.refusals import Refusal
 from arachne.timeline.clock import frames_in
 from arachne.timeline.restore import Unrestorable
 from arachne.timeline.routes import RecordRefused
@@ -150,15 +159,20 @@ class Storyboard:
 
 
 def key_frames(
-    session: Session, out_dir: StrPath, quality: str | None = None
+    session: Session,
+    out_dir: StrPath,
+    quality: str | None = None,
+    *,
+    keep_refusals: bool = False,
 ) -> KeyFrames:
     """Write each play's key frame to ``out_dir`` as ``play-NNN.png``, at
     ``quality`` (a key of :data:`~arachne.constants.QUALITIES`; by default
-    the size the scene was executed at).
+    the size the scene was executed at). With ``keep_refusals`` a picture
+    the GPU route can't draw here is listed with its refusal, unwritten.
     """
     out = Path(out_dir)
+    drawn, unshown, findings = _draw(session, quality, keep_refusals)
     out.mkdir(parents=True, exist_ok=True)
-    drawn, unshown, findings = _draw(session, quality)
     frames = []
     for key, image in drawn:
         path = out / f"play-{key.play:03d}.png"
@@ -176,8 +190,8 @@ def storyboard(
     and labelled under it with its time, play and line.
     """
     out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
     drawn, unshown, findings = _draw(session, quality)
+    out.mkdir(parents=True, exist_ok=True)
     width, height = TILE
     cell = height + LABEL_HEIGHT
     per_sheet = COLUMNS * ROWS
@@ -211,12 +225,13 @@ def storyboard(
 
 
 def _draw(
-    session: Session, quality: str | None
+    session: Session, quality: str | None, keep_refusals: bool = False
 ) -> tuple[
     list[tuple[KeyFrame, Image.Image]], tuple[Unshown, ...], tuple[Finding, ...]
 ]:
     """Each play's key frame drawn, in play order; the plays without one;
-    and the painter's refusals as findings.
+    and the painter's refusals as findings, and with ``keep_refusals`` the
+    GPU route's.
     """
     record = session.record
     grid = render_grid(record)
@@ -244,12 +259,25 @@ def _draw(
             images[play.index] = (session.frame(t, quality), "recorded")
         except (RecordRefused, Unrestorable):
             forward.append((play, t))
-        except Unsupported as error:
+        except (Unsupported, StackUnsupported) as error:
             findings.append(_refused(play, t, error))
             unshown[play.index] = _unshown(play, str(error))
+        except Refusal as error:
+            if not keep_refusals:
+                raise
+            findings.append(_gpu_refused(play, t, error))
+            unshown[play.index] = _unshown(play, str(error))
     if forward:
-        with _refusals_apart(session) as refused:
-            answers = session.answers([t for _, t in forward], quality)
+        try:
+            with _refusals_apart(session) as refused:
+                answers = session.answers([t for _, t in forward], quality)
+        except Refusal as error:
+            if not keep_refusals:
+                raise
+            for play, t in forward:
+                findings.append(_gpu_refused(play, t, error))
+                unshown[play.index] = _unshown(play, str(error))
+            forward, answers = [], []
         for (play, t), found in zip(forward, answers, strict=True):
             refusal = refused.get(play.index)
             if refusal is not None:
@@ -320,7 +348,23 @@ def _unshown(play: PlayRecord, reason: str) -> Unshown:
     return Unshown(play.index, play.kind, play.source_line, reason)
 
 
-def _refused(play: PlayRecord, t: Fraction, error: Unsupported) -> Finding:
+def _gpu_refused(play: PlayRecord, t: Fraction, error: Refusal) -> Finding:
+    """The finding of a key frame the GPU route can't draw here: the
+    refusal's own, at the key frame's time and its play's line.
+    """
+    return Finding(
+        error.code,
+        t,
+        t,
+        message=f"the key frame of play {play.index} is not drawn: {error.finding.message}",
+        line=play.source_line,
+        detail=error.finding.detail,
+    )
+
+
+def _refused(
+    play: PlayRecord, t: Fraction, error: Unsupported | StackUnsupported
+) -> Finding:
     """The ``render.unsupported`` finding of a frame the painter refused,
     raised on the drawing's own findings, where the painter's path raises
     its ``render.fallback`` (its subject the record kind refused), and

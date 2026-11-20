@@ -289,9 +289,10 @@ def frame(found: Answer, path: StrPath) -> dict[str, Any]:
     """The frame of ``found``, an answer of
     :meth:`~arachne.session.Session.answers`, written as the PNG ``path``:
     the instant asked, the instant whose state it shows, the play holding
-    it and how it was answered.
+    it and how it was answered; for a frame drawn on the GPU, ``renderer``:
+    its name and the pin of the device that drew it.
     """
-    return {
+    form = {
         "schema_version": SCHEMA_VERSION,
         **_timed("t", found.state.t),
         **_timed("as_of", found.state.as_of),
@@ -299,6 +300,9 @@ def frame(found: Answer, path: StrPath) -> dict[str, Any]:
         "answer": found.state.answer,
         "path": os.fspath(path),
     }
+    if found.renderer is not None:
+        form["renderer"] = found.renderer
+    return form
 
 
 def render(found: Rendered) -> dict[str, Any]:
