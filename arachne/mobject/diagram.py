@@ -931,26 +931,71 @@ class ZoomInto(Animation):
 
     def interpolate_mobject(self, alpha: float) -> None:
         # Eased once, for the frame and every fade alike.
-        alpha = self.get_sub_alpha(alpha, 0, 1)
+        share = self.get_sub_alpha(alpha, 0, 1)
+        self.show_share(share)
+        #: The share the move last showed, and the frame's points then:
+        #: where it left the frame, which a return starts from.
+        self._reached = share
+        self._left_points = self.mobject.points
+        _hold_zoom(self)
+
+    def show_share(self, share: float) -> None:
+        """Show the move at ``share`` of its way: the frame, the inside's
+        fade and each cut piece's, as the move in and the return
+        (:class:`ZoomOut`) both draw it.
+        """
         frame = self.mobject
-        frame.scale_to_fit_height(self._height(alpha))
-        frame.move_to(self._center(alpha))
+        frame.scale_to_fit_height(self._height(share))
+        frame.move_to(self._center(share))
         inside = self.block.inside
         if inside is not None:
-            share = _ramp(alpha, self._fade_in)
+            shown_share = _ramp(share, self._fade_in)
             for member, shown in zip(
                 inside.get_family(), self.block.inside_shown, strict=True
             ):
-                set_opacities(member, scaled(shown, share))
+                set_opacities(member, scaled(shown, shown_share))
         for family, faded, window in self._fading:
-            keep = 1.0 - _ramp(alpha, window)
+            keep = 1.0 - _ramp(share, window)
             for member, opacities in zip(family, faded, strict=True):
                 set_opacities(member, scaled(opacities, keep))
+
+
+#: The zooms that hold each camera frame, by the frame's id: each entry
+#: holds its frame and its zooms weakly, innermost last, and goes with its
+#: frame. A zoom joins as it plays; its return takes it out.
+_HOLDING: dict[int, tuple[weakref.ref[Mobject], list[weakref.ref[ZoomInto]]]] = {}
+
+
+def _holders(frame: Mobject) -> list[weakref.ref[ZoomInto]]:
+    """The zooms holding ``frame``, innermost last, those gone left out."""
+    key = id(frame)
+    entry = _HOLDING.get(key)
+    if entry is None or entry[0]() is not frame:
+        weakref.finalize(frame, _forget_frame, key)
+        entry = _HOLDING[key] = (weakref.ref(frame), [])
+    entry[1][:] = [held for held in entry[1] if held() is not None]
+    return entry[1]
+
+
+def _forget_frame(key: int) -> None:
+    """Drop the entry of a frame that went, if no later frame took its id."""
+    entry = _HOLDING.get(key)
+    if entry is not None and entry[0]() is None:
+        del _HOLDING[key]
+
+
+def _hold_zoom(zoom: ZoomInto) -> None:
+    """Have ``zoom`` hold its frame, innermost, once."""
+    holders = _holders(zoom.mobject)
+    if not holders or holders[-1]() is not zoom:
+        holders.append(weakref.ref(zoom))
 
 
 #: How far, as a share of the height the zoom left it at, the camera's frame
 #: may stand from where a zoom left it for the zoom to come back.
 RETURN_TOLERANCE = 1e-6
+#: How near an eased share must come to 0 or 1 to count as there.
+_EASED = 1e-9
 
 
 class ZoomOut(Animation):
@@ -968,11 +1013,16 @@ class ZoomOut(Animation):
     counts.
 
     Nested zooms come back in order, the inner first. A return is refused,
-    by name, when its zoom was never played, when the camera's frame is not
-    where that zoom left it (within :data:`RETURN_TOLERANCE` of its height,
-    so a moved camera or an outer zoom returned while an inner one holds the
-    frame), when a piece the zoom faded has left the scene, and in a scene
-    without that zoom's moving camera.
+    by name, when its zoom was never played, or ended short of its block;
+    when its own ``rate_func`` does not take 0 to 0 and 1 to 1; when the
+    camera's frame does not stand where that zoom left it, every point
+    within :data:`RETURN_TOLERANCE` of its height (a camera moved,
+    stretched or turned since); when a zoom played after it on the same
+    frame has not come back (the zooms holding a frame are kept beside it,
+    by identity, innermost last); when it has already come back; when a
+    piece the zoom faded has left the scene; and in a scene without that
+    zoom's moving camera. The move in and the return draw each share alike
+    (:meth:`ZoomInto.show_share`).
     """
 
     def __init__(
@@ -1035,20 +1085,43 @@ class ZoomOut(Animation):
                 "ZoomOut returns from a played ZoomInto, and this one was never"
                 " played: play the ZoomInto first"
             )
-        height, centre = zoom._height(1.0), zoom._center(1.0)
-        tolerance = RETURN_TOLERANCE * height
-        moved = max(
-            abs(float(frame.height) - height),
-            float(np.linalg.norm(frame.get_center() - centre)),
-        )
-        if moved > tolerance:
+        if abs(zoom._reached - 1.0) > _EASED:
+            raise ValueError(
+                f"ZoomOut returns from a ZoomInto that ended on its block, and this"
+                f" one never reached its block (it ended at {zoom._reached:.4g} of"
+                " its way): give the move-in a rate_func that ends at 1"
+            )
+        ease = self.rate_func
+        if abs(ease(0.0)) > _EASED or abs(ease(1.0) - 1.0) > _EASED:
+            raise ValueError(
+                "a ZoomOut's rate_func must take 0 to 0 and 1 to 1, so the return"
+                " starts on the block and ends where the move-in began"
+            )
+        left = np.asarray(zoom._left_points)
+        tolerance = RETURN_TOLERANCE * zoom._height(1.0)
+        if left.shape != frame.points.shape or (
+            float(np.max(np.abs(frame.points - left), initial=0.0)) > tolerance
+        ):
             raise ValueError(
                 "ZoomOut returns the camera's frame from where its ZoomInto left it,"
-                f" {height:.4g} tall about {np.round(centre, 4).tolist()}, but it is"
+                f" {float(zoom._height(1.0)):.4g} tall about"
+                f" {np.round(zoom._center(1.0), 4).tolist()}, but it is"
                 f" {float(frame.height):.4g} tall about"
-                f" {np.round(frame.get_center(), 4).tolist()}: return from an inner"
-                " zoom before an outer one, and move the camera only after the"
-                " return"
+                f" {np.round(frame.get_center(), 4).tolist()}"
+                f" ({float(frame.width):.4g} wide): return from an inner zoom before"
+                " an outer one, and move the camera only after the return"
+            )
+        holders = _holders(frame)
+        if not any(held() is zoom for held in holders):
+            raise ValueError(
+                "this ZoomInto has already come back: play it again before"
+                " another ZoomOut of it"
+            )
+        if holders[-1]() is not zoom:
+            raise ValueError(
+                "ZoomOut returns from the innermost zoom first: a zoom played"
+                " after this one holds the frame, so return from it before this"
+                " one"
             )
         scene = self._scene() if self._scene is not None else None
         if scene is not None:
@@ -1060,29 +1133,17 @@ class ZoomOut(Animation):
                         " the scene: ZoomOut brings back each piece its ZoomInto"
                         " faded, so keep it in the scene until the return"
                     )
+        holders.pop()
         super().begin()
 
     def interpolate_mobject(self, alpha: float) -> None:
-        # Eased once, for the frame and every fade alike; the move-in's share.
-        share = 1.0 - self.get_sub_alpha(alpha, 0, 1)
-        zoom, frame = self.zoom, self.mobject
-        if share == 0.0:
+        # Eased once, for the frame and every fade alike; the move-in's share,
+        # none at the end.
+        share = 0.0 if alpha >= 1.0 else 1.0 - self.get_sub_alpha(alpha, 0, 1)
+        self.zoom.show_share(max(share, 0.0))
+        if share <= 0.0:
             # Exactly where the move-in began.
-            frame.points = zoom._from_points
-        else:
-            frame.scale_to_fit_height(zoom._height(share))
-            frame.move_to(zoom._center(share))
-        inside = zoom.block.inside
-        if inside is not None:
-            shown_share = _ramp(share, zoom._fade_in)
-            for member, shown in zip(
-                inside.get_family(), zoom.block.inside_shown, strict=True
-            ):
-                set_opacities(member, scaled(shown, shown_share))
-        for family, faded, window in zoom._fading:
-            keep = 1.0 - _ramp(share, window)
-            for member, opacities in zip(family, faded, strict=True):
-                set_opacities(member, scaled(opacities, keep))
+            self.mobject.points = self.zoom._from_points
 
 
 def _window(start: float) -> tuple[float, float]:

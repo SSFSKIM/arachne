@@ -24,6 +24,7 @@ from arachne import (
     config,
     linear,
     smooth,
+    there_and_back,
 )
 from arachne.mobject.diagram import _ramp
 from arachne.session import Session
@@ -289,3 +290,42 @@ def test_the_picture_after_the_return_is_the_picture_before_the_move_in(opened):
     before = session.frame(0.25).tobytes()
     assert session.frame(5.25).tobytes() == before
     assert session.frame(4).tobytes() != before
+
+
+def test_a_return_refuses_a_move_in_that_never_reached_its_block():
+    zoom, _ = _played(
+        Block("b", width=2.2, height=1.4).shift(RIGHT * 2), rate_func=there_and_back
+    )
+    with pytest.raises(ValueError, match="never reached its block"):
+        ZoomOut(zoom).begin()
+
+
+def test_a_return_refuses_an_easing_that_does_not_end_where_it_must():
+    zoom, _ = _played(Block("b", width=2.2, height=1.4).shift(RIGHT * 2))
+    with pytest.raises(ValueError, match="rate_func"):
+        ZoomOut(zoom, rate_func=there_and_back).begin()
+
+
+def test_a_return_refuses_a_frame_stretched_from_where_the_zoom_left_it():
+    zoom, frame = _played(Block("b", width=2.2, height=1.4).shift(RIGHT * 2))
+    frame.stretch(1.01, 0)
+    with pytest.raises(ValueError, match="where its ZoomInto left it"):
+        ZoomOut(zoom).begin()
+
+
+def test_a_return_refuses_an_outer_zoom_while_an_inner_one_holds_the_frame():
+    block = Block("b", width=2.2, height=1.4).shift(RIGHT * 2)
+    outer, frame = _played(block)
+    # A second zoom onto the same block leaves the frame where the first did.
+    inner = ZoomInto(block, frame=frame)
+    inner.begin()
+    inner.finish()
+    with pytest.raises(ValueError, match="innermost"):
+        ZoomOut(outer).begin()
+    back = ZoomOut(inner)
+    back.begin()
+    back.finish()
+    # Back where the outer zoom left it: the outer one comes back, once.
+    ZoomOut(outer).begin()
+    with pytest.raises(ValueError, match="already come back"):
+        ZoomOut(outer).begin()
