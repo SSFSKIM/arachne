@@ -123,9 +123,14 @@ class MediaObject(AbstractImageMobject):
         self._opacity = 1.0
         self._made = _Made(origin.scene_line if origin is not None else None)
         #: The clock program (:mod:`.clock`), and, while it reads outside
-        #: the clip, where it was found to.
+        #: the clip, where it was found to. Neither is in a capture's content
+        #: key, which holds plain values: the program decides the picture
+        #: only through the frame index, which is keyed. Whether the clock
+        #: reads outside the clip decides whether a frame of the object is
+        #: refused, so it is also kept as a plain value, which is keyed.
         self._program: tuple[Segment, ...] = clock.STANDING
         self._ran_out: _RanOut | None = None
+        self._out_of_range = False
         super().__init__(
             scale_to_resolution=0, resampling_algorithm=resampling_algorithm, **kwargs
         )
@@ -419,6 +424,7 @@ class _Clocked(MediaObject):
             media = Fraction(self._frame) / self.frame_rate
         copied._program = (Segment(Fraction(0), media, Fraction(0)),)
         copied._ran_out = None
+        copied._out_of_range = False
         return copied
 
     def _follow_clock(self, now: Fraction) -> None:
@@ -429,8 +435,10 @@ class _Clocked(MediaObject):
         self._frame = clock.frame_at(media, self.frame_rate, self.frame_count)
         if clock.in_range(media, self.duration):
             self._ran_out = None
+            self._out_of_range = False
         else:
             self._ran_out = _RanOut(now, media, origin_of(self).id)
+            self._out_of_range = True
 
 
 class VideoMobject(_Clocked):

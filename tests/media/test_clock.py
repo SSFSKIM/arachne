@@ -164,6 +164,28 @@ def test_stated_limit_a_clock_past_its_end_by_less_than_a_tick_is_not_refused(
     assert media["VideoMobject"] == {"media.frame": 47, "media.time": float(end)}
 
 
+def test_a_capture_s_content_key_tells_a_clock_out_of_range_from_one_in_range():
+    """Two states of one clip on the same frame, one in range and one past
+    the end, key apart: a frame of the second is refused.
+    """
+    from arachne.mobject.media.clock import Segment
+    from arachne.timeline.record import NodeState, content_fields
+
+    clip = VideoMobject("fixture:numbered-clip")
+    clip._program = (Segment(Fraction(0), Fraction(0), Fraction(1)),)
+    clip._follow_clock(Fraction(2))
+    inside = dict(content_fields(NodeState.of(clip)))
+    assert clip.frame == 47
+    clip._follow_clock(Fraction(3))
+    outside = dict(content_fields(NodeState.of(clip)))
+    assert clip.frame == 47
+    assert inside["_frame"] == outside["_frame"]
+    # The flag is keyed; _ran_out, a frozen record, is keyed only while it is
+    # None, a plain value, so it cannot be the field that tells them apart.
+    assert inside["_out_of_range"] != outside["_out_of_range"]
+    assert "_ran_out" not in outside
+
+
 def test_a_copy_of_a_running_clip_stands_on_the_frame_it_was_copied_with(server):
     """Neither a copy the scene's code makes nor one an animation makes is
     set by the driver: each stands on the frame and at the media time it
