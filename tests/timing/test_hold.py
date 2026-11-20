@@ -359,7 +359,7 @@ def test_a_succession_s_later_part_begins_from_what_is_true(opened, fps):
     for t, capture in frame_captures(session, fps):
         true = points_at(twin, art(true_box), twin.record.capture_at(boundary(t))[1])
         step = BOIL.step(t)
-        want = [p + BOIL.displacement(p, step) for p in true]
+        want = [p + BOIL._wobble(step)(p) for p in true]
         close(points_at(session, art(box), capture), want, 1e-9)
     final = session.record.state_at(session.record.duration)
     assert final.named("box").scene_box == pytest.approx(

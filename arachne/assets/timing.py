@@ -16,11 +16,12 @@ How it holds
 Nothing wraps or patches an animation. The first declaration in a scene
 registers one engine callback, the scene's **clock**, last among its
 updaters; the scene owns it, through that updater. While a play runs, each
-declared mobject carries one engine updater, its **restorer**, which the
-clock gives it and which leaves it when the play ends. Both live in that
-scene alone: a scene that declares nothing has neither, and plays and draws
-as it always did; a mobject declared in a scene, its copies, and a group
-holding it play in a later scene as they did before it.
+member of a declared family in the scene carries one engine updater, its
+**restorer**, which the clock gives it; when the play ends the first to run
+puts back what is true and takes every restorer the clock gave out. Both
+live in that scene alone: a scene that declares nothing has neither, and
+plays and draws as it always did; a mobject declared in a scene, its
+copies, and a group holding it play in a later scene as they did before it.
 
 The clock reads :attr:`~.Scene.time`, the exact scene time, and never adds
 up the ``dt`` it is handed (it reads it only so that every tick runs it).
@@ -82,8 +83,9 @@ second, are a plain ``ValueError``.
   ``MaintainPositionRelativeTo``), which between two drawings is the drawing
   on display; a ``Succession``'s part on a declared family that begins in
   the middle of a play after a part that does not animate that family (only
-  that part's end restores what is true before the next begins); a scene
-  updater registered after the clock, which must run last;
+  that part's end restores what is true before the next begins); a member
+  whose updating the scene's code suspended, which keeps its restorer from
+  running; a scene updater registered after the clock, which must run last;
 - ``timing.exact_content``: text, a number, a coordinate system or a plot,
   an annotation, a schematic mark, a diagram, or the scene's camera's frame
   in a declared family, when it is declared and at each play's first
@@ -213,17 +215,13 @@ class Boil:
         """The boil's step at the instant ``t``."""
         return math.floor(t * self.rate)
 
-    def displacement(self, points: Any, step: int) -> np.ndarray:
-        """How far the wobble of the step ``step`` moves each of the scene
-        points ``points`` (``(n, 3)``), in the scene's units of the current
-        configuration's frame.
+    def _wobble(self, step: int) -> Callable[[Any], np.ndarray]:
+        """The wobble of the step ``step``: a function giving how far it
+        moves each of the scene points ``(n, 3)`` it is handed, in the
+        scene's units of the current configuration's frame.
         """
         from arachne import config
 
-        xy = np.asarray(points, dtype=float)[:, :2]
-        moved = np.zeros((len(xy), 3))
-        if self.amplitude == 0:
-            return moved
         unit = min(config.frame_width, config.frame_height) / 1080
         rng = np.random.default_rng([self.seed, step])
         directions = rng.uniform(0, 2 * math.pi, (2, BOIL_WAVES))
@@ -233,9 +231,15 @@ class Boil:
         # Each axis's displacement is at most 1 before scaling, so a point
         # moves at most the amplitude.
         reach = self.amplitude * unit / math.sqrt(2)
-        angles = np.einsum("akd,nd->ank", waves, xy) + phases[:, None, :]
-        moved[:, :2] = reach * np.sin(angles).mean(axis=2).T
-        return moved
+
+        def displacement(points: Any) -> np.ndarray:
+            xy = np.asarray(points, dtype=float)[:, :2]
+            angles = np.einsum("akd,nd->ank", waves, xy) + phases[:, None, :]
+            moved = np.zeros((len(xy), 3))
+            moved[:, :2] = reach * np.sin(angles).mean(axis=2).T
+            return moved
+
+        return displacement
 
 
 @dataclass(frozen=True)
@@ -336,28 +340,30 @@ def _found_drivers(scene: Scene) -> list[SceneDriver]:
 
 
 def restore_true(mobject: Mobject, dt: float) -> None:
-    """A declared mobject's own updater while its scene plays: when a play
-    ends (handed ``dt == 0``), have the family hold what is true, so the
-    scene's code and the next play's animations start from it, and leave
-    the mobject. The clock gives it back at the next instant it holds the
-    family (:func:`_arm`), so between two plays, and once its scene has
-    ended, the mobject has no updater of stepped timing. It reads ``dt``,
-    so it runs at every tick; elsewhere it does nothing.
+    """The updater of each member of a declared family in the scene while a
+    play runs: the first to be handed ``dt == 0`` when the play ends has
+    every family hold what is true, so the scene's code and the next play's
+    animations start from it, and takes the restorer out of every member
+    (:meth:`TimingClock.end_play`). Whichever member still runs then does
+    it: one the play took out of the scene runs as its animation resumes
+    it. The clock gives the members the restorer again at the next instant
+    it holds them, so between two plays, and once their scene has ended,
+    they have no updater of stepped timing. It reads ``dt``, so it runs at
+    every tick; elsewhere it does nothing.
     """
     if dt != 0:
         return
     scene = _running_scene()
     clock = clock_of(scene) if scene is not None else None
-    illustration = clock.illustration_of(mobject) if clock is not None else None
-    if illustration is not None:
-        illustration.restore()
+    if clock is not None and clock.arms(mobject):
+        clock.end_play()
     _release(mobject)
 
 
 class _Restoring(list):
-    """A declared root's updaters while its clock holds it, the restorer
-    last: a copy of the root, made in the middle of a play, leaves the
-    restorer out, so that no copy outlives the scene with it.
+    """A declared member's updaters while its clock holds it, the restorer
+    last: a copy of it, made in the middle of a play, leaves the restorer
+    out, so that no copy outlives the scene with it.
     """
 
     def __deepcopy__(self, memo: dict[int, Any]) -> list[Any]:
@@ -367,13 +373,13 @@ class _Restoring(list):
         return copied
 
 
-def _arm(root: Mobject) -> None:
-    """Give the declared ``root`` the restorer, last among its updaters."""
-    updaters = root.updaters
+def _arm(member: Mobject) -> None:
+    """Give the declared ``member`` the restorer, last among its updaters."""
+    updaters = member.updaters
     if type(updaters) is _Restoring and updaters and updaters[-1] is restore_true:
         return
-    root.updaters = _Restoring([u for u in updaters if u is not restore_true])
-    root.updaters.append(restore_true)
+    member.updaters = _Restoring([u for u in updaters if u is not restore_true])
+    member.updaters.append(restore_true)
 
 
 def _release(mobject: Mobject) -> None:
@@ -464,18 +470,19 @@ class Illustration:
 
     # One instant
 
-    def at(self, now: Fraction, present: bool, posed: frozenset[int]) -> None:
+    def at(self, now: Fraction, present: bool, posed: frozenset[int]) -> list[Mobject]:
         """The clock's work at the instant ``now``, the root in the scene
-        or not, the rigs ``posed`` held by a pose.
+        or not, the rigs ``posed`` held by a pose: the members it armed
+        with the restorer (none when the root is not in the scene).
         """
-        root = self.root
         if not present:
             if self.present:
                 self.restore(posed)
-            _release(root)
             self.present = False
-            return
-        _arm(root)
+            return []
+        members = self.root.get_family()
+        for member in members:
+            _arm(member)
         self.restore(posed)
         timing = self.timing
         step = timing.step(now)
@@ -486,7 +493,7 @@ class Illustration:
             self.step = step
         boil = timing.boil
         if boil is None and self.shown is self.true:
-            return
+            return members
         true = self.true
         for member, state in self.shown.values():
             if not state.matches(member.__dict__):
@@ -494,10 +501,12 @@ class Illustration:
                 _keep_running(member, true[id(member)][1])
         if boil is not None:
             _boiled(self.shown, boil, boil.step(now))
-        # A state shown from before the root was armed holds its updaters
+        # A state shown from before a member was armed holds its updaters
         # in a list of another kind.
-        _arm(root)
+        for member in members:
+            _arm(member)
         self.installed = _capture([m for m, _ in self.shown.values()], self.shown)
+        return members
 
 
 def _keep_running(member: Mobject, truth: NodeState) -> None:
@@ -570,6 +579,7 @@ def _boiled(shown: _State, boil: Boil, step: int) -> None:
     """
     if boil.amplitude == 0:
         return
+    wobble = boil._wobble(step)
     for member, _ in shown.values():
         if getattr(member, "_scaffold", False):
             continue
@@ -577,7 +587,7 @@ def _boiled(shown: _State, boil: Boil, step: int) -> None:
         if points is None or not len(points):
             continue
         moved = np.array(points, dtype=float)
-        moved += boil.displacement(moved, step)
+        moved += wobble(moved)
         member.points = adopt(moved, FrozenPoints)
         member.__dict__[BOILED] = True
 
@@ -690,7 +700,9 @@ def _animation_nodes(animations: Any) -> list[Animation]:
 def _touched(
     animation: Animation, declared: dict[int, Illustration]
 ) -> Illustration | None:
-    """The illustration a member of whose family ``animation`` animates."""
+    """The illustration a member of whose family ``animation``'s own
+    mobject holds.
+    """
     mobject = getattr(animation, "mobject", None)
     if mobject is None:
         return None
@@ -699,20 +711,79 @@ def _touched(
     )
 
 
-def _restores(animation: Animation, root: Mobject) -> bool:
-    """Whether finishing ``animation`` runs ``root``'s updaters (its
-    restorer): it resumes the updating of a family that holds ``root``.
+def _touching(
+    animation: Animation, declared: dict[int, Illustration]
+) -> list[Illustration]:
+    """Every illustration ``animation`` animates a member of, read through
+    each animation it holds: a group's own mobject leaves its introducers
+    out.
     """
-    from ..animation.composition import Succession
+    found: list[Illustration] = []
+    for node in _animation_nodes((animation,)):
+        mobject = getattr(node, "mobject", None)
+        if mobject is None:
+            continue
+        for member in mobject.get_family():
+            illustration = declared.get(id(member))
+            if illustration is not None and all(illustration is not f for f in found):
+                found.append(illustration)
+    return found
 
-    if isinstance(animation, Succession):
-        return bool(animation.animations) and _restores(animation.animations[-1], root)
+
+def _holds(animation: Animation, root: Mobject) -> bool:
+    """Whether ``animation`` suspends, and so its end resumes, the
+    updating of a family that holds ``root``.
+    """
     mobject = getattr(animation, "mobject", None)
     return (
         bool(animation.suspend_mobject_updating)
         and mobject is not None
         and any(m is root for m in mobject.get_family())
     )
+
+
+def _restores(animation: Animation, root: Mobject) -> bool:
+    """Whether finishing ``animation`` runs ``root``'s updaters (its
+    restorer): it, or for a group any animation it holds (for a Succession
+    its last part, which finishes last), resumes the updating of a family
+    that holds ``root``.
+    """
+    from ..animation.composition import Succession
+
+    parts = getattr(animation, "animations", None) or []
+    if isinstance(animation, Succession):
+        return bool(parts) and _restores(parts[-1], root)
+    return _holds(animation, root) or any(_restores(p, root) for p in parts)
+
+
+def _suspending(animations: Any) -> frozenset[int]:
+    """The ids of every mobject the animations of a play may suspend."""
+    return frozenset(
+        id(member)
+        for node in _animation_nodes(animations)
+        if node.suspend_mobject_updating and getattr(node, "mobject", None) is not None
+        for member in node.mobject.get_family()
+    )
+
+
+def _check_running(
+    root: Mobject, members: list[Mobject], suspending: frozenset[int]
+) -> None:
+    """Refuse a member whose updating the scene's code suspended: its
+    restorer would not run when the play ends.
+    """
+    for member in members:
+        if member.updating_suspended and id(member) not in suspending:
+            kind = type(member).__name__
+            _refuse(
+                "timing.updater",
+                f"the {kind} in the family declared with stepped timing on a"
+                f" {type(root).__name__} has its updating suspended by the scene's"
+                " code: the engine puts back what is true through it when each"
+                " play ends",
+                kind="suspended updating",
+                name=kind,
+            )
 
 
 def _check_animations(animations: Any, declared: dict[int, Illustration]) -> None:
@@ -725,6 +796,9 @@ def _check_animations(animations: Any, declared: dict[int, Illustration]) -> Non
     # between two drawings is the drawing on display.
     relative = (MoveAlongPath, PhaseFlow, MaintainPositionRelativeTo)
     for animation in _animation_nodes(animations):
+        if isinstance(animation, Succession):
+            # Whatever its own mobject holds: it leaves its introducers out.
+            _check_parts(animation, declared)
         touched = _touched(animation, declared)
         if touched is None:
             continue
@@ -754,8 +828,6 @@ def _check_animations(animations: Any, declared: dict[int, Illustration]) -> Non
                 kind="animation",
                 name=kind,
             )
-        if isinstance(animation, Succession):
-            _check_parts(animation, declared)
 
 
 def _check_parts(succession: Succession, declared: dict[int, Illustration]) -> None:
@@ -765,29 +837,20 @@ def _check_parts(succession: Succession, declared: dict[int, Illustration]) -> N
     """
     parts = list(succession.animations)
     for before, part in zip(parts, parts[1:], strict=False):
-        mobject = getattr(part, "mobject", None)
-        if mobject is None:
-            continue
-        touched = next(
-            (
-                declared[id(m)]
-                for m in mobject.get_family()
-                if id(m) in declared and not _restores(before, declared[id(m)].root)
-            ),
-            None,
-        )
-        if touched is None:
-            continue
-        kind = type(succession).__name__
-        _refuse(
-            "timing.updater",
-            f"the {kind}'s part {type(part).__name__} animates the family declared"
-            f" with stepped timing on a {type(touched.root).__name__} and begins in"
-            f" the middle of the play, after a {type(before).__name__} that does not"
-            " animate that family: it would begin from the drawing on display",
-            kind="animation",
-            name=kind,
-        )
+        for touched in _touching(part, declared):
+            if _restores(before, touched.root):
+                continue
+            kind = type(succession).__name__
+            _refuse(
+                "timing.updater",
+                f"the {kind}'s part {type(part).__name__} animates the family"
+                f" declared with stepped timing on a {type(touched.root).__name__}"
+                f" and begins in the middle of the play, after a"
+                f" {type(before).__name__} that does not animate that family: it"
+                " would begin from the drawing on display",
+                kind="animation",
+                name=kind,
+            )
 
 
 # The clock
@@ -810,6 +873,10 @@ class TimingClock:
         #: Every mark declared here: a mobject carrying one of them is a
         #: copy of a mobject declared in this scene.
         self._marks: list[Timing] = []
+        #: The members it gave the restorer at its last instant, by id.
+        self._armed: dict[int, Mobject] = {}
+        #: The members the play's animations may suspend, by id.
+        self._suspending: frozenset[int] = frozenset()
 
         def hold_illustrations(dt: float) -> None:
             if dt >= 0:  # the read a stepping tick looks for; never a time
@@ -855,6 +922,25 @@ class TimingClock:
             for held in [f for f in scene.updaters if f == driver.updater]:
                 scene.remove_updater(held)
         self.drivers.append(driver)
+
+    def arms(self, mobject: Mobject) -> bool:
+        """Whether ``mobject`` holds the restorer this clock gave it."""
+        return self._armed.get(id(mobject)) is mobject
+
+    def end_play(self) -> None:
+        """A play's end: have every family in the scene hold what is true,
+        and take the restorer out of every member it was given to.
+        """
+        for illustration in self.illustrations:
+            if illustration.present:
+                illustration.restore()
+        self.release()
+
+    def release(self) -> None:
+        """Take the restorer out of every member it was given to."""
+        armed, self._armed = self._armed, {}
+        for member in armed.values():
+            _release(member)
 
     def illustration_of(self, root: Mobject) -> Illustration | None:
         """The illustration declared here on ``root``, or ``None``."""
@@ -913,8 +999,7 @@ class TimingClock:
             self._hold(scene)
         except BaseException:
             # A refused scene ends here: its mobjects keep no restorer.
-            for illustration in self.illustrations:
-                _release(illustration.root)
+            self.release()
             raise
 
     def _hold(self, scene: Scene) -> None:
@@ -937,12 +1022,24 @@ class TimingClock:
             for illustration in self.illustrations:
                 _check_content(scene, illustration.root, illustration.root.get_family())
             _check_animations(scene.animations or (), declared)
-        for illustration in self.illustrations:
-            _check_updaters(illustration.root, illustration.root.get_family())
+            self._suspending = _suspending(scene.animations or ())
         present = {id(m) for m in family}
-        now = scene.time
         for illustration in self.illustrations:
-            illustration.at(now, id(illustration.root) in present, posed)
+            members = illustration.root.get_family()
+            _check_updaters(illustration.root, members)
+            if id(illustration.root) in present:
+                _check_running(illustration.root, members, self._suspending)
+        now = scene.time
+        armed: dict[int, Mobject] = {}
+        for illustration in self.illustrations:
+            for member in illustration.at(now, id(illustration.root) in present, posed):
+                armed[id(member)] = member
+        # A member that left its family or the scene since the last instant
+        # gives the restorer back now: nothing may run it when the play ends.
+        for key, member in self._armed.items():
+            if armed.get(key) is not member:
+                _release(member)
+        self._armed = armed
         _reattach(family, declared)
 
     def _last_in(self, scene: Scene) -> None:

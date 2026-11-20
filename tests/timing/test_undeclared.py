@@ -70,22 +70,24 @@ def test_a_scene_that_declares_nothing_is_the_same_fresh_and_after_a_declared_on
     assert len(set(openings["fresh"]["frames"])) > 3
 
 
-#: Mobjects that outlive their scenes: a square, a group holding one, and
-#: two copies (fresh squares until the declaring scene puts its copies
-#: here).
+#: Mobjects that outlive their scenes: a square, a group holding one, two
+#: copies (fresh squares until the declaring scene puts its copies here),
+#: and a pair a second declaring scene declares and leaves.
 KEPT = """\
 from arachne import Circle, Square, VGroup
 
 square = Square()
 group = VGroup(Square(), Circle())
 copies = [Square(), Square()]
+pair = VGroup(Square(), Circle())
 """
 
-#: A scene for each kind of mobject kept, which declares nothing; and the
-#: scene that declares the square and the group's square, copies the
-#: square in the middle of a play and between two, and keeps the copies.
+#: A scene for each kind of mobject kept, which declares nothing; the scene
+#: that declares the square and the group's square, copies the square in
+#: the middle of a play and between two, and keeps the copies; and the
+#: scene whose one play leaves the declared pair.
 REUSING = """\
-from arachne import LEFT, RIGHT, UP, Boil, Scene, set_timing
+from arachne import LEFT, RIGHT, UP, Boil, FadeOut, Scene, set_timing
 
 import kept
 
@@ -117,6 +119,11 @@ class PlainGroup(_Plain):
         return [kept.group]
 
 
+class PlainPair(_Plain):
+    def things(self):
+        return [kept.pair]
+
+
 class Declaring(Scene):
     def construct(self):
         made = []
@@ -136,6 +143,16 @@ class Declaring(Scene):
         made.append(kept.square.copy())
         self.play(kept.square.animate.shift(LEFT), run_time=0.45)
         kept.copies[:] = made
+
+
+class DeclaringPair(Scene):
+    def construct(self):
+        # Its one play fades one of the declared pair out: the scene puts
+        # the other in the pair's place, so the pair leaves the scene as the
+        # play ends.
+        self.add(kept.pair)
+        set_timing(kept.pair, 12)
+        self.play(FadeOut(kept.pair[0]), run_time=0.45)
 """
 
 #: Opens each plain scene, then the declaring scene, then each plain scene
@@ -148,7 +165,7 @@ from arachne.session import Session
 
 scenes, media = sys.argv[1], sys.argv[2]
 config = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15, "media_dir": media}
-PLAIN = ("PlainSquare", "PlainCopies", "PlainGroup")
+PLAIN = ("PlainSquare", "PlainCopies", "PlainGroup", "PlainPair")
 
 
 def opened(scene):
@@ -170,6 +187,7 @@ def opened(scene):
 
 fresh = {s: opened(s) for s in PLAIN}
 opened("Declaring")
+opened("DeclaringPair")
 after = {s: opened(s) for s in PLAIN}
 print(json.dumps({"fresh": fresh, "after": after}))
 """
@@ -178,7 +196,9 @@ print(json.dumps({"fresh": fresh, "after": after}))
 def test_a_declaration_ends_with_its_scene(tmp_path):
     # PlainSquare: the declared mobject itself; PlainCopies: a copy made in
     # the middle of a play and one made between two; PlainGroup: a group
-    # outliving the scene that holds a declared mobject.
+    # outliving the scene that holds a declared mobject; PlainPair: a
+    # declared group the scene's last play left, when it faded one of its
+    # members out.
     scenes, shared = tmp_path / "scenes", tmp_path / "shared"
     scenes.mkdir()
     shared.mkdir()

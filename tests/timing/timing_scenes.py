@@ -544,6 +544,38 @@ class SuccessionAfterAnotherPart(_Moved):
         )
 
 
+class SuccessionShowingAgain(_Moved):
+    """The rig on screen faded in again by a Succession's second part: a
+    part whose group leaves its introducers out.
+    """
+
+    def move(self, box: Rig) -> Animation:
+        return Succession(
+            FadeIn(Dot(2 * LEFT), run_time=0.45), FadeIn(box, run_time=0.5)
+        )
+
+
+class SuccessionNestedPart(_Moved):
+    """The same, the rig's fade-in inside a group inside the second part."""
+
+    def move(self, box: Rig) -> Animation:
+        return Succession(
+            FadeIn(Dot(2 * LEFT), run_time=0.45),
+            AnimationGroup(FadeIn(box), FadeIn(Dot(2 * RIGHT)), run_time=0.5),
+        )
+
+
+class SuspendedByHand(Scene):
+    """The scene's code suspends a declared rig's updating."""
+
+    def construct(self) -> None:
+        box = _box()
+        self.add(box)
+        set_timing(box, RATE)
+        box.suspend_updating()
+        self.wait(0.5)  # @refused
+
+
 class _Declared(Scene):
     """Declares timing on what :meth:`make` makes."""
 
