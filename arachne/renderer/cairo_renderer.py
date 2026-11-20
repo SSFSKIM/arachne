@@ -224,8 +224,9 @@ class CairoRenderer:
                 self.file_writer.write_frame(pixels, repeat=repeat)
 
             def check() -> None:
-                # Each capture of the play, before anything of it is painted.
-                check_render(timeline.ensure_record(), self._live)
+                # Each capture of the play, before anything of it is painted:
+                # what the scene's code found first, as at every other point.
+                self._refuse(timeline.ensure_record())
 
             live = LiveFrames(scene, fps, write, check=check)
         play = timeline.play(skipped=skipped, cache_key=cache_key, live=live)

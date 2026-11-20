@@ -9,6 +9,7 @@ import threading
 
 import pytest
 
+from arachne import Scene, ValueTracker, linear
 from arachne.compose import guard
 from arachne.renderer import cairo_renderer
 from arachne.routing import GpuLive, GpuRequired
@@ -16,7 +17,7 @@ from arachne.scene.scene_file_writer import SceneFileWriter
 from arachne.scene.video_segment_encoder import VideoSegmentEncoder
 from arachne.session import Session
 
-from .compose_scenes import AfterLastPlay, LastPlay, Live, NoPlay, Plain
+from .compose_scenes import AfterLastPlay, HashDot, LastPlay, Live, NoPlay, Plain
 from .conftest import SCENES, SMALL, render, snapshot
 
 
@@ -170,6 +171,46 @@ def test_a_scene_drawn_as_it_runs_paints_no_frame_before_its_refusal(
     with pytest.raises(GpuLive):
         render(Live, tmp_path / "media")
     assert written == []
+
+
+class LiveFoundMidPlay(Scene):
+    """A scene drawn as it runs whose updater, halfway through its play,
+    records a finding that refuses drawing it and gives its dot a GPU-only
+    capability, both before the same capture.
+    """
+
+    def construct(self):
+        from arachne.lint.raised import found
+        from arachne.routing import declare
+
+        dot = HashDot()
+        tracker = ValueTracker(0)
+        marked: list[bool] = []
+
+        def mark(mobject):
+            if tracker.get_value() >= 0.5 and not marked:
+                marked.append(True)
+                found("annotation.anchor_unknown", "an anchor no rig has")
+                declare(mobject, "effect.blur")
+
+        dot.add_updater(mark)
+        self.add(dot)
+        self.play(tracker.animate.set_value(1), rate_func=linear)
+
+
+@pytest.mark.parametrize("host", ["no_gpu", "a_gpu"])
+def test_a_finding_and_a_capability_met_at_one_live_capture_refuse_for_the_finding(
+    tmp_path, request, host
+):
+    """The scene's own error comes first, at a live capture as everywhere."""
+    from arachne.lint.raised import RaisedFinding
+
+    request.getfixturevalue(host)
+    media = tmp_path / "media"
+    with pytest.raises(RaisedFinding) as refused:
+        render(LiveFoundMidPlay, media)
+    assert refused.value.code == "annotation.anchor_unknown"
+    assert snapshot(media) == {}
 
 
 def test_a_scene_holding_nothing_renders_and_publishes_everything(tmp_path):

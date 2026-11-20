@@ -201,14 +201,17 @@ class FoundAfterAPlay(Scene):
         self.play(FadeIn(Circle()))
 
 
-class RetriedThenFound(RetriedThenRaises):
-    """A play finished in the first execution; the scene executed again for
-    the next play, whose code records a finding that refuses drawing it.
+class RetriedThenFound(Scene):
+    """A play finished in the first execution; the scene executed again to
+    draw the next play as it runs; then a finding that refuses drawing it,
+    which only the second execution reaches.
     """
 
+    constructed: list[int] = []
+
     def construct(self):
+        RetriedThenFound.constructed.append(1)
         self.play(Create(Square()))
-        _found_late(self)
         tracker = ValueTracker(0)
         holder = VGroup()
 
@@ -219,6 +222,7 @@ class RetriedThenFound(RetriedThenRaises):
         holder.add_updater(show)
         self.add(holder)
         self.play(tracker.animate.set_value(1), rate_func=linear)
+        _found_late(self)
 
 
 class LiveSequenceFoundLate(Scene):
@@ -239,9 +243,13 @@ def test_a_render_refused_by_its_scene_s_finding_keeps_no_segment(tmp_path, scen
     """
     from arachne.lint.raised import RaisedFinding
 
+    RetriedThenFound.constructed.clear()
     media = tmp_path / "media"
     with pytest.raises(RaisedFinding):
         _render(scene, media)
+    if scene is RetriedThenFound:
+        # Executed again, inheriting the first execution's segment.
+        assert len(RetriedThenFound.constructed) == 2
     assert _files(media) == []
 
 
