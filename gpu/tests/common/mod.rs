@@ -7,16 +7,24 @@
 //!   and its pin is the one given.
 //!
 //! With no mode set every drawing test fails.
+//!
+//! The probes that draw frames of a frame's size draw at `ARACHNE_GPU_TEST_SIZE`
+//! (`<width>x<height>`, at least 480 x 270), or at 480 x 270 when it is unset: CI's size, and a
+//! GPU host's second size, 1920x1080. Their closed-form bounds hold at any size.
 
 #![allow(dead_code)]
 
 use std::process::{Command, Output};
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 
 use arachne_gpu::{Compositor, NoGpu, OpenError, Pin};
 
 pub const MODE: &str = "ARACHNE_GPU_TEST_MODE";
 pub const PIN: &str = "ARACHNE_GPU_TEST_PIN";
+pub const SIZE: &str = "ARACHNE_GPU_TEST_SIZE";
+
+/// The size frame-sized probes draw at when the run names none.
+pub const DEFAULT_SIZE: (u32, u32) = (480, 270);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -58,6 +66,32 @@ pub fn mode() -> Mode {
     let mode = std::env::var(MODE).ok();
     let pin = std::env::var(PIN).ok();
     mode_from(mode.as_deref(), pin.as_deref()).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// The drawing size, from the value of `SIZE`: `<width>x<height>`, no smaller than 480 x 270 on
+/// either side, since the probes' fixed geometry fits that frame.
+pub fn size_from(value: Option<&str>) -> Result<(u32, u32), String> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_SIZE);
+    };
+    let parsed = value
+        .split_once('x')
+        .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
+    match parsed {
+        Some((w, h)) if w >= DEFAULT_SIZE.0 && h >= DEFAULT_SIZE.1 => Ok((w, h)),
+        Some(_) => Err(format!(
+            "{SIZE}={value}: the probes draw at 480x270 or larger"
+        )),
+        None => Err(format!("{SIZE}={value}: not <width>x<height>")),
+    }
+}
+
+/// The size frame-sized probes draw at, read once.
+pub fn size() -> (u32, u32) {
+    static DRAWING: OnceLock<(u32, u32)> = OnceLock::new();
+    *DRAWING.get_or_init(|| {
+        size_from(std::env::var(SIZE).ok().as_deref()).unwrap_or_else(|e| panic!("{e}"))
+    })
 }
 
 static REPORTED: Once = Once::new();
@@ -103,7 +137,11 @@ pub fn compositor(width: u32, height: u32) -> Compositor {
             c
         }
     };
-    REPORTED.call_once(|| eprintln!("ADAPTER: {}", compositor.adapter()));
+    REPORTED.call_once(|| {
+        eprintln!("ADAPTER: {}", compositor.adapter());
+        let (w, h) = size();
+        eprintln!("SIZE: {w}x{h}");
+    });
     compositor
 }
 

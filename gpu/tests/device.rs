@@ -4,7 +4,7 @@ mod common;
 
 use arachne_gpu::OpenError;
 use arachne_gpu::{Compositor, WGPU_VERSION};
-use common::{compositor, is_child, mode_from, no_gpu, open, run_child, software_icd};
+use common::{compositor, is_child, mode_from, no_gpu, open, run_child, size_from, software_icd};
 
 /// The machines below are made by running this binary again with the Vulkan loader shown only a
 /// software adapter, or with no loader it can load.
@@ -107,6 +107,23 @@ fn with_no_launch_mode_the_drawing_tests_fail() {
         mode_from(Some("hardware"), Some(pin)),
         Ok(common::Mode::Hardware(_))
     ));
+}
+
+#[test]
+fn the_probes_draw_at_the_runs_size_or_at_480_x_270() {
+    assert_eq!(size_from(None), Ok((480, 270)));
+    assert_eq!(size_from(Some("1920x1080")), Ok((1920, 1080)));
+    for wrong in [
+        "1920",
+        "1920x",
+        "x1080",
+        "1920 x 1080",
+        "479x270",
+        "480x269",
+        "-1x5",
+    ] {
+        assert!(size_from(Some(wrong)).is_err(), "{wrong}");
+    }
 }
 
 #[test]

@@ -4,10 +4,8 @@
 mod common;
 
 use arachne_gpu::{Compositor, Footprint, Frame, Layer, NEAREST};
-use common::{compositor, opaque, painted_picture, rectangle, upload};
+use common::{compositor, opaque, painted_picture, rectangle, size, upload};
 
-const W: u32 = 480;
-const H: u32 = 270;
 const CLEAR: [u8; 4] = [0; 4];
 
 /// Asserts that `footprint` is the rectangle from (`x0`, `y0`) to (`x1`, `y1`) within 1 px on each
@@ -36,7 +34,8 @@ fn texture(c: &mut Compositor, width: u32, height: u32, seed: u64) -> arachne_gp
 
 #[test]
 fn a_placed_quads_footprint_is_its_rectangle() {
-    let mut c = compositor(W, H);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
     let kt = texture(&mut c, 16, 16, 1);
     let analytic = [100.3, 50.7, 180.6, 120.2];
     let [x0, y0, x1, y1] = analytic;
@@ -53,8 +52,9 @@ fn a_placed_quads_footprint_is_its_rectangle() {
 
 #[test]
 fn overlapping_objects_each_keep_their_whole_footprint() {
-    let mut c = compositor(W, H);
-    let below = texture(&mut c, W, H, 2);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let below = texture(&mut c, w, h, 2);
     let (ka, kb) = (texture(&mut c, 10, 10, 3), texture(&mut c, 10, 10, 4));
     let a = [100.0, 100.0, 200.0, 180.0];
     let b = [150.0, 140.0, 260.0, 230.0];
@@ -82,9 +82,10 @@ fn overlapping_objects_each_keep_their_whole_footprint() {
 
 #[test]
 fn a_pictures_footprint_is_where_it_puts_alpha_and_none_at_opacity_zero() {
-    let mut c = compositor(W, H);
-    let picture = painted_picture(W, H, 5);
-    let kp = upload(&mut c, W, H, &picture);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let picture = painted_picture(w, h, 5);
+    let kp = upload(&mut c, w, h, &picture);
     let frame = Frame::new(
         CLEAR,
         vec![
@@ -93,9 +94,9 @@ fn a_pictures_footprint_is_where_it_puts_alpha_and_none_at_opacity_zero() {
         ],
     );
     let map = c.object_map(&frame).unwrap();
-    for y in 0..H {
-        for x in 0..W {
-            let alpha = picture[((y * W + x) * 4 + 3) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let alpha = picture[((y * w + x) * 4 + 3) as usize];
             assert_eq!(map[0].covers(x, y), alpha > 0, "({x}, {y})");
         }
     }
@@ -104,7 +105,8 @@ fn a_pictures_footprint_is_where_it_puts_alpha_and_none_at_opacity_zero() {
 
 #[test]
 fn a_window_covers_its_rectangle_and_more_than_32_objects_are_mapped() {
-    let mut c = compositor(W, H);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
     let kt = texture(&mut c, 4, 4, 6);
     let inner = Frame::new(
         [1, 2, 3, 255],
@@ -140,13 +142,14 @@ fn a_window_covers_its_rectangle_and_more_than_32_objects_are_mapped() {
 
 /// Every pixel within `by` pixels of the footprint, as a square: how the comparator grows it.
 fn grown(footprint: &Footprint, by: u32) -> Vec<bool> {
-    let mut grown = vec![false; (W * H) as usize];
-    for y in 0..H {
-        for x in 0..W {
+    let (w, h) = size();
+    let mut grown = vec![false; (w * h) as usize];
+    for y in 0..h {
+        for x in 0..w {
             if footprint.covers(x, y) {
-                for gy in y.saturating_sub(by)..(y + by + 1).min(H) {
-                    for gx in x.saturating_sub(by)..(x + by + 1).min(W) {
-                        grown[(gy * W + gx) as usize] = true;
+                for gy in y.saturating_sub(by)..(y + by + 1).min(h) {
+                    for gx in x.saturating_sub(by)..(x + by + 1).min(w) {
+                        grown[(gy * w + gx) as usize] = true;
                     }
                 }
             }
@@ -157,14 +160,15 @@ fn grown(footprint: &Footprint, by: u32) -> Vec<bool> {
 
 #[test]
 fn removing_an_effect_carrying_layer_changes_pixels_only_inside_its_grown_footprint() {
-    let mut c = compositor(W, H);
-    let below = texture(&mut c, W, H, 7);
+    let (w, h) = size();
+    let mut c = compositor(w, h);
+    let below = texture(&mut c, w, h, 7);
     let kt = texture(&mut c, 32, 32, 8);
     let corners = rectangle(150.0, 80.0, 310.0, 190.0);
-    let mask_picture: Vec<u8> = (0..W * H)
-        .flat_map(|i| if i % W < 230 { [255; 4] } else { [0; 4] })
+    let mask_picture: Vec<u8> = (0..w * h)
+        .flat_map(|i| if i % w < 230 { [255; 4] } else { [0; 4] })
         .collect();
-    let mask = upload(&mut c, W, H, &mask_picture);
+    let mask = upload(&mut c, w, h, &mask_picture);
     let inner = Frame::new(
         [200, 100, 50, 255],
         vec![Layer::quad(
@@ -210,13 +214,13 @@ fn removing_an_effect_carrying_layer_changes_pixels_only_inside_its_grown_footpr
         let grown = grown(footprint, grow_px.ceil() as u32);
         let mut changed = 0;
         let mut beyond = 0;
-        for y in 0..H {
-            for x in 0..W {
-                let at = ((y * W + x) * 4) as usize;
+        for y in 0..h {
+            for x in 0..w {
+                let at = ((y * w + x) * 4) as usize;
                 if drawn[at..at + 4] != base[at..at + 4] {
                     changed += 1;
                     assert!(
-                        grown[(y * W + x) as usize],
+                        grown[(y * w + x) as usize],
                         "({x}, {y}) changed outside, grow {grow_px}"
                     );
                     beyond += usize::from(!footprint.covers(x, y));
