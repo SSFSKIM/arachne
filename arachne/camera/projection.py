@@ -43,6 +43,7 @@ __all__ = [
     "home_box",
     "member_box",
     "member_place",
+    "picture_corners",
     "picture_place",
     "picture_shows",
     "pixel_box",
@@ -746,31 +747,52 @@ def _image_painted(camera: Camera, view: View, member: Mobject) -> bool:
 
 def picture_shows(member: Mobject) -> bool:
     """Whether a pixel of the picture ``member`` draws shows: not every
-    pixel of it fully transparent. An image's picture is its
-    ``pixel_array`` (its opacity is in its alpha); a path whose fill is a
-    picture (``fill_is_picture``) draws its picture at its fill opacity
-    (``member.pixels()``), and one the engine refuses to draw, or with no
-    pixels to read, is taken to show, standing where it would be drawn. The one reading of a picture's
-    presence the lint's parts and ``apart`` share.
-    """
-    if getattr(member, "fill_is_picture", False):
-        from arachne.lint.raised import RaisedFinding
+    pixel of it fully transparent, its source alpha read in scene space. An
+    image's picture is its ``pixel_array`` (its opacity is in its alpha); a
+    path whose fill is a picture (``fill_is_picture``) draws its picture at
+    its fill opacity (``member.pixels()``). A picture whose pixels the
+    engine refuses to read, or with no pixels to read, is taken to show,
+    standing where it would be drawn: its refusal is a frame's.
 
-        read = getattr(member, "pixels", None)
-        if read is None:
-            # A fill declared a picture with no pixels to read: all of it.
-            return True
-        try:
-            raster = read()
-        except RaisedFinding:
-            # Refused where a frame is drawn.
-            return True
-    else:
-        raster = getattr(member, "pixel_array", None)
+    The one reading of a picture's presence the lint's parts and ``apart``
+    share. ``apart`` asks only this, with no cutoff by size; the parts also
+    leave out a picture drawn under half a pixel high (:func:`_quad_painted`).
+    """
+    from arachne.lint.raised import RaisedFinding
+
+    try:
+        if getattr(member, "fill_is_picture", False):
+            read = getattr(member, "pixels", None)
+            raster = read() if read is not None else None
+        else:
+            raster = getattr(member, "pixel_array", None)
+    except RaisedFinding:
+        return True
     if raster is None:
         return True
     raster = np.asarray(raster)
     return not (raster.ndim == 3 and raster.shape[-1] == 4 and not raster[..., 3].any())
+
+
+def picture_corners(member: Mobject) -> np.ndarray | None:
+    """Where the picture ``member`` draws has its corners, in CE's image
+    order (upper left, upper right, lower left, lower right): an image's
+    first four points; a path whose fill is a picture, its own
+    ``corners()``, or, for one that only declares its fill a picture, the
+    corners of its points' box. ``None`` for one with no points.
+    """
+    points = np.asarray(member.points, dtype=float)
+    if not len(points):
+        return None
+    if not getattr(member, "fill_is_picture", False):
+        return points[:4]
+    read = getattr(type(member), "corners", None)
+    if read is not None:
+        found = read(member)
+        return None if found is None else np.asarray(found, dtype=float)
+    (x0, y0), (x1, y1) = points[:, :2].min(axis=0), points[:, :2].max(axis=0)
+    z = float(points[:, 2].mean())
+    return np.array([[x0, y1, z], [x1, y1, z], [x0, y0, z], [x1, y0, z]])
 
 
 def picture_place(
@@ -778,13 +800,13 @@ def picture_place(
 ) -> tuple[Box, np.ndarray, None] | None:
     """What :func:`member_place` gives for an image, for a path whose fill is
     a picture (``fill_is_picture``): its picture placed as the camera places
-    an image at the path's corners (``member.corners()``, CE's image order),
-    around the frame's centre, its ink the corners' box; ``None`` where the
-    camera's draw of that image paints nothing (:func:`_image_painted`): no
-    corners, a picture under half a pixel high, or one every pixel of which
-    is transparent at the path's opacity (``member.pixels()``).
+    an image at its corners (:func:`picture_corners`), around the frame's
+    centre, its ink the corners' box; ``None`` where the camera's draw of
+    that image paints nothing (:func:`_image_painted`): no corners, a
+    picture under half a pixel high, or one no pixel of which shows
+    (:func:`picture_shows`).
     """
-    corners = member.corners()
+    corners = picture_corners(member)
     if corners is None:
         return None
     if not _quad_painted(camera, view, member, corners):

@@ -39,7 +39,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from arachne.camera.projection import draw_kind, picture_shows
+from arachne.camera.projection import draw_kind, picture_corners, picture_shows
 from arachne.timeline.origins import origin_of
 
 from .findings import Finding, FindingObject
@@ -242,11 +242,13 @@ def _side(mob: Any, label: str | None) -> Side:
     side = Side(mob, called, region=False, points=points)
     if len(points):
         side.box = box
+    # A picture is no stroke: a side that holds one rings nothing, whatever
+    # its points' ends.
     side.ends = (
         np.vstack(
             [np.asarray(leaf.points, dtype=float)[[0, -1], :2] for leaf in leaves]
         )
-        if leaves
+        if leaves and not any(_picture(leaf) for leaf in leaves)
         else np.empty((0, 2))
     )
     return side
@@ -275,10 +277,12 @@ def _picture(leaf: Any) -> bool:
 
 def _corners(leaf: Any) -> np.ndarray:
     """A picture's corners, CE's image order (upper left, upper right,
-    lower left, lower right), in the scene's x and y.
+    lower left, lower right), in the scene's x and y
+    (:func:`~arachne.camera.projection.picture_corners`).
     """
-    found = leaf.corners() if hasattr(leaf, "corners") else leaf.points
-    return np.asarray(found, dtype=float)[:4, :2]
+    found = picture_corners(leaf)
+    assert found is not None, "a leaf with points has corners"
+    return found[:, :2]
 
 
 def _union(boxes: Sequence[Box]) -> Box:

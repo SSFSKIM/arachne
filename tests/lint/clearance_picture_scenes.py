@@ -8,14 +8,25 @@ from __future__ import annotations
 
 import numpy as np
 
-from arachne import Circle, Dot, Group, Scene, Sprite, Square, Still, VideoMobject
+from arachne import (
+    Circle,
+    Dot,
+    Group,
+    Scene,
+    Sprite,
+    Square,
+    Still,
+    Text,
+    VideoMobject,
+)
 from arachne.assets import RasterPart, load_asset
 from arachne.lint.bridge import apart
 
 #: The corners every picture is set to (CE's image order).
 CORNERS = np.array([[-3.0, 1.0, 0], [-1.0, 1.0, 0], [-3.0, -1.0, 0], [-1.0, -1.0, 0]])
-#: How far apart a pair is held.
+#: How far apart a pair is held; and a word from a picture's edge.
 PAD = 0.1
+WORD_PAD = 0.3
 
 
 def _member() -> RasterPart:
@@ -77,3 +88,73 @@ class ApartFromPicturesAsDrawn(Scene):
             shown["faded_target"] = apart(dot, picture, pad=PAD)
             self.found[name] = shown
         self.wait(0.1)
+
+
+class RefusedStill(Still):
+    """A still whose pixels the engine refuses to read, as it refuses a
+    frame that decodes otherwise.
+    """
+
+    def get_pixel_array(self):
+        from arachne.lint.raised import RaisedFinding
+
+        raise RaisedFinding("media.inexact", "the frame decodes otherwise")
+
+
+class ApartFromARefusedStill(Scene):
+    """A dot inside a still whose pixels are refused: present, so in
+    contact, and asked again with nothing raised.
+    """
+
+    def construct(self):
+        still = RefusedStill("fixture:swatch")
+        still.points = CORNERS.copy()
+        dot = Dot(radius=0.05).move_to([-2.0, 0.0, 0])
+        self.found = {
+            "subject": apart(still, dot, pad=PAD),
+            "target": apart(dot, still, pad=PAD),
+        }
+        self.wait(0.1)
+
+
+def _word() -> Text:
+    """A word whose first letter stands inside the pictures' box and whose
+    last stands outside it, its right edge between them, each letter
+    between :data:`~arachne.lint.clearance.TOUCH` and :data:`WORD_PAD` from
+    it.
+    """
+    word = Text("A    B", font_size=20)
+    first, last = word[0], word[-1]
+    middle = (first.get_right()[0] + last.get_left()[0]) / 2
+    return word.shift([-1.0 - middle, -word.get_center()[1], 0])
+
+
+class ApartFromAWordAcrossAPicture(Scene):
+    """A still and a raster member at one place, each in a group with a
+    closed outline inside it, asked apart from a word whose letters stand
+    either side of the picture's edge.
+    """
+
+    def construct(self):
+        self.found = {}
+        for name in ("still", "member"):
+            picture = pictures()[name]
+            ring = Circle(radius=0.2).move_to([-2.0, 0.5, 0])
+            word = _word()
+            self.found[name] = {
+                "gap": float(word[-1].get_left()[0] + 1.0),
+                "found": apart(Group(picture, ring), word, pad=WORD_PAD),
+            }
+        self.wait(0.1)
+
+
+class SweptPictureFill(Scene):
+    """An outline that only declares its fill a picture, with a word over
+    it: swept as an image at its box.
+    """
+
+    def construct(self):
+        marker = Square(side_length=2).move_to([-2.0, 0.0, 0]).rotate(0.3)
+        marker.fill_is_picture = True
+        self.add(marker, Text("over", font_size=20).move_to([-2.0, 0.0, 0]))
+        self.wait(0.25)
