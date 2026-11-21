@@ -606,3 +606,27 @@ def test_a_readout_held_by_its_own_animation_over_a_falling_body_is_stale(opened
     assert finding.detail["drawn_tick"] - tick > 1
     assert set(finding.detail) == {"body", "tick", "drawn_tick"}
     assert f"shows tick {tick} while its body is drawn at tick" in finding.message
+
+
+@pytest.mark.parametrize("grid", ["render", None])
+def test_a_readout_of_a_world_held_back_into_the_scene_is_not_stale(opened, grid):
+    """Held by hand, removed and added again still held, the world draws
+    its point at a row of its first stay, which its second stay does not
+    hold: the readout keeps that row's value, which agrees with the drawing,
+    and the row its body is drawn at is no tick of the stay the scene is in.
+    Linted from the record or through a forward run, it is not reported.
+    """
+    session = opened("HeldAwayAndBackRead", grid=grid)
+    first, second = session.record.bakes.occurrences
+    assert second.first_tick == 45
+    state = session.state_at(Fraction(14, 15))
+    (readout,) = _readouts(state).values()
+    read = _read(state, readout)
+    assert int(read["sim.reads_body"].value[0]) == first.ordinal
+    assert read["sim.reads_tick"].value <= first.last_tick
+    (ball,) = _bodies(session, second.ordinal)
+    for quantity in state.quantities[ball]:
+        assert quantity.unreadable == (
+            "its world holds it drawn at a row of an earlier stay"
+        )
+    assert _stale(session) == []

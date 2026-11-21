@@ -323,3 +323,24 @@ class IndicatedOverAFall(Scene):
         self.wait(0.2)
         self.play(Indicate(reading), run_time=0.5)
         self.wait(0.2)
+
+
+class HeldAwayAndBackRead(Scene):
+    """A falling point and its readout, its world held by hand a quarter
+    second in, removed while held at 1/2 s and added again, still held, at
+    3/4 s: the point is drawn at the row of the first stay the world last
+    placed it at, and the readout keeps that row's value.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        reading = world.readout(ball, "velocity", part="y", format="{:.3f}")
+        self.add(world, reading.to_corner(UL))
+        self.wait(0.25)
+        world.suspend_updating()
+        self.wait(0.25)
+        self.remove(world)
+        self.wait(0.25)
+        self.add(world)
+        self.wait(0.25)
