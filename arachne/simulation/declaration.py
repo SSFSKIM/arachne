@@ -320,7 +320,8 @@ class Gravity:
 @dataclass(frozen=True, init=False)
 class Attraction:
     """Attraction by the inverse square among ``bodies``:
-    ``strength * m_a * m_b / r**2`` between each pair.
+    ``strength * m_a * m_b / r**2`` between each pair, ``r`` apart, along
+    the line between their centres of mass.
     """
 
     bodies: tuple[Body, ...]
