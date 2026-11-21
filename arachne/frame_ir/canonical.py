@@ -59,6 +59,14 @@ to about ``g`` that CE leaves open can be closed). Content keeps far from it
 pixels apart), and :data:`point_equality_disagreements` records every
 boundary decided otherwise, so the test suite finds any that does not.
 
+With ``ARACHNE_SNAP_LEAN=1`` in the environment when this module is
+imported (:data:`SNAP_LEAN`), the snap leaves out two things that change
+nothing it hands the core: the second joins decision on a path the view
+pass already decided and set again (the record set reuses the pass's
+decision, made on the same record, view and shapes), and the point-equality
+measure, which only the tests read. Off, which it is unless set, the snap is
+what it was without the switch.
+
 Only the core's inputs are snapped (:class:`~.core_painter.CorePainter`'s
 records as the core reads them). What Cairo draws stays what it draws from
 the scene's own values: the overlay over the core's frame, display pictures
@@ -84,6 +92,7 @@ __all__ = [
 
 import contextlib
 import math
+import os
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from typing import Any
 
@@ -103,6 +112,25 @@ RATIO_GRID = 2.0**-24
 SCALE_BITS = 24
 #: How far below the pixel's binary exponent the input grid sits.
 _STEPS_EXPONENT = 9
+
+
+def _lean_flag(value: str | None) -> bool:
+    """Whether ``ARACHNE_SNAP_LEAN`` (its ``value``, or ``None`` unset) turns
+    the lean snap on: ``"1"`` on; unset, empty or ``"0"`` off; anything else
+    is refused.
+    """
+    if value in (None, "", "0"):
+        return False
+    if value == "1":
+        return True
+    raise ValueError(f"ARACHNE_SNAP_LEAN={value!r}: set it to 1 (on) or 0 (off)")
+
+
+#: Whether the snap is lean (the module's doc), read once, at import.
+SNAP_LEAN: bool = _lean_flag(os.environ.get("ARACHNE_SNAP_LEAN"))
+
+#: Where :meth:`Canonical._record` decides a path's joins itself.
+_UNDECIDED: Any = object()
 
 #: The record kinds that draw paths, whose flatness is decided before the
 #: snap.
@@ -375,10 +403,12 @@ class Canonical:
 
     With ``planes`` (the core's input), a stream of the deltas as made, held
     by the core (``arachne_core.Stream``), decides how each path a record
-    draws lies, and the snapped record carries it.
+    draws lies, and the snapped record carries it. ``lean``: whether the snap
+    is lean (the module's doc); :data:`SNAP_LEAN` unless given.
     """
 
-    def __init__(self, *, planes: bool = True) -> None:
+    def __init__(self, *, planes: bool = True, lean: bool | None = None) -> None:
+        self._lean = SNAP_LEAN if lean is None else bool(lean)
         #: Each path shape of the stream held, by its own key, as the scene
         #: made it.
         self._shapes: dict[bytes, Shape] = {}
@@ -447,8 +477,9 @@ class Canonical:
             found.view = self._view_of(self._view)
         # How each held record draws a stream shape's points: a face group as
         # its faces, each its own run; anything else as the points whole.
+        # Only the measure reads them: a lean snap counts none.
         uses: dict[bytes, set[Way]] = {}
-        for record in self._records.values():
+        for record in () if self._lean else self._records.values():
             key = record.fields.get("shape")
             if isinstance(key, bytes):
                 uses.setdefault(key, set()).add(_way(record))
@@ -458,16 +489,22 @@ class Canonical:
                 found.upload.append(shape)
             elif shape.kind == "path":
                 self._shapes[shape.key] = shape
-                self._measured[shape.key] = set(uses.get(shape.key, {1}))
-                self._hold(shape.key, shape.data, found, self._measured[shape.key])
+                if self._lean:
+                    self._hold(shape.key, shape.data, found)
+                else:
+                    self._measured[shape.key] = set(uses.get(shape.key, {1}))
+                    self._hold(shape.key, shape.data, found, self._measured[shape.key])
                 uploaded.add(shape.key)
             else:
                 raise ValueError(f"canonical: a {shape.kind} shape is not classified")
         if regrid:
             for key, shape in self._shapes.items():
-                self._measured[key] = set(uses.get(key, {1}))
-                self._hold(key, shape.data, found, self._measured[key])
-        else:
+                if self._lean:
+                    self._hold(key, shape.data, found)
+                else:
+                    self._measured[key] = set(uses.get(key, {1}))
+                    self._hold(key, shape.data, found, self._measured[key])
+        elif not self._lean:
             # A shape held from an earlier delta that a record begins to draw
             # another way: measured that way now.
             for key, wanted in uses.items():
@@ -480,7 +517,8 @@ class Canonical:
                     self._measured[key] |= new
         found.upload_paints = list(delta.upload_paints)
         for key in delta.release:
-            self._measured.pop(key, None)
+            if not self._lean:
+                self._measured.pop(key, None)
             if self._shapes.pop(key, None) is None:
                 found.release.append(key)
             else:
@@ -502,19 +540,39 @@ class Canonical:
                 and record.kind in _PATH_KINDS
                 and record.fields.get("shade_in_3d")
             )
+        # The joins the view pass decided of the paths it set again: a lean
+        # snap hands them to the record set rather than deciding them twice.
+        rejoined: dict[int, tuple[int, ...] | None] = {}
         if delta.view is not None and not regrid:
             # A path's joins are decided through the view: each held path
             # whose joins the new view moves is set again with them.
-            setting.update(
-                (slot, record)
-                for slot, record in sorted(self._records.items())
-                if slot not in setting
-                and record.kind == "path"
-                and self._joins(record) != self._joins_sent.get(slot)
-            )
+            if self._lean:
+                for slot, record in sorted(self._records.items()):
+                    if slot not in setting and record.kind == "path":
+                        decided = self._joins(record)
+                        if decided != self._joins_sent.get(slot):
+                            setting[slot] = record
+                            rejoined[slot] = decided
+            else:
+                setting.update(
+                    (slot, record)
+                    for slot, record in sorted(self._records.items())
+                    if slot not in setting
+                    and record.kind == "path"
+                    and self._joins(record) != self._joins_sent.get(slot)
+                )
         normals = self._normals(setting, grid)
         found.set = [
-            (slot, self._record(slot, record, found, normals.get(slot)))
+            (
+                slot,
+                self._record(
+                    slot,
+                    record,
+                    found,
+                    normals.get(slot),
+                    joins=rejoined.get(slot, _UNDECIDED),
+                ),
+            )
             for slot, record in setting.items()
         ]
         for slot in delta.remove:
@@ -576,7 +634,8 @@ class Canonical:
         """
         assert self.grid is not None
         shape = Shape("path", _position(points, self.grid))
-        _measure(points, shape.data, uses)
+        if not self._lean:
+            _measure(points, shape.data, uses)
         if self._snapped.get(holder) == shape.key:
             return shape.key
         holders = self._holders.setdefault(shape.key, set())
@@ -659,7 +718,12 @@ class Canonical:
         record: Record,
         found: Delta,
         normals: list[tuple[float, ...]] | None = None,
+        joins: Any = _UNDECIDED,
     ) -> Record:
+        """``record`` for ``slot`` as the core receives it. ``joins``: its
+        joins as the view pass decided them this delta (a lean snap), from
+        the same record, view and shapes as here; decided here otherwise.
+        """
         assert self.grid is not None
         grid = self.grid
         fields = dict(record.fields)
@@ -698,7 +762,7 @@ class Canonical:
             snapped["planes"] = self._planes[slot]
         if normals is not None:
             snapped["normals"] = normals
-        decided = self._joins(record)
+        decided = self._joins(record) if joins is _UNDECIDED else joins
         self._joins_sent[slot] = decided
         if decided is not None:
             snapped["joins"] = decided
