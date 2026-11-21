@@ -406,14 +406,16 @@ class Flow(VGroup):
     tokens.
 
     A connector's label (the one :meth:`Diagram.connect` makes) moves
-    beside the line as the flow is made, so the tokens never pass under
-    it: at the line's middle, to the connector's ``label_side``, by half
-    the pill's extent along the line's normal there, the tokens' reach
-    (``flow_reach``, in scene units: the largest of every flow on the
+    beside the line once, as the flow is made, placed from the line as it
+    stands then: at the line's middle, to the connector's ``label_side``,
+    by half the pill's extent along the line's normal there, the tokens'
+    reach (``flow_reach``, in scene units: the largest of every flow on the
     connector, whatever order they were made in) and :data:`LABEL_GAP`.
-    Its place hangs on the connector and its flows alone. Make the flow
-    before the diagram is shown, or the label moves as it is made. The
-    label is also drawn above the tokens.
+    Its place hangs on the connector and its flows alone, and it is not
+    kept: a later play that moves or bends the line apart from its label
+    takes the tokens along the new path and leaves the label where it was
+    put. Make the flow before the diagram is shown, or the label moves as
+    it is made. The label is also drawn above the tokens.
     """
 
     def __init__(
