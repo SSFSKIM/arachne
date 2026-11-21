@@ -103,13 +103,14 @@ COMMITTED: dict[tuple[str, str], tuple[str, str]] = {
     ),
 }
 
-#: The committed motion digests, by (scene, world): the same on every machine.
+#: The committed motion digests, by (scene, world): the same on every machine
+#: (taken on x86-64 Linux; macOS arm64 gave the same).
 MOTION: dict[tuple[str, str], str] = {
-    ("LiteralWorlds", "plane"): "0" * 32,
-    ("LiteralWorlds", "space"): "0" * 32,
-    ("ComputedWorlds", "plane"): "0" * 32,
-    ("ComputedWorlds", "space"): "0" * 32,
-    ("ComputedWorlds", "open"): "0" * 32,
+    ("LiteralWorlds", "plane"): "42e8f90fab31debf3d4e6381aedf1e9c",
+    ("LiteralWorlds", "space"): "8f7fa1d4c05defa24fb7a8da3230b95d",
+    ("ComputedWorlds", "plane"): "e2fcb45b5dc2bbe1037269f24ebf5d13",
+    ("ComputedWorlds", "space"): "279fa3dbb38c6d13345c2dec123c283e",
+    ("ComputedWorlds", "open"): "de6d11b95683c25c829647b9101f557e",
 }
 
 
