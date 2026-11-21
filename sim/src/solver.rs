@@ -51,8 +51,12 @@ struct Motion {
 
 /// The rounding allowed a certified separation (units): it is computed from single-precision
 /// support points and dot products, which are exact to about 6e-5 units within 1000 units of the
-/// origin (the range the sweep claims; `Sweep`).
+/// origin (`REACH`, the range the sweep claims).
 const ROUNDING: f32 = 5.0e-4;
+
+/// How far from the origin the rounding covers a shape (units, `ROUNDING`): a depth is
+/// certified only at an instant where both shapes lie within it (`Sweep::bound`).
+const REACH: f32 = 1000.0;
 
 /// The most instants at which the late-contact rule measures a pair through a step
 /// (`Sweep::least`): a pair that would need more is not shown shallow.
@@ -288,13 +292,21 @@ impl Sweep<'_> {
     /// and the queries' axes, taken from the difference of two nearly equal points, are rounded
     /// off the true one. `None` when the queries offer no axis that certifies a bound (a
     /// penetration the contact query cannot answer, which the closest points report as
-    /// intersecting): an unknown depth is never certified.
+    /// intersecting), or when a shape reaches beyond `REACH`, where single precision cannot
+    /// resolve a depth the rounding would cover: an unknown depth is never certified.
     fn bound(&self, t: f32, carried: Option<Vector>) -> Option<(f32, Vector)> {
         let (p1, p2) = (
             self.motions.0.position_at_time(t),
             self.motions.1.position_at_time(t),
         );
         let (s1, s2) = self.shapes;
+        let within = |p: &Pose, s: &dyn Geometry| {
+            let sphere = s.compute_local_bounding_sphere();
+            p.translation.length() + sphere.center.length() + sphere.radius <= REACH
+        };
+        if !within(&p1, s1) || !within(&p2, s2) {
+            return None;
+        }
         let (normal1, normal2) = match query::contact(&p1, s1, &p2, s2, 0.0) {
             Ok(Some(c)) => (Some(c.normal1), Some(-c.normal2)),
             _ => (None, None),
