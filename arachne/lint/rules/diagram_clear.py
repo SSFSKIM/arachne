@@ -21,8 +21,11 @@ every instant it is asked, and reports them under the clearance codes:
   the diagram, another connector or another label, the message naming the
   connector's ``label_side=`` as the fix. What the diagram holds, and
   whether a connector has carried a flow (its ``flow_reach``, which stays
-  once a flow is made, the flow taken out or not), are read at the
-  instant measured. A piece is measured by its box; another connector by
+  once a flow is made, the flow taken out or not), are read from the
+  record and capture the instant's parts were read from (a forward run's,
+  when one answered the frame). Parts read from no capture (none the lint
+  builds) report nothing of this kind: the rule never guesses from another
+  instant's diagram, which could name a piece that is not there. A piece is measured by its box; another connector by
   its drawn line, each curve sampled at 17 points, as wide as
   :data:`LINE_REACH` (0.03 units) each side of its centre, so a line that
   passes the pill without touching it is clear though its box holds it.
@@ -55,7 +58,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from ..findings import Finding, Holder
-from ..parts import Part, Parts
+from ..parts import Part, Parts, source_of
 from ._excuse import muted, paired
 from ._geometry import box_gap
 from ._rule import InstantRule, Terms
@@ -66,7 +69,7 @@ from .text_small import SMALL_PIXELS, small_findings, text_heights
 if TYPE_CHECKING:
     from arachne.camera.projection import Box
     from arachne.mobject.mobject import Mobject
-    from arachne.timeline.record import Record
+    from arachne.timeline.record import Capture, Record
 
     from ..core import LintContext
 
@@ -76,8 +79,6 @@ NOISE = 0.005
 #: The stable ids of the diagrams of the record a lint is reading, for the
 #: length of the rule's call.
 _DIAGRAMS: ContextVar[frozenset[str]] = ContextVar("diagrams", default=frozenset())
-#: The record a lint is reading, for the length of the rule's call.
-_RECORD: ContextVar[Record | None] = ContextVar("record", default=None)
 #: How far either side of its centre a connector's drawn line reaches, in
 #: units, for a label set beside another line: half a default connector's
 #: stroke, with room.
@@ -101,7 +102,8 @@ def diagram_findings(parts: Parts, terms: Terms) -> list[Finding]:
         and _held(unit.unit.within, kinds)
         and not muted(terms.exempt, unit)
     ]
-    beside = _beside_at(parts.t)
+    source = source_of(parts)
+    beside = beside_labels(*source) if source is not None else {}
     found = [*_edge_findings(parts, labels), *_beside_findings(parts, labels, beside)]
     on = [unit for unit in labels if unit.on(parts.frame)]
     for a, b in itertools.combinations(on, 2):
@@ -315,37 +317,21 @@ class Beside:
     connectors: frozenset[str]
 
 
-def _beside_at(t: Fraction) -> Mapping[str, Beside]:
-    """:func:`beside_labels` of the record the rule is reading, at ``t``."""
-    record = _RECORD.get()
-    return beside_labels(record, t) if record is not None else {}
-
-
-def beside_labels(record: Record, t: Fraction | None = None) -> dict[str, Beside]:
-    """The labels of ``record``'s engine diagrams set beside their lines at
-    ``t`` (as the record ends, when ``None``), by stable id, each with what
-    it keeps off there: the diagram's other pieces and connectors, as the
-    capture answering ``t`` holds them. A label is set beside its line once
-    its connector has carried a flow (its ``flow_reach``).
+def beside_labels(record: Record, capture: Capture) -> dict[str, Beside]:
+    """The labels of ``record``'s engine diagrams set beside their lines in
+    ``capture``, by stable id, each with what it keeps off there: the
+    diagram's other pieces and connectors, as ``capture`` holds them. A
+    label is set beside its line once its connector has carried a flow (its
+    ``flow_reach``). A diagram, connector or label the record holds no
+    state of at ``capture`` adds nothing.
     """
     from arachne.mobject.diagram import Diagram, Flow
 
-    capture = None
-    if t is not None:
-        try:
-            _, capture = record.capture_at(Fraction(t))
-        except LookupError:
-            capture = None
-
     def held(mob: Mobject, name: str, default: Any) -> Any:
-        if capture is None:
-            return getattr(mob, name, default)
         state = record.node_state(mob, capture)
         return default if state is None else state.get(name, default)
 
     def members(mob: Mobject) -> tuple[Mobject, ...]:
-        if capture is None:
-            return tuple(mob.submobjects)
         state = record.node_state(mob, capture)
         return () if state is None else state.submobjects
 
@@ -356,6 +342,7 @@ def beside_labels(record: Record, t: Fraction | None = None) -> dict[str, Beside
         inside = members(diagram)
         edges = [e for e in held(diagram, "edges", ()) if any(e is m for m in inside)]
         labels = {id(held(e, "label", None)) for e in edges}
+        connectors = {id(e) for e in edges}
         for edge in edges:
             label = held(edge, "label", None)
             if label is None or not float(held(edge, "flow_reach", 0.0)) > 0:
@@ -365,7 +352,6 @@ def beside_labels(record: Record, t: Fraction | None = None) -> dict[str, Beside
                 for m in inside
                 if m is not edge and id(m) not in labels and not isinstance(m, Flow)
             ]
-            connectors = {id(e) for e in edges}
             found[record.origin(label).id] = Beside(
                 pieces=frozenset(
                     record.origin(m).id for m in others if id(m) not in connectors
@@ -394,11 +380,9 @@ class DiagramRule(InstantRule):
 
     def __call__(self, context: LintContext) -> list[Finding]:
         held = _DIAGRAMS.set(diagram_ids(context.record))
-        record = _RECORD.set(context.record)
         try:
             return super().__call__(context)
         finally:
-            _RECORD.reset(record)
             _DIAGRAMS.reset(held)
 
 

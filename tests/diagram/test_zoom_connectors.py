@@ -221,3 +221,41 @@ def test_a_connector_s_content_says_which_pieces_it_joins():
     again, edge, source, far = _sources(join_tall=False)
     assert _keyed(edge) == _keyed(short_edge)
     assert _joins([again])[id(edge)] == (source, far)
+
+
+def _twins(join_second: bool):
+    """Two blocks of one size at one place, and a far block; one of the two
+    joined, by ``join_second``, and the other stretched after.
+    """
+    first = Block("s", width=2.0, height=0.8).move_to(LEFT * 3)
+    second = Block("s", width=2.0, height=0.8).move_to(LEFT * 3)
+    far = Block("d", width=1.2, height=0.8).move_to(RIGHT * 2)
+    diagram = Diagram(first, second, far)
+    joined, other = (second, first) if join_second else (first, second)
+    edge = diagram.connect(joined, far)
+    other.stretch(2.0, 1)
+    return diagram, edge, joined, far
+
+
+def test_twins_at_one_port_key_the_one_joined():
+    _, first_edge, first, _ = _twins(join_second=False)
+    _, second_edge, second, _ = _twins(join_second=True)
+    assert np.array_equal(first_edge.points, second_edge.points)
+    assert _keyed(first_edge) != _keyed(second_edge)
+    assert (first_edge.start_piece, second_edge.start_piece) == (0, 1)
+
+
+def test_a_connector_s_piece_places_follow_the_diagram():
+    before = Block("x", width=1.0, height=0.6).move_to(UP * 3)
+    a, b = _block("a", -4), _block("b", 4)
+    diagram = Diagram(before, a, b)
+    edge = diagram.connect(a, b)
+    assert (edge.start_piece, edge.end_piece) == (1, 2)
+    diagram.remove(before)
+    assert (edge.start_piece, edge.end_piece) == (0, 1)
+    diagram.add_to_back(before)
+    assert (edge.start_piece, edge.end_piece) == (1, 2)
+    assert _joins([diagram])[id(edge)] == (a, b)
+    # A piece gone from the diagram has no place in it.
+    diagram.remove(b)
+    assert edge.end_piece == -1

@@ -91,7 +91,14 @@ class Diagram(VGroup):
         #: Every piece a connector of this diagram has joined, in the order
         #: first joined: a piece's key here is its place in it, from 1. It
         #: only grows, so no key is given twice, and it is this diagram's
-        #: alone: a piece joined in two diagrams has a key in each.
+        #: alone: a piece joined in two diagrams has a key in each. A
+        #: connector holds the keys of its two pieces (``start_key``,
+        #: ``end_key``) and, for the content key, their places in
+        #: :attr:`submobjects` now (``start_piece``, ``end_piece``, -1 for
+        #: one the diagram no longer holds), kept by every change the
+        #: diagram's own methods make to its children (add, insert,
+        #: add_to_back, remove, item assignment, sort, shuffle, invert).
+        #: A change made to ``submobjects`` directly is not kept.
         self.joined: tuple[Mobject, ...] = ()
 
     def grid_point(self, col: float, row: float) -> np.ndarray:
@@ -190,10 +197,7 @@ class Diagram(VGroup):
         held: Any = edge
         held.start_key = self._key_of(_piece(start))
         held.end_key = self._key_of(_piece(end))
-        # Which pieces those are, in what the content key reads: each one's
-        # kind, size and place from the port it is joined at.
-        held.start_piece = _stamp(_piece(start), a)
-        held.end_piece = _stamp(_piece(end), b)
+        self._place_ends()
         if label is not None:
             text = Text(
                 label,
@@ -211,6 +215,52 @@ class Diagram(VGroup):
             held.flow_reach = 0.0
             self.add(text)
         return edge
+
+    def _place_ends(self) -> None:
+        """Give each connector the places in :attr:`submobjects` of the
+        pieces it joins, as it holds them now: ``start_piece`` and
+        ``end_piece``, -1 for a piece the diagram no longer holds.
+        """
+        for edge in getattr(self, "edges", ()):
+            held: Any = edge
+            for key, place in (("start_key", "start_piece"), ("end_key", "end_piece")):
+                piece = self._joined_piece(getattr(edge, key, None))
+                at = -1
+                if piece is not None:
+                    at = next(i for i, m in enumerate(self.submobjects) if m is piece)
+                if getattr(edge, place, None) != at:
+                    setattr(held, place, at)
+
+    # Every change Diagram makes to its children re-places the ends.
+
+    def _insert_submobjects(self, index: int, mobjects: Sequence[Mobject]) -> Self:
+        super()._insert_submobjects(index, mobjects)
+        self._place_ends()
+        return self
+
+    def remove(self, *mobjects: Mobject) -> Self:
+        super().remove(*mobjects)
+        self._place_ends()
+        return self
+
+    def __setitem__(self, key: int, value: VMobject | Sequence[VMobject]) -> None:
+        super().__setitem__(key, value)
+        self._place_ends()
+
+    def sort(self, *args: Any, **kwargs: Any) -> Self:
+        super().sort(*args, **kwargs)
+        self._place_ends()
+        return self
+
+    def shuffle(self, recursive: bool = False) -> Self:
+        super().shuffle(recursive)
+        self._place_ends()
+        return self
+
+    def invert(self, recursive: bool = False) -> Self:
+        super().invert(recursive)
+        self._place_ends()
+        return self
 
     def _key_of(self, piece: Mobject) -> int:
         """``piece``'s key in this diagram (:attr:`joined`), given it the
@@ -258,19 +308,6 @@ class _StraightConnector(VMobject):
             cap.set_points(head(end, u, reach, reach * 0.9))
             self.add(cap)
         self.set_points(line(start, stop))
-
-
-def _stamp(piece: Mobject, port: np.ndarray) -> str:
-    """What names ``piece``, joined at ``port``, in a connector's content:
-    its kind, its width and height, and its centre from the port, to a
-    millionth of a unit; the same wherever the diagram stands, whatever
-    order its pieces were joined in.
-    """
-    centre = piece.get_center() - np.asarray(port)
-    numbers = (piece.width, piece.height, centre[0], centre[1])
-    return " ".join(
-        [type(piece).__name__, *(f"{round(n, 6) + 0.0:.6f}" for n in numbers)]
-    )
 
 
 def _piece(spec: Any) -> VMobject:
