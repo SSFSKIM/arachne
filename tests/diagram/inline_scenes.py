@@ -269,3 +269,28 @@ class PillJustInsideTheFrame(Scene):
 
 class PillWellInsideTheFrame(PillJustInsideTheFrame):
     inside = 0.15
+
+
+class PlateOnItsLineOnlyOffTheFrame(Scene):
+    """A connector rising across the frame's right edge, its label's plate
+    standing partly inside that edge, above the line there: the line runs
+    under the plate only past the edge, off the screen.
+    """
+
+    def construct(self):
+        diagram = Diagram()
+        a = Node("alpha", radius=0.6).move_to(RIGHT * 3 + DOWN)
+        b = Node("beta", radius=0.6).move_to(RIGHT * 12 + UP * 3)
+        diagram.add(a, b)
+        edge = diagram.connect(a, b, label="link", route="straight")
+        start, end = np.asarray(edge.points[0]), np.asarray(edge.points[-1])
+        edge_x = config.frame_width / 2
+        rise = (end[1] - start[1]) / (end[0] - start[0])
+        at_edge = start[1] + rise * (edge_x - start[0])
+        plate = edge.label.background_rectangle
+        corner = plate.get_corner(DOWN + LEFT)
+        edge.label.shift(
+            RIGHT * (edge_x - 0.1 - corner[0]) + UP * (at_edge + 0.12 - corner[1])
+        )
+        self.add(diagram)
+        self.wait(0.5)

@@ -105,6 +105,11 @@ class _Gauge(Annotation):
     def _draw(self) -> None:
         raise NotImplementedError
 
+    def _show_once_placed(self) -> None:
+        super()._show_once_placed()
+        # Its value was drawn on no track while it waited: drawn now.
+        self._draw()
+
 
 @quantities.provider(_Gauge)
 def _declared(held: Mapping[str, Any], at: At) -> Iterable[Quantity]:

@@ -264,7 +264,7 @@ class ZoomPastAPicture(MovingCameraScene):
 
     def construct(self):
         diagram, middle = zoomed_diagram(36, False)
-        self.picture = picture().scale(2).to_corner(UL)
+        self.picture = self.shown().scale(2).to_corner(UL)
         self.add(diagram, self.picture)
         self.wait(0.5)
         self.before = np.array(self.picture.pixel_array)
@@ -275,3 +275,21 @@ class ZoomPastAPicture(MovingCameraScene):
         self.play(ZoomOut(zoom))
         self.after = np.array(self.picture.pixel_array)
         self.wait(0.5)
+
+    def shown(self) -> ImageMobject:
+        """The picture the zoom cuts."""
+        return picture()
+
+
+class ZoomPastAReplacedPicture(ZoomPastAPicture):
+    """The same, the picture's bitmap replaced by one twice its size, its
+    alpha a ramp of its own, before the zoom.
+    """
+
+    def shown(self) -> ImageMobject:
+        shown = picture()
+        pixels = np.zeros((32, 32, 4), dtype=np.uint8)
+        pixels[..., 1] = 160
+        pixels[..., 3] = np.linspace(40, 230, 32, dtype=np.uint8)[:, None]
+        shown.pixel_array = pixels
+        return shown

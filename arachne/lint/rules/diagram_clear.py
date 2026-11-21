@@ -38,7 +38,8 @@ every instant it is asked, and reports them under the clearance codes:
   corners, its ends where the head and the pieces cut it), each curve
   sampled at 65 points, from where the plate's box covers a length of it,
   counting only what the frame shows of it (a line running on off the
-  screen shows only to the frame's edge);
+  screen shows only to the frame's edge, and a plate over it only off the
+  screen hides none of it);
   each is measured in scene units and put on screen by the home frame's
   width over the frame's (a zoomed-in frame makes it longer), whatever the
   frame's height. The label is judged at the instants, and when shown, as
@@ -340,8 +341,10 @@ def line_stubs(
     polylines, ``(curves, samples, 2)``, joined as straight steps, clipped
     against ``box`` where they lie; each length a step's run between its cut
     shares, with ``to_scene`` scaling its two axes (screen to scene units).
-    With ``frame``, only what lies inside it runs: a line leaving the frame
-    runs no length until it comes back. A box that only touches the line
+    With ``frame``, only what lies inside it runs, and the box covers only
+    what lies inside it: a line leaving the frame runs no length until it
+    comes back, and a box over it only off the frame covers none of it. A
+    box that only touches the line
     covers none of it; a jump from one curve to the next, where they do not
     meet, runs no length. ``None`` when the box covers none of it.
     """
@@ -358,6 +361,11 @@ def line_stubs(
                 else _crossing(start, stop, np.array(frame[:2]), np.array(frame[2:]))
             )
             inside = _crossing(start, stop, low, high)
+            if inside is not None and shown is not None:
+                # Covered only where the frame shows it.
+                inside = (max(inside[0], shown[0]), min(inside[1], shown[1]))
+            else:
+                inside = None
             if inside is not None and (inside[1] - inside[0]) * length > 0:
                 enter, leave = inside
                 if first is None:
