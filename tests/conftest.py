@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import cairo
@@ -32,18 +34,44 @@ def _cpu() -> str:
     return f"{model} ({'avx512f' if ' avx512f' in flags else 'no avx512f'})"
 
 
-@pytest.fixture(autouse=True)
-def _snapping_keeps_ces_point_equality():
-    """No path the test draws on the core has a join or a closed end that CE's
+@contextlib.contextmanager
+def point_equality_guard(*, unmeasured: bool = False) -> Iterator[None]:
+    """No path snapped inside it has a join or a closed end that CE's
     point-equality rule decides otherwise on its snapped points
-    (``frame_ir.canonical``).
+    (``frame_ir.canonical``), and every path shape snapped inside it was
+    measured, so it never passes on nothing: production does not measure
+    (``canonical.MEASURE``), and the test session turns measuring on
+    (:func:`pytest_configure`). ``unmeasured``: a test that snaps unmeasured
+    on purpose (``@pytest.mark.snaps_unmeasured``).
     """
     from arachne.frame_ir import canonical
 
+    assert canonical.MEASURE, (
+        "the test session measures point equality: canonical.MEASURE is off"
+    )
     canonical.point_equality_disagreements.clear()
-    yield
-    found = list(canonical.point_equality_disagreements)
+    counts = canonical.point_equality_counts
+    counts.update(measured=0, unmeasured=0)
+    try:
+        yield
+    finally:
+        found = list(canonical.point_equality_disagreements)
+        missed = counts["unmeasured"]
+        canonical.point_equality_disagreements.clear()
+        counts.update(measured=0, unmeasured=0)
     assert not found, f"(points, coordinates, boundaries) decided otherwise: {found}"
+    assert unmeasured or not missed, (
+        f"{missed} path shapes were snapped without the point-equality measure"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _snapping_keeps_ces_point_equality(request):
+    """Every test runs inside :func:`point_equality_guard`."""
+    with point_equality_guard(
+        unmeasured=request.node.get_closest_marker("snaps_unmeasured") is not None
+    ):
+        yield
 
 
 def pytest_report_header(config):
@@ -81,6 +109,14 @@ def pytest_configure(config):
             "PYTHONHASHSEED=0 uv run pytest"
         )
     config.addinivalue_line("markers", "skip_end_to_end: mark test as end_to_end test")
+    config.addinivalue_line(
+        "markers",
+        "snaps_unmeasured: the test snaps without the point-equality measure on purpose",
+    )
+    # Production snaps without the point-equality measure; every test measures.
+    from arachne.frame_ir import canonical
+
+    canonical.MEASURE = True
 
 
 def pytest_collection_modifyitems(config, items):
