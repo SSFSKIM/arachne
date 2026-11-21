@@ -90,9 +90,10 @@ def store_dir() -> Path:
 
 def _extension_identity(module: str, distribution: str) -> str:
     """The native extension package ``module`` this process would load: its
-    distribution's version and the sha256 of each of its compiled
-    extensions, by name; ``"absent"`` when it is not installed. Read without
-    importing it.
+    distribution's version, the sha256 of each of its compiled extensions,
+    by name, and of each Python module it runs beside them (the readers of
+    what they return), by its path in the package; ``"absent"`` when it is
+    not installed. Read without importing it.
     """
     spec = importlib.util.find_spec(module)
     if spec is None or not spec.submodule_search_locations:
@@ -108,9 +109,17 @@ def _extension_identity(module: str, distribution: str) -> str:
         for path in sorted(Path(location).iterdir())
         if path.name.endswith(built)
     ]
+    sources = [
+        (path.relative_to(location).as_posix(), path)
+        for location in spec.submodule_search_locations
+        for path in sorted(Path(location).rglob("*.py"))
+    ]
     found = [f"{distribution} {version}"]
     found += [
         f"{p.name} {hashlib.sha256(p.read_bytes()).hexdigest()}" for p in extensions
+    ]
+    found += [
+        f"{name} {hashlib.sha256(p.read_bytes()).hexdigest()}" for name, p in sources
     ]
     return "\n".join(found)
 
@@ -122,7 +131,8 @@ def _core_identity() -> str:
 
 def _sim_identity() -> str:
     """The simulation extension this process would load (``arachne_sim``),
-    whose solver build computes every bake.
+    whose solver build computes every bake and whose Python binding reads
+    its arrays into the record.
     """
     return _extension_identity("arachne_sim", "arachne-sim")
 
