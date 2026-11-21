@@ -48,7 +48,7 @@
   ],
   "anchors": [{"name": "knob", "part": "body", "attach": "interior", "at": [200, 112]}],
   "checks": {
-    "tool": "arachne.assets 1",
+    "tool": "arachne.assets 2",
     "digest": "sha256:ba0c95fd8b392ad0403a0735cf7b732aaba935e6eb0b5bfd48dde309586c71a8",
     "results": [
       {"name": "hole", "pass": true},

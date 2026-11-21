@@ -41,12 +41,46 @@ def test_an_asset_never_admitted_is_refused(tmp_path):
 def test_an_asset_admitted_by_another_tool_version_is_refused(tmp_path):
     directory = edited(
         copied(tmp_path, "dial"),
-        lambda d: d["checks"].update(tool="arachne.assets 2"),
+        lambda d: d["checks"].update(tool="arachne.assets 9"),
     )
     found = refused("asset.unadmitted", lambda: Rig(directory))
     assert found.detail["reason"] == "tool"
     assert found.detail["expected"] == TOOL
-    assert found.detail["found"] == "arachne.assets 2"
+    assert found.detail["found"] == "arachne.assets 9"
+
+
+def test_an_asset_admitted_by_an_older_checker_is_told_to_admit_it_again(tmp_path):
+    directory = edited(
+        copied(tmp_path, "dial"),
+        lambda d: d["checks"].update(tool="arachne.assets 1"),
+    )
+    found = refused("asset.unadmitted", lambda: Rig(directory))
+    assert found.detail["reason"] == "tool"
+    assert found.detail["expected"] == TOOL == "arachne.assets 2"
+    assert found.detail["found"] == "arachne.assets 1"
+    assert "an older checker" in found.what
+    assert f"python -m arachne.assets admit {directory} --write" in found.what
+
+
+def test_a_record_of_the_older_checker_does_not_admit_what_this_one_refuses(
+    tmp_path,
+):
+    # Version 1 drew its masks on a grid an unpainted artboard widened, and
+    # passed this seam; its record, at the asset's digest, admits nothing.
+    directory = tmp_path / "open-seam"
+    shutil.copytree(DEFECTS / "open-seam", directory)
+    frame = directory / "pieces" / "frame.svg"
+    artboard = '  <rect x="-1898" y="-1898" width="4096" height="4096" fill="none"/>\n'
+    frame.write_text(frame.read_text().replace("</svg>", artboard + "</svg>"))
+    record = {
+        "tool": "arachne.assets 1",
+        "digest": read_asset(directory).digest,
+        "results": [{"name": name, "pass": True} for name in CHECKS],
+    }
+    edited(directory, lambda d: d.update(checks=record))
+    assert not admit(directory).result("hole").passed
+    found = refused("asset.unadmitted", lambda: Rig(directory))
+    assert found.detail["reason"] == "tool"
 
 
 def test_an_asset_changed_since_its_admission_is_refused(tmp_path):
