@@ -246,11 +246,12 @@ class Readout(Annotation):
     def set_value(self, value: float) -> Self:
         """Declare ``value`` and show it in the format, in place of the
         text shown: only the text changes, at the label's size and turned
-        as it is (rotated or flipped as a whole, the new text is too) with
-        its :attr:`hold` point where it was, its glyphs styled as its first
-        glyph was (fill, stroke, opacity, depth) and its pill as its pill
-        was. A label reshaped otherwise than by one linear map is shown
-        upright, at the size its height reads.
+        as it is (a label rotated, flipped or stretched as a whole gives
+        its new text the same map) with its :attr:`hold` point where it
+        was, its glyphs styled as its first glyph was (fill, stroke,
+        opacity, depth) and its pill as its pill was. A label reshaped
+        otherwise than by one linear map is shown upright, at the size its
+        height reads.
         """
         number = _finite(value, "A readout's value")
         said = self.format.format(number)
@@ -290,9 +291,9 @@ class Readout(Annotation):
 
     def _turn(self, label: Text) -> np.ndarray | None:
         """The linear map (3 x 3) that took ``label``'s text, as made
-        upright, to how it stands now, when that map turns or flips it;
-        ``None`` when it stands upright (moved and scaled alone) or when no
-        one map takes the text as made to its points now.
+        upright, to how it stands now, when that map turns, flips or
+        stretches it; ``None`` when it stands upright (moved and scaled
+        alone) or when no one map takes the text as made to its points now.
         """
         made, now = np.asarray(self._text_as_made), _drawn_points(label)
         if made.shape != now.shape or len(made) < 3:
