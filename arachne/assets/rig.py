@@ -195,6 +195,11 @@ class Rig(VGroup):
         super().__init__(**vmobject_kwargs)
         self.asset = asset
         self.model = model
+        # The asset as content keys know it, by its digest, as a raster
+        # member's is: they read neither ``asset`` nor ``model``, so two rigs
+        # whose assets differ only where their points and values show
+        # nothing (a drive's unit) key apart.
+        self._asset_digest: str = asset.digest
         manifest = asset.manifest
         self.carrier = VGroup(
             *(CarrierPoint(point) for point in model.natural.carrier(model)),
