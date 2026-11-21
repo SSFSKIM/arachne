@@ -387,3 +387,31 @@ def test_a_picture_the_move_in_cuts_fades_and_comes_back_as_it_was(opened):
     assert seen[0] == seen[-1] == alpha.max()
     assert len(set(seen)) > 3
     assert session.frame(5.25).tobytes() == session.frame(0.25).tobytes()
+
+
+def test_a_picture_whose_bitmap_was_replaced_fades_and_comes_back(opened):
+    session = opened("ZoomPastAReplacedPicture")
+    scene = session.scene
+    # Faded from the bitmap it shows, of its own size, and back to it.
+    assert scene.before.shape == (32, 32, 4)
+    assert scene.before[..., 3].max() == 230
+    assert scene.while_in[..., 3].max() == 0
+    assert np.array_equal(scene.while_in[..., :3], scene.before[..., :3])
+    assert np.array_equal(scene.after, scene.before)
+    assert session.frame(5.25).tobytes() == session.frame(0.25).tobytes()
+
+
+def test_a_picture_s_fade_makes_a_buffer_only_when_its_opacity_changes(opened):
+    session = opened("ZoomPastAPicture")
+    held = _drawn(
+        session,
+        [Fraction(j, TICKS) for j in range(int(5.5 * TICKS) + 1)],
+        lambda s: (s.picture.pixel_array, float(s.picture.stroke_opacity)),
+    )
+    buffers = {id(pixels): pixels for pixels, _ in held}
+    # The same buffer while it shows at one opacity: one hidden, and the one
+    # it showed before for every instant it shows so, before and after.
+    for (pixels, opacity), (later, then) in pairwise(held):
+        assert (later is pixels) == (then == opacity)
+    assert sum(not np.asarray(p)[..., 3].any() for p in buffers.values()) == 1
+    assert held[-1][0] is held[0][0]
