@@ -65,11 +65,26 @@ LAST_TICK = 1200
 #: The committed digests, (declaration, trace) by (scene, world), taken on
 #: x86-64 Linux.
 COMMITTED: dict[tuple[str, str], tuple[str, str]] = {
-    ("LiteralWorlds", "plane"): ("0" * 32, "0" * 32),
-    ("LiteralWorlds", "space"): ("0" * 32, "0" * 32),
-    ("ComputedWorlds", "plane"): ("0" * 32, "0" * 32),
-    ("ComputedWorlds", "space"): ("0" * 32, "0" * 32),
-    ("ComputedWorlds", "open"): ("0" * 32, "0" * 32),
+    ("LiteralWorlds", "plane"): (
+        "c8f26a54855a19c024b3ff8e4cb58a8f",
+        "fc2774983df8dbdcfdd658f426933e62",
+    ),
+    ("LiteralWorlds", "space"): (
+        "20960bad076d8f98243341485c3bd4fb",
+        "82d7cec0edbaf5de24d300af8e429fcd",
+    ),
+    ("ComputedWorlds", "plane"): (
+        "61f7cc579a5b19330cc546212dad9d97",
+        "28265c3ec684e8a773a7e1f70dbe9c11",
+    ),
+    ("ComputedWorlds", "space"): (
+        "7279e1addb592e06e80951c367d98896",
+        "b0598ba2aba483e92de55524a8e73414",
+    ),
+    ("ComputedWorlds", "open"): (
+        "8c42de2c4654f4dd40a9d0cbee5f11ef",
+        "d0e668b2645d2c811dec37de994dbd58",
+    ),
 }
 
 
