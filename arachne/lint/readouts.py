@@ -11,7 +11,9 @@ updater (an animation of the readout itself, such as ``FadeIn``) while the
 body moved. The body is drawn at the capture's tick, unless an animation
 holds its world's drawing: then at the row the world last placed it at,
 which its capture's source names (:attr:`.measures.SimBody.held`), so a
-world faded in with its readout is not reported. A tick behind is the lag
+world faded in with its readout is not reported; held at a row of an
+earlier stay (held back into the scene), that row is not known, and the
+readout is not compared. A tick behind is the lag
 a readout added before an open world shows by design, and is not reported.
 """
 
@@ -99,7 +101,10 @@ def _read(
         if shows is None or id(shows.world) not in present:
             continue
         # The row its body is drawn at: the capture's, unless the world's
-        # drawing is held, as the body's source names.
+        # drawing is held, as the body's source names. Held at a row its
+        # source cannot name against the readout's (an earlier stay's, the
+        # world held back into the scene), the row is not known, and the
+        # readout is not compared.
         drawn_tick = scene_tick
         bodies = shows.world._body_mobjects
         drawn = (
@@ -115,13 +120,9 @@ def _read(
             ),
             None,
         )
-        if (
-            source is not None
-            and source.ordinal == shown.occurrence
-            and source.left is None
-            and source.held is not None
-            and source.held != EARLIER
-        ):
+        if source is not None and source.left is None and source.held is not None:
+            if source.held == EARLIER or source.ordinal != shown.occurrence:
+                continue
             drawn_tick = source.held
         if drawn_tick - shown.tick <= LAG:
             continue
