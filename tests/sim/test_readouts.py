@@ -545,7 +545,7 @@ def test_a_readout_of_a_held_world_shows_the_row_its_body_is_drawn_at(
     read = _read(state, readout)
     tick = int(read["sim.reads_tick"].value)
     assert tick < math.floor(t * 60)
-    pose = _row(session, 0, "pose", tick)
+    (pose,) = _row(session, 0, "pose", tick)
     x0, y0, x1, y1 = state.node(ball).scene_box
     assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((pose[0], pose[1]), abs=1e-6)
     assert read["annotation.count"].value == pose[axis]
