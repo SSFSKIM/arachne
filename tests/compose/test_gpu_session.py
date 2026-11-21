@@ -413,19 +413,15 @@ def test_an_object_map_of_every_drawable_holds_none_of_what_layers_read(
 
 
 def test_a_picture_a_zoom_fades_is_drawn_faded_and_back_as_before(session_of, software):
-    session = session_of("ZoomPastAPictureOnGpu")
-    assert session.route == "gpu"
+    stacked = session_of("ZoomPastAPictureOnGpu")
+    assert stacked.route == "gpu"
+    drawn = session_of("ZoomPastAPicture")
     rate = SMALL["frame_rate"]
-    before = _pixels(session, Fraction(3, rate))
-    # Drawn through the move-in, the picture's pixels uploaded faded.
+    before = _pixels(stacked, Fraction(3, rate))
+    # Through the move-in, as the picture fades, the stack draws what the
+    # camera draws of the same scene.
     for tick in range(8, 39):
-        session.frame(Fraction(tick, rate))
-    alphas = {
-        int(rgba[..., 3].max())
-        for opened in software.opened
-        for _, rgba in opened.images
-        if rgba.shape[:2] == (16, 16)
-    }
-    assert any(0 < alpha < int(255 * 0.6) for alpha in alphas)
+        t = Fraction(tick, rate)
+        assert _close(_pixels(stacked, t), _pixels(drawn, t))
     # Back, the frame is drawn as before the move-in, to the byte.
-    assert _close(_pixels(session, Fraction(78, rate)), before, within=0)
+    assert _close(_pixels(stacked, Fraction(78, rate)), before, within=0)
