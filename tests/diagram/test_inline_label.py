@@ -283,3 +283,19 @@ def test_a_label_whose_line_runs_off_the_screen_is_judged_by_what_shows(
         (finding,) = found
         assert finding.message.endswith(FIX)
         assert finding.detail["after"] == pytest.approx(0.02, abs=1e-6)
+
+
+def test_a_plate_on_its_line_only_off_the_frame_hides_none_of_it():
+    """A line rising from inside a frame whose right edge is at 1 and out
+    past it, a box standing partly inside the frame, above the line there:
+    the box covers the line only off the frame, so none of the line shown.
+    """
+    curves = _straight((-1, 0), (3, 0.8))
+    box = (0.5, 0.5, 3.0, 3.0)
+    assert line_stubs(curves, box) is not None
+    assert line_stubs(curves, box, frame=(-1.0, -1.0, 1.0, 1.0)) is None
+
+
+def test_a_label_on_its_line_only_off_the_screen_is_not_reported(opened):
+    found = _findings(opened("PlateOnItsLineOnlyOffTheFrame"))
+    assert not [f for f in found if f.code == "overlap.text"]
