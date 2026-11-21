@@ -189,7 +189,9 @@ class Rig(VGroup):
     #: What a content key leaves out: the frame of the camera the rig is
     #: viewed through, a handle on another object, not content (the view
     #: itself, its home and distance, is keyed).
-    _content_key_omits: ClassVar[frozenset[str]] = frozenset({"_view_frame"})
+    _content_key_omits: ClassVar[frozenset[str]] = frozenset(
+        {"_view_frame", "asset", "model"}
+    )
 
     def __init__(
         self, asset: Asset | str | os.PathLike[str], **vmobject_kwargs: Any
