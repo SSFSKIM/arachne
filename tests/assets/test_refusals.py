@@ -132,6 +132,20 @@ def test_a_link_out_of_the_asset_is_refused(tmp_path):
     refused("asset.remote", lambda: Rig(directory))
 
 
+@pytest.mark.parametrize("inside", [False, True])
+def test_a_manifest_reached_through_a_link_is_refused(tmp_path, inside):
+    # As a part file may not be a link, nor may the manifest: the one read
+    # is then the one beside the files, whatever the link points at.
+    directory = copied(tmp_path, "dial")
+    target = (directory / "pieces" if inside else tmp_path) / "real.json"
+    shutil.move(directory / "manifest.json", target)
+    (directory / "manifest.json").symlink_to(target)
+    for ref in (directory, directory / "manifest.json"):
+        found = refused("asset.remote", lambda: read_asset(ref))  # noqa: B023
+        assert found.detail["file"] == "manifest.json"
+        refused("asset.remote", lambda: Rig(ref))  # noqa: B023
+
+
 def test_an_asset_named_by_an_address_is_refused():
     refused("asset.remote", lambda: Rig("https://example.com/assets/dial"))
 
