@@ -196,7 +196,7 @@ def test_a_copy_of_a_piece_does_not_take_the_original_s_key():
 def _keyed(mob) -> dict:
     from arachne.timeline.record import NodeState, content_fields
 
-    return dict(content_fields(NodeState.of(mob)))
+    return {key: part for key, part, *_ in content_fields(NodeState.of(mob))}
 
 
 def _sources(join_tall: bool):
