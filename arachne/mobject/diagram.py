@@ -133,8 +133,7 @@ class Diagram(VGroup):
         ``"straight"``. ``label`` puts a text on a pill (a plate the
         background's colour) at the connector's middle, which the
         connector keeps as ``label``: a connector's label is the one this
-        makes, and a ``label`` assigned by hand is outside what a flow or
-        the lint reads.
+        makes; attaching one by hand (assigning ``label``) is unsupported.
 
         A :class:`Flow` put on the connector moves the label beside the
         line, to ``label_side``: a side of the line as drawn on screen,
@@ -191,6 +190,10 @@ class Diagram(VGroup):
         held: Any = edge
         held.start_key = self._key_of(_piece(start))
         held.end_key = self._key_of(_piece(end))
+        # Which pieces those are, in what the content key reads: each one's
+        # kind, size and place from the port it is joined at.
+        held.start_piece = _stamp(_piece(start), a)
+        held.end_piece = _stamp(_piece(end), b)
         if label is not None:
             text = Text(
                 label,
@@ -255,6 +258,19 @@ class _StraightConnector(VMobject):
             cap.set_points(head(end, u, reach, reach * 0.9))
             self.add(cap)
         self.set_points(line(start, stop))
+
+
+def _stamp(piece: Mobject, port: np.ndarray) -> str:
+    """What names ``piece``, joined at ``port``, in a connector's content:
+    its kind, its width and height, and its centre from the port, to a
+    millionth of a unit; the same wherever the diagram stands, whatever
+    order its pieces were joined in.
+    """
+    centre = piece.get_center() - np.asarray(port)
+    numbers = (piece.width, piece.height, centre[0], centre[1])
+    return " ".join(
+        [type(piece).__name__, *(f"{round(n, 6) + 0.0:.6f}" for n in numbers)]
+    )
 
 
 def _piece(spec: Any) -> VMobject:

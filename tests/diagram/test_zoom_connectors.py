@@ -191,3 +191,33 @@ def test_a_copy_of_a_piece_does_not_take_the_original_s_key():
     joined = _joins([diagram])
     assert joined[id(first)] == (a, piece)
     assert joined[id(second)] == (a, double)
+
+
+def _keyed(mob) -> dict:
+    from arachne.timeline.record import NodeState, content_fields
+
+    return dict(content_fields(NodeState.of(mob)))
+
+
+def _sources(join_tall: bool):
+    """A short and a tall block whose right ports meet, and a block both
+    could join; the one joined, by ``join_tall``.
+    """
+    short = Block("s", width=2.0, height=0.6).move_to(LEFT * 3)
+    tall = Block("s", width=2.0, height=1.6).move_to(LEFT * 3)
+    far = Block("d", width=1.2, height=0.8).move_to(RIGHT * 2)
+    diagram = Diagram(short, tall, far)
+    source = tall if join_tall else short
+    return diagram, diagram.connect(source, far), source, far
+
+
+def test_a_connector_s_content_says_which_pieces_it_joins():
+    _, short_edge, short, _ = _sources(join_tall=False)
+    _, tall_edge, tall, _ = _sources(join_tall=True)
+    # One wire, two pieces: the content must tell them apart.
+    assert np.array_equal(short_edge.points, tall_edge.points)
+    assert _keyed(short_edge) != _keyed(tall_edge)
+    # Equal content, equal pieces.
+    again, edge, source, far = _sources(join_tall=False)
+    assert _keyed(edge) == _keyed(short_edge)
+    assert _joins([again])[id(edge)] == (source, far)
