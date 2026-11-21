@@ -271,6 +271,40 @@ class ShiftedThenLeft(Scene):
         self.wait(0.5)
 
 
+class FixedBackAfterItsWorld(Scene):
+    """A fixed dot's world removed at 1/2 s and the dot left on screen over
+    a wait a scene updater reading ``dt`` ticks; with ``shifted``, the dot
+    shifted by the scene's code after it was declared and before its world
+    entered, so it is drawn away from its baked pose throughout.
+    """
+
+    shifted = False
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2, radius=0.15)
+        world.body(dot, shape=None, fixed=True)
+        if self.shifted:
+            dot.shift(RIGHT)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
+class FixedShiftedBackAfterItsWorld(FixedBackAfterItsWorld):
+    """As :class:`FixedBackAfterItsWorld`, the dot shifted."""
+
+    shifted = True
+
+
 class ShownAfterItsWorld(Scene):
     """A falling point's mobject shown on its own after its world left the
     scene, and moved there: no bake holds its quantities then.
