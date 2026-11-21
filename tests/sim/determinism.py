@@ -272,7 +272,9 @@ def _world(world: World, session: Session, scene: str) -> dict[str, Any]:
 
 def bake(scene: str) -> dict[str, Any]:
     """Bake ``scene`` once, in a session of its own: each world's digests,
-    identity and detail.
+    identity and detail, and the bake's window on the host's monotonic clock,
+    taken around the session's opening (which executes the scene and bakes
+    its worlds) and nothing else.
     """
     if scene not in SCENES:
         raise ValueError(f"No scene {scene!r}: one of {', '.join(SCENES)}.")
@@ -280,10 +282,10 @@ def bake(scene: str) -> dict[str, Any]:
         tempfile.TemporaryDirectory() as media,
         arachne.tempconfig({"media_dir": media}),
     ):
-        started = time.perf_counter()
+        started = time.monotonic_ns()
         session = Session.open(SCENES_FILE, scene, config=CONFIG, probe=False)
+        ended = time.monotonic_ns()
         try:
-            seconds = time.perf_counter() - started
             worlds = [m for m in session.scene.mobjects if isinstance(m, World)]
             found = sorted(
                 (_world(world, session, scene) for world in worlds),
@@ -297,7 +299,9 @@ def bake(scene: str) -> dict[str, Any]:
         "python": platform.python_version(),
         "numpy": np.__version__,
         "machine": f"{platform.system()} {platform.machine()}",
-        "seconds": round(seconds, 3),
+        "seconds": round((ended - started) / 1e9, 3),
+        "window_ns": [started, ended],
+        "clock": "monotonic",
         "worlds": found,
     }
 
@@ -394,10 +398,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"no {args.go} within {GO_TIMEOUT_S} s", file=sys.stderr)
                 return 2
             time.sleep(0.005)
-    started = time.monotonic_ns()
     case = bake(args.scene)
-    case["window_ns"] = [started, time.monotonic_ns()]
-    case["clock"] = "monotonic"
     case["problems"] = problems(case)
     written = args.out.with_name(f".{args.out.name}.{os.getpid()}")
     written.write_text(json.dumps(case, sort_keys=True) + "\n")

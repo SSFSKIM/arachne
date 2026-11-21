@@ -8,6 +8,7 @@ alone differs and from inputs that were computed otherwise.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -112,6 +113,8 @@ def test_a_missing_world_is_a_problem():
 def _made(monkeypatch):
     made = {
         "scene": "LiteralWorlds",
+        "window_ns": [1, 2],
+        "clock": "monotonic",
         "worlds": [{"world": "plane", "declaration": "a", "motion": "m", "trace": "b"}],
     }
     monkeypatch.setattr(determinism, "bake", lambda scene: dict(made))
@@ -121,7 +124,7 @@ def test_the_script_writes_the_scene_s_digests_and_its_bake_s_window(
     tmp_path, monkeypatch
 ):
     """The entry point a driver runs: one bake, its JSON written whole, with
-    the monotonic clock at its start and end.
+    its bake's window.
     """
     _made(monkeypatch)
     out = tmp_path / "case.json"
@@ -130,9 +133,7 @@ def test_the_script_writes_the_scene_s_digests_and_its_bake_s_window(
     assert written["scene"] == "LiteralWorlds"
     assert written["worlds"][0]["declaration"] == "a"
     assert written["problems"]
-    start, end = written["window_ns"]
-    assert start <= end
-    assert written["clock"] == "monotonic"
+    assert written["window_ns"] == [1, 2]
     assert [p.name for p in tmp_path.iterdir()] == ["case.json"]
 
 
@@ -155,3 +156,29 @@ def test_with_no_go_the_script_bakes_nothing(tmp_path, monkeypatch):
     argv = ["LiteralWorlds", "--out", str(out), "--go", str(tmp_path / "go")]
     assert determinism.main(argv) == 2
     assert not out.exists()
+
+
+def test_the_bake_s_window_spans_the_session_s_opening_and_nothing_after(
+    monkeypatch,
+):
+    """Reading the digests and closing the session come after the window."""
+    times = {}
+
+    class Opened:
+        scene = type("Scene", (), {"mobjects": []})()
+
+        def close(self):
+            times["close"] = time.monotonic_ns()
+            time.sleep(0.05)
+
+    def open_(*args, **kwargs):
+        times["open"] = time.monotonic_ns()
+        time.sleep(0.02)
+        times["opened"] = time.monotonic_ns()
+        return Opened()
+
+    monkeypatch.setattr(determinism.Session, "open", open_)
+    case = determinism.bake("LiteralWorlds")
+    start, end = case["window_ns"]
+    assert start <= times["open"] < times["opened"] <= end < times["close"]
+    assert case["clock"] == "monotonic"
