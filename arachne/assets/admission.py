@@ -87,6 +87,7 @@ import contextlib
 import json
 import math
 import os
+import stat
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -273,10 +274,12 @@ def write_checks(directory: str | os.PathLike[str], report: AdmissionReport) -> 
     ``directory``, its other members as they were, and give the manifest's
     path. The record attests the digest the report was made at, so an
     asset changed since loads as unadmitted. The manifest is written whole
-    beside the old one, in UTF-8, and replaces it only once written: a
-    write that fails leaves the old manifest as it was.
+    beside the old one, in UTF-8, with the old one's permissions, and
+    replaces it only once written: a write that fails leaves the old
+    manifest as it was.
     """
     path = Path(directory) / MANIFEST
+    mode = stat.S_IMODE(path.stat().st_mode)
     document = read_json(path.read_bytes())
     document = {key: value for key, value in document.items() if key != "checks"}
     ordered: dict[str, Any] = {}
@@ -294,6 +297,7 @@ def write_checks(directory: str | os.PathLike[str], report: AdmissionReport) -> 
             written.write(text)
             written.flush()
             os.fsync(written.fileno())
+        os.chmod(temporary, mode)  # mkstemp's file is the owner's alone
         os.replace(temporary, path)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):

@@ -6,8 +6,10 @@ a maker's script.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import warnings
@@ -484,6 +486,16 @@ def test_a_written_manifest_replaces_the_old_only_once_written_whole(
     assert (
         load_asset(directory).manifest.provenance["author"] == "Zo\u00eb, \u753b\u5bb6"
     )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o664])
+def test_a_written_manifest_keeps_the_old_ones_permissions(tmp_path, mode):
+    directory = copied(tmp_path, "dial")
+    path = directory / "manifest.json"
+    path.chmod(mode)
+    write_checks(directory, admit(directory))
+    assert stat.S_IMODE(path.stat().st_mode) == mode
 
 
 def _defect(tmp_path: Path, name: str) -> Path:
