@@ -1,33 +1,39 @@
-"""The scenes of :mod:`.determinism_scenes` baked, and each world's two
+"""The scenes of :mod:`.determinism_scenes` baked, and each world's
 digests set against the committed ones.
 
-For each scene and world, two digests, compared apart: the declaration
+For each scene and world, three digests, compared apart: the declaration
 digest (what the world was given, its open world's pushes at every tick
-included, as its occurrence holds it) and the trace digest (the content key:
-the digest of the trace bytes, the canonical bytes of the bake content). The
-rule they are read by:
+included, as its occurrence holds it); the motion digest (the motion bytes:
+the pose and velocity channels and the contact events, without the build's
+identity); and the trace digest (the content key: the digest of the trace
+bytes, the canonical bytes of the bake content, which carry the identity of
+the build that computed them). The rule they are read by:
 
-- a world whose declaration digest is the committed one and whose trace
+- a world whose declaration digest is the committed one and whose motion
   digest is not is the solver breaking its promise: equal declaration bytes
-  computed different trace bytes;
+  computed different motion, on any machine;
+- where the build's identity is the committed one (:data:`BUILD`), the
+  trace digest is compared too: equal motion with another trace digest
+  there is the identity alone (another producer, solver or feature); on
+  another build the trace bytes carry that build's identity, and only the
+  motion is compared;
 - a world of :class:`.ComputedWorlds` whose declaration digest is not the
   committed one is an input mismatch: the mathematical functions gave other
-  values on this machine, and the trace, computed from other inputs, is not
-  compared;
+  values on this machine, and the motion and trace, computed from other
+  inputs, are not compared;
 - a world of :class:`.LiteralWorlds` whose declaration digest is not the
   committed one declared other bytes from the same literals.
 
-There is one committed pair per world, for every machine of the
-architecture the constants were taken on; a machine whose bytes differ is a
-finding, never a second pair.
+There is one committed value per world for each digest, for every machine;
+a machine whose bytes differ is a finding, never a second value.
 
 Run as a script, it bakes one scene once and writes what it found as JSON,
 for a driver that compares machines::
 
     python tests/sim/determinism.py LiteralWorlds --out literal.json
 
-The file holds the scene, each world's declaration and trace digests, the
-committed pair, the engine's identity string, and, to find the first
+The file holds the scene, each world's three digests, the committed ones,
+the engine's identity string and the build, and, to find the first
 difference between two machines, each world's declared fields, a digest of
 each of its rows, its contact events and the open world's pushes.
 """
@@ -62,7 +68,12 @@ CONFIG = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15}
 #: Every stay spans the whole scene: ticks 0 to 20 s at 60 a second.
 LAST_TICK = 1200
 
-#: The committed digests, (declaration, trace) by (scene, world), taken on
+#: The build the trace digests were committed on (x86-64 Linux): where a
+#: bake's build is another, its trace bytes carry that build's identity and
+#: its trace digest is not compared.
+BUILD = "rustc 1.99.1 (58cf8f9c3 2026-10-13); x86_64-unknown-linux-gnu; fxsr,sse,sse2"
+
+#: The committed declaration and trace digests, by (scene, world), taken on
 #: x86-64 Linux.
 COMMITTED: dict[tuple[str, str], tuple[str, str]] = {
     ("LiteralWorlds", "plane"): (
@@ -87,6 +98,15 @@ COMMITTED: dict[tuple[str, str], tuple[str, str]] = {
     ),
 }
 
+#: The committed motion digests, by (scene, world): the same on every machine.
+MOTION: dict[tuple[str, str], str] = {
+    ("LiteralWorlds", "plane"): "0" * 32,
+    ("LiteralWorlds", "space"): "0" * 32,
+    ("ComputedWorlds", "plane"): "0" * 32,
+    ("ComputedWorlds", "space"): "0" * 32,
+    ("ComputedWorlds", "open"): "0" * 32,
+}
+
 
 def _name(world: World) -> str:
     if world.is_open:
@@ -98,6 +118,25 @@ def _digest(*parts: bytes) -> str:
     digest = hashlib.blake2b(digest_size=16)
     for part in parts:
         digest.update(part)
+    return digest.hexdigest()
+
+
+def motion_digest(pose: np.ndarray, velocity: np.ndarray, contacts: np.ndarray) -> str:
+    """The motion bytes' digest: for the pose and velocity channels and the
+    contact events in turn, its name, its shape as unsigned 32-bit integers
+    and its values, little-endian in row-major order. The build's identity is
+    not in it.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for name, values, dtype in (
+        ("pose", pose, "<f4"),
+        ("velocity", velocity, "<f4"),
+        ("contact", contacts, "<u4"),
+    ):
+        array = np.ascontiguousarray(values, dtype=dtype)
+        digest.update(name.encode())
+        digest.update(np.asarray(array.shape, dtype="<u4").tobytes())
+        digest.update(array.tobytes())
     return digest.hexdigest()
 
 
@@ -136,10 +175,13 @@ def _world(world: World, session: Session, scene: str) -> dict[str, Any]:
     contacts = content.events["contact"].rows
     name = _name(world)
     committed = COMMITTED.get((scene, name))
+    motion = MOTION.get((scene, name))
     found = {
         "world": name,
         "declaration": occurrence.declaration.hex(),
+        "motion": motion_digest(pose, velocity, contacts),
         "trace": occurrence.content.hex(),
+        "build": identity.build,
         "identity": "; ".join(
             (
                 f"{identity.producer} {identity.producer_version}",
@@ -151,7 +193,12 @@ def _world(world: World, session: Session, scene: str) -> dict[str, Any]:
         ),
         "committed": None
         if committed is None
-        else {"declaration": committed[0], "trace": committed[1]},
+        else {
+            "declaration": committed[0],
+            "motion": motion,
+            "trace": committed[1],
+            "build": BUILD,
+        },
         "parts": {
             "identity": _digest(repr(dataclasses.astuple(identity)).encode()),
             "pose": _digest(pose.tobytes()),
@@ -210,7 +257,7 @@ def bake(scene: str) -> dict[str, Any]:
 
 def problems(case: dict[str, Any]) -> list[str]:
     """What in a baked scene breaks the rule against the committed digests,
-    one line each; none when every world gives the committed pair.
+    one line each; none when every world gives the committed ones.
     """
     scene = case["scene"]
     expected = sorted(world for s, world in COMMITTED if s == scene)
@@ -223,32 +270,40 @@ def problems(case: dict[str, Any]) -> list[str]:
         if world is None:
             continue
         declaration, trace = COMMITTED[(scene, name)]
-        if world["declaration"] == declaration:
-            if world["trace"] != trace:
+        motion = MOTION[(scene, name)]
+        where = f"{scene} {name}"
+        if world["declaration"] != declaration:
+            if scene == COMPUTED:
                 found.append(
-                    f"{scene} {name}: SOLVER: the declaration bytes are the committed"
-                    f" ones and the trace bytes are not (trace {world['trace']},"
-                    f" committed {trace}): equal declarations computed different"
-                    " traces"
+                    f"{where}: INPUT MISMATCH: the declaration bytes are not the"
+                    f" committed ones (declaration {world['declaration']}, committed"
+                    f" {declaration}): the computed inputs differ, and the motion"
+                    " and trace are not compared"
                 )
-        elif scene == COMPUTED:
+            else:
+                found.append(
+                    f"{where}: DECLARATION: the declaration bytes are not the"
+                    " committed ones although every input is a literal"
+                    f" (declaration {world['declaration']}, committed {declaration})"
+                )
+        elif world["motion"] != motion:
             found.append(
-                f"{scene} {name}: INPUT MISMATCH: the declaration bytes are not the"
-                f" committed ones (declaration {world['declaration']}, committed"
-                f" {declaration}): the computed inputs differ, and the trace is not"
-                " compared"
+                f"{where}: MOTION: the declaration bytes are the committed ones and"
+                f" the motion bytes are not (motion {world['motion']}, committed"
+                f" {motion}): equal declarations computed different motion"
             )
-        else:
+        elif world["build"] == BUILD and world["trace"] != trace:
             found.append(
-                f"{scene} {name}: DECLARATION: the declaration bytes are not the"
-                f" committed ones although every input is a literal (declaration"
-                f" {world['declaration']}, committed {declaration})"
+                f"{where}: IDENTITY: the declaration and motion bytes are the"
+                " committed ones, on the committed build, and the trace bytes are"
+                f" not (trace {world['trace']}, committed {trace}): the identity"
+                f" alone differs ({world['identity']})"
             )
     return found
 
 
 def report(case: dict[str, Any], found: list[str]) -> str:
-    """The problems, then what each world gave, and its committed pair as it
+    """The problems, then what each world gave, and its digests as they
     would be written in :data:`COMMITTED`.
     """
     lines = [
@@ -260,8 +315,10 @@ def report(case: dict[str, Any], found: list[str]) -> str:
         lines += [
             f"  {world['world']}: identity {world['identity']}",
             f"    parts: {parts}; findings {world['findings']}",
+            f"    build {world['build']}"
+            f"{'' if world['build'] == BUILD else ' (not the committed build: trace not compared)'}",
             f'    ("{case["scene"]}", "{world["world"]}"): ("{world["declaration"]}",'
-            f' "{world["trace"]}"),',
+            f' "{world["trace"]}"), motion "{world["motion"]}"',
         ]
     return "\n".join(lines)
 
@@ -281,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     for world in case["worlds"]:
         print(
             f"{case['scene']} {world['world']} declaration={world['declaration']}"
-            f" trace={world['trace']}"
+            f" motion={world['motion']} trace={world['trace']}"
         )
     return 0
 
