@@ -644,12 +644,12 @@ class FlowDriver:
     scene, each moved to where :attr:`~.Scene.time` puts it at every
     instant, at a cost of the flows held, whatever else the scene holds.
 
-    A scene has at most one, made with its first flow and found with
-    :func:`flow_driver`. It runs as the scene updater :attr:`updater`, last
-    in every instant, after the animations and the mobjects' updaters, and
-    unsuspended by any animation. :attr:`updater` is a plain function whose
-    code never reads ``dt``, so it changes no play's ticking more than any
-    scene updater does. Calling the driver moves, as one unit, every flow it
+    A scene has at most one in each execution, made with its first flow
+    there and found with :func:`flow_driver`. It runs as the scene updater
+    :attr:`updater`, last in every instant, after the animations and the
+    mobjects' updaters, and unsuspended by any animation. :attr:`updater`
+    is a plain function whose code never reads ``dt``, so it changes no
+    play's ticking more than any scene updater does. Calling the driver moves, as one unit, every flow it
     holds that is not stopped; a flow that has left the scene is moved too
     and draws nothing. A flow joins its scene's driver only through
     :func:`hold_flow`. It is the first of the scene drivers a timing clock
@@ -707,13 +707,41 @@ class FlowDriver:
             flow.follow(now)
 
 
-#: Each scene's flow driver, by the scene; gone with the scene.
-_DRIVERS: weakref.WeakKeyDictionary[Scene, FlowDriver] = weakref.WeakKeyDictionary()
+#: Each scene's flow driver, by the scene's id, with the scene and the
+#: execution it was made in (the scene's recorder), both held weakly, as the
+#: scene's timing clock is (:mod:`arachne.assets.timing`): kept by identity,
+#: so a scene's own hash or equality is never asked, and an entry answers
+#: only for its very scene in that execution: a scene executed again in
+#: place (made anew on the same object, its updaters gone) has no driver
+#: until its first flow there. An entry goes with its scene.
+_DRIVERS: dict[int, tuple[weakref.ref[Scene], weakref.ref[Any], FlowDriver]] = {}
 
 
 def flow_driver(scene: Scene) -> FlowDriver | None:
-    """``scene``'s flow driver, or ``None`` before its first flow."""
-    return _DRIVERS.get(scene)
+    """``scene``'s flow driver in its current execution, or ``None`` before
+    its first flow there.
+    """
+    held = _DRIVERS.get(id(scene))
+    if held is None or held[0]() is not scene:
+        return None
+    if held[1]() is not scene.__dict__.get("_arachne_timeline"):
+        return None
+    return held[2]
+
+
+def _keep_driver(scene: Scene, driver: FlowDriver) -> None:
+    key = id(scene)
+    held = _DRIVERS.get(key)
+    if held is None or held[0]() is not scene:
+        weakref.finalize(scene, _forget_driver, key)
+    execution = weakref.ref(scene._arachne_timeline)
+    _DRIVERS[key] = (weakref.ref(scene), execution, driver)
+
+
+def _forget_driver(key: int) -> None:
+    held = _DRIVERS.get(key)
+    if held is not None and held[0]() is None:
+        del _DRIVERS[key]
 
 
 def hold_flow(scene: Scene, flow: Flow) -> None:
@@ -722,11 +750,12 @@ def hold_flow(scene: Scene, flow: Flow) -> None:
     the scene's updaters, or handed to the scene's timing clock when it has
     one (:func:`arachne.assets.timing.drive`).
     """
-    driver = _DRIVERS.get(scene)
+    driver = flow_driver(scene)
     if driver is None:
         from arachne.assets.timing import drive
 
-        driver = _DRIVERS[scene] = FlowDriver(scene)
+        driver = FlowDriver(scene)
+        _keep_driver(scene, driver)
         drive(scene, driver)
     driver.hold(flow)
 
