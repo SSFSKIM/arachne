@@ -27,12 +27,13 @@ its own drawing stays as the stay left it, whichever route answers the
 instant: a held wait's one capture or a ticked play's own. That holds for
 a body drawn by its own points alone; a body with submobjects (a group)
 is drawn by them too, which its capture does not hold, so past its stay
-it is unreadable, moved or not. Outside its stay otherwise (moved,
-redrawn, or before the stay) every one is
-unreadable, with the reason, and the lint reports
-``sim.quantity_unreadable``. A contact begins where two shapes come within
-the world's allowed linear error, touching or overlapping
-(:meth:`arachne_sim.World.contacts`).
+it is unreadable, moved or not. Outside its stay otherwise (moved or
+redrawn, at the instant its world left as later, or before the stay)
+every one is unreadable, with the reason, and the lint reports
+``sim.quantity_unreadable``. A copy of a body's mobject is another
+mobject, not the body, and declares none of them. A contact begins where
+two shapes come within the world's allowed linear error, touching or
+overlapping (:meth:`arachne_sim.World.contacts`).
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ __all__ = ["SimBody", "bind", "body_quantities", "drawn_key"]
 
 import hashlib
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
@@ -71,24 +72,40 @@ CONTACT_TOLERANCE = 1 / TICK_RATE
 class SimBody:
     """A simulated body's source: the occurrence ``ordinal`` of its world's
     stay in the record's bakes, and its number ``body`` among the world's
-    bodies; once the stay has ended, ``drawn``, the key of the body's own
-    drawing as the stay left it (:func:`drawn_key`).
+    bodies; once its world has left the scene, ``left``, the stay's last
+    tick, and ``drawn``, the key of the body's own drawing as the stay left
+    it (:func:`drawn_key`), ``None`` when that drawing is not of the last
+    row. A copy of the body's mobject is not the body: its source is
+    ``copied`` and answers nothing (the world that owns a copy binds it as
+    the copy's stay begins).
     """
 
     ordinal: int
     body: int
     drawn: bytes | None = None
+    left: int | None = None
+    copied: bool = False
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> SimBody:
+        return replace(self, copied=True)
 
 
-def bind(mobject: Mobject, ordinal: int, body: int, drawn: bytes | None = None) -> None:
+def bind(
+    mobject: Mobject,
+    ordinal: int,
+    body: int,
+    drawn: bytes | None = None,
+    left: int | None = None,
+) -> None:
     """Make ``mobject``'s source the body ``body`` of the stay ``ordinal``
-    (its drawing as the stay left it ``drawn``), in place of the one an
-    earlier stay set; its other sources stay.
+    (once its world has left, at the stay's last tick ``left``, with its
+    drawing as the stay left it ``drawn``), in place of the one an earlier
+    stay set; its other sources stay.
     """
     held = mobject.__dict__.get(SOURCES, ())
     kept = tuple(each for each in held if type(each) is not SimBody)
     setattr(mobject, SOURCES, kept)
-    quantities.attach(mobject, SimBody(ordinal, body, drawn))
+    quantities.attach(mobject, SimBody(ordinal, body, drawn, left))
 
 
 def drawn_key(own: Mapping[str, Any]) -> bytes | None:
@@ -111,22 +128,30 @@ def drawn_key(own: Mapping[str, Any]) -> bytes | None:
 
 @quantities.source(SimBody)
 def _sim_body(found: SimBody, held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
-    return body_quantities(at.bakes, found.ordinal, found.body, _tick(found, held, at))
+    if found.copied:
+        return ()
+    tick = _tick(found, held, at)
+    if tick is None:
+        why = f"its drawing is not the one its world's stay left at tick {found.left}"
+        return tuple(
+            Quantity(name, None, unit, unreadable=why) for name, unit in UNITS.items()
+        )
+    return body_quantities(at.bakes, found.ordinal, found.body, tick)
 
 
-def _tick(found: SimBody, held: Mapping[str, Any], at: At) -> int:
-    """The tick a body's capture shows: the instant's; past the end of its
-    stay, while its drawing is still as the stay left it, the stay's last.
+def _tick(found: SimBody, held: Mapping[str, Any], at: At) -> int | None:
+    """The tick a body's capture shows: in its world's stay, the instant's;
+    once its world has left, the stay's last while its drawing is the one
+    the stay left. Otherwise (moved, redrawn, drawn by its submobjects, or
+    not placed at the last row) no row of the stay is what it shows: at a
+    later tick, which no bake of the stay holds, the instant's; at the stay's
+    own last, ``None``.
     """
-    if found.drawn is None or at.bakes is None:
+    if found.left is None:
         return at.tick
-    occurrence = at.bakes.occurrence(found.ordinal)
-    if occurrence is None or at.tick <= occurrence.last_tick:
-        return at.tick
-    if drawn_key(held) != found.drawn:
-        # Moved, redrawn, or drawn by its submobjects: not the stay's row.
-        return at.tick
-    return occurrence.last_tick
+    if found.drawn is not None and drawn_key(held) == found.drawn:
+        return found.left
+    return at.tick if at.tick > found.left else None
 
 
 def body_quantities(

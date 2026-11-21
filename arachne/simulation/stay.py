@@ -294,6 +294,8 @@ def membership(world: World, scene: Scene, present: bool, at: Fraction | None) -
             stay.left_at = None
             stay.left_tick = None
             stay.left_declaration = None
+            for number, mobject in enumerate(world._body_mobjects):
+                measures.bind(mobject, stay.ordinal, number)
             return
         stay.seal()
     if run is None:
@@ -353,10 +355,13 @@ class Stay:
         #: The solver's row the bodies were last placed at.
         self._placed = -1
         #: Each body's own drawing as the world last vouched for it
-        #: (:func:`drawing_of`): as it was declared, then as each placement
+        #: (:func:`drawing_of`): as the stay began, where :func:`check_drawn`
+        #: found it drawn as the world last drew it, then as each placement
         #: made it. A body whose drawing is another when the stay ends was
         #: moved or redrawn since, and is not of the stay's last row.
-        self._drawings: list[object | None] = list(world._declared_drawings())
+        self._drawings: list[object | None] = [
+            drawing_of(mobject) for mobject in world._body_mobjects
+        ]
 
     @classmethod
     def begin(
@@ -400,6 +405,17 @@ class Stay:
 
     def _solver_row(self, tick: int) -> int:
         return self.base + tick - self.first_tick
+
+    def drawn_tick(self) -> int | None:
+        """The tick of the row the moving bodies are drawn at: the one the
+        run last placed them at (where the stay found them drawn, as it
+        began), else, in the run's first stay before any placement, its
+        first row, as declared; ``None`` when that row is an earlier stay's.
+        """
+        placed = 0 if self.run.placed is None else self.run.placed
+        if placed < self.base:
+            return None
+        return self.first_tick + placed - self.base
 
     def compute_through(self, tick: int) -> None:
         """Compute the rows through ``tick``: a closed world's in one call,
@@ -525,6 +541,7 @@ class Stay:
                 self.ordinal,
                 number,
                 measures.drawn_key(mobject.__dict__) if kept else None,
+                self.left_tick,
             )
 
     # The record's side
