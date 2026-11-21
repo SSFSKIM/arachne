@@ -14,11 +14,11 @@ an ordinary :class:`~arachne.mobject.types.vectorized_mobject.VMobject` with
 its file's flat paint and stroke join, its stroke as wide as the file's
 transform makes it. A colour with an alpha of its own under a
 ``fill-opacity`` or ``stroke-opacity``, its own or inherited, is refused:
-SVG multiplies the two, and the conversion draws the opacity alone. A stroke the engine would draw otherwise than the file
-means is refused: one under a transform that is not a similarity, an open
-subpath ending where it starts, a subpath starting where the one before it
-ends, and a miter join the engine's own miter limit cuts otherwise than the
-file's (:mod:`.joins`).
+SVG multiplies the two, and the conversion draws the opacity alone. A stroke
+the engine would draw otherwise than the file means is refused: one under a
+transform that is not a similarity, an open subpath ending where it starts,
+a subpath starting where the one before it ends, and a miter join the
+engine's own miter limit cuts otherwise than the file's (:mod:`.joins`).
 
 Two such strokes still pass, drawn otherwise than SVG draws them:
 

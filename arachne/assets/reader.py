@@ -8,10 +8,11 @@ constructors resolve a file name (as given, then under the configuration's
 assets. Nothing else is searched and nothing is fetched: an address, or a
 file the manifest names by anything but a plain relative path inside the
 asset's directory (an address, an absolute path, a ``..``, a link), and a
-manifest that is a link, is ``asset.remote``. Every way an asset can be unusable is a finding raised
-with its code: no manifest (``asset.manifest_missing``), a manifest that is
-not valid (``asset.manifest_invalid``, an anchor placed off its part's
-outline and a name a pose could not tell apart included), a file not there
+manifest that is a link, is ``asset.remote``. Every way an asset can be
+unusable is a finding raised with its code: no manifest
+(``asset.manifest_missing``), a manifest that is not valid
+(``asset.manifest_invalid``, an anchor placed off its part's outline and a
+name a pose could not tell apart included), a file not there
 (``asset.file_missing``), one that cannot be read or drawn exactly
 (``asset.unreadable``), and, once all of that holds, an asset not admitted
 (``asset.unadmitted``): it loads only when its manifest's ``checks`` record

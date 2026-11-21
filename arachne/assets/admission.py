@@ -59,16 +59,17 @@ a person also looks. What the asset reader refuses is refused before any
 pose is drawn, as loading refuses it (:mod:`.svg_parts`): text, embedded
 images, gradient and pattern paint, dashes, clip paths, masks and filters;
 a colour with an alpha of its own under a fill or stroke opacity (give the
-alpha in one of them); a stroked shape under a transform that is not a similarity; a stroked open
-subpath whose ends meet, and a stroked subpath that begins where the one
-before it ended (an editor's combine command writes these); a miter join
-cut otherwise by the file's ``stroke-miterlimit`` than by the engine's 10
-(state ``stroke-miterlimit="10"``, or use a round or bevel join); a
-``miter-clip`` or ``arcs`` join. Two forms pass both the reader and this
-tool and are drawn otherwise than SVG draws them, so a supplier's export
-should avoid them: subpath ends that nearly meet, which the camera may join
-once the asset is drawn small; and drawing on after ``Z`` with no move,
-which the engine runs on from the closed outline where SVG starts afresh.
+alpha in one of them); a stroked shape under a transform that is not a
+similarity; a stroked open subpath whose ends meet, and a stroked subpath
+that begins where the one before it ended (an editor's combine command
+writes these); a miter join cut otherwise by the file's
+``stroke-miterlimit`` than by the engine's 10 (state
+``stroke-miterlimit="10"``, or use a round or bevel join); a ``miter-clip``
+or ``arcs`` join. Two forms pass both the reader and this tool and are drawn
+otherwise than SVG draws them, so a supplier's export should avoid them:
+subpath ends that nearly meet, which the camera may join once the asset is
+drawn small; and drawing on after ``Z`` with no move, which the engine runs
+on from the closed outline where SVG starts afresh.
 """
 
 from __future__ import annotations
