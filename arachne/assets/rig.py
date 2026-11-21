@@ -8,7 +8,10 @@ then its order of entries), each the part's shapes as ordinary
 at any zoom, styled and transformed as any other. A slot's group holds one
 group per drawing; the drawing it shows has its points, and every member of
 the others holds none, so nothing draws them, while a style given to the
-rig still reaches them.
+rig still reaches them. A file's stroke widths are in canvas units, drawn at
+the manifest's canvas scale as its points are (a unit of stroke width draws
+:data:`STROKE_SCALE` scene units, the fixtures' scale); scaling a placed rig
+leaves them as scaling any vector object does.
 
 Three things are kept apart, each with one writer:
 
@@ -96,6 +99,10 @@ if TYPE_CHECKING:
 
 #: The points of a shape that draws nothing.
 _EMPTY = adopt(np.zeros((0, 3)), FrozenPoints)
+#: The scene units a unit of stroke width draws (the camera's line width
+#: multiple): the canvas scale at which a file's stroke width, in canvas
+#: units, is the engine's stroke width as it stands, the fixtures' scale.
+STROKE_SCALE = 0.01
 
 
 class ViewThrough(FrozenArray):
@@ -229,6 +236,19 @@ class Rig(VGroup):
             for *_, name, group in sorted(entries, key=lambda entry: entry[:2])
         ]
         self._members = tuple(members)
+        # A file's stroke widths are canvas units, scaled to the scene as its
+        # points are; a shape with no stroke (a still's quad) is left as made.
+        widen = manifest.size.scene_units_per_unit / STROKE_SCALE
+        if widen != 1:
+            for shape in self._shapes():
+                width = shape.get_stroke_width()
+                background = shape.get_stroke_width(background=True)
+                if width:
+                    shape.set_stroke(width=width * widen, family=False)
+                if background:
+                    shape.set_stroke(
+                        width=background * widen, background=True, family=False
+                    )
         groups = [group for _, group in members]
         self.add(self.carrier, *groups)
         # What a settle needs whole: each group the rig made, with its

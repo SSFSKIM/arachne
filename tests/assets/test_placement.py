@@ -23,7 +23,7 @@ from arachne.timeline import admission
 from arachne.utils.rate_functions import smooth
 
 from . import draw_fixture_pack, rig_scenes
-from .helpers import admitted
+from .helpers import admitted, copied, edited
 from .rig_scenes import MOVE, OPEN
 
 SCENES = Path(rig_scenes.__file__)
@@ -374,3 +374,64 @@ def test_the_lint_boxes_a_rig_by_its_art(rod, tmp_path):
     finally:
         session.close()
         admission.DEMOTED.clear()
+
+
+def _file_widths(rig: Rig) -> list[tuple[float, float]]:
+    """The stroke widths of ``rig``'s shapes as its asset's files give them,
+    in canvas units, in the order :meth:`Rig._shapes` lists them.
+    """
+    asset, found = rig.asset, []
+    for name, _ in rig._members:
+        spec = rig.model.placed[name]
+        shapes = (
+            asset.rest(name)
+            if spec in asset.manifest.parts
+            else [s for d in spec.drawings for s in asset.drawing(name, d.name)]
+        )
+        found += [
+            (s.get_stroke_width(), s.get_stroke_width(background=True)) for s in shapes
+        ]
+    return found
+
+
+def _widths(rig: Rig) -> list[tuple[float, float]]:
+    return [
+        (s.get_stroke_width(), s.get_stroke_width(background=True))
+        for s in rig._shapes()
+    ]
+
+
+@pytest.mark.parametrize("name", draw_fixture_pack.NAMES + draw_fixture_pack.RASTER)
+def test_a_fixture_rig_strokes_as_wide_as_its_files_say(name):
+    # The vector fixtures are drawn at the canvas scale whose stroke width is
+    # the engine's own unit, and the raster ones stroke nothing: every
+    # fixture rig keeps its files' widths exactly.
+    rig = Rig(f"fixture:{name}")
+    assert _widths(rig) == _file_widths(rig)
+    if name in draw_fixture_pack.NAMES:
+        assert rig.asset.manifest.size.scene_units_per_unit == 0.01
+        assert any(width > 0 for width, _ in _widths(rig))
+    else:
+        assert all(widths == (0, 0) for widths in _widths(rig))
+
+
+def test_a_rig_strokes_its_outlines_as_wide_as_its_canvas_scale_draws_them(tmp_path):
+    # The dial at ten times the fixtures' canvas scale: a 20-unit dial, its
+    # face's 4-unit outline 0.4 units thick, as its points are ten times as far
+    # apart; a unit of stroke width draws 0.01 units.
+    big = copied(tmp_path, "dial", "big-dial")
+
+    def tenfold(document):
+        document["name"] = "big-dial"
+        size = document["size"]
+        size["scene_units_per_unit"] = 0.1
+        size["width"], size["height"] = size["width"] * 10, size["height"] * 10
+
+    rig = Rig(admitted(edited(big, tenfold)))
+    dial = Rig("fixture:dial")
+    assert rig.width == pytest.approx(10 * dial.width)
+    face = rig.part("face").submobjects[0]
+    assert face.get_stroke_width() * 0.01 == pytest.approx(4 * 0.1)
+    assert _widths(rig) == [
+        (10 * width, 10 * background) for width, background in _file_widths(rig)
+    ]
