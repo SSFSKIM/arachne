@@ -252,3 +252,34 @@ def test_a_stub_of_the_least_shows_enough_on_any_rounding():
     assert not _shows_too_little(stubs)
     assert _shows_too_little(line_stubs(curves, (0.0799, -0.1, 0.92, 0.1)))
     assert not _shows_too_little(line_stubs(curves, (0.0801, -0.1, 0.92, 0.1)))
+
+
+def test_a_stub_is_the_line_the_frame_shows():
+    """A line 10 long across a frame whose right edge is at 1, boxed from
+    0.5 to 0.9: past the box the frame shows 0.1 of it; a line entering the
+    frame from its left edge, at -1, shows from there.
+    """
+    curves = _straight((-3, 0), (10, 0))
+    box = (0.5, -0.1, 0.9, 0.1)
+    assert line_stubs(curves, box) == pytest.approx((3.5, 9.1))
+    frame = (-1.0, -1.0, 1.0, 1.0)
+    assert line_stubs(curves, box, frame=frame) == pytest.approx((1.5, 0.1))
+    # Measured in scene units as before, and none for a box off the line.
+    stubs = line_stubs(curves, box, to_scene=(2.0, 1.0), frame=frame)
+    assert stubs == pytest.approx((3.0, 0.2))
+    assert line_stubs(curves, (0.5, 0.4, 0.9, 0.6), frame=frame) is None
+
+
+@pytest.mark.parametrize(
+    ("scene", "reported"),
+    [("PillJustInsideTheFrame", True), ("PillWellInsideTheFrame", False)],
+)
+def test_a_label_whose_line_runs_off_the_screen_is_judged_by_what_shows(
+    opened, scene, reported
+):
+    found = [f for f in _findings(opened(scene)) if f.code == "overlap.text"]
+    assert bool(found) is reported
+    if reported:
+        (finding,) = found
+        assert finding.message.endswith(FIX)
+        assert finding.detail["after"] == pytest.approx(0.02, abs=1e-6)
