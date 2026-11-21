@@ -58,7 +58,8 @@ It judges shape and nothing else: neither style, nor identity, nor whether
 a person also looks. What the asset reader refuses is refused before any
 pose is drawn, as loading refuses it (:mod:`.svg_parts`): text, embedded
 images, gradient and pattern paint, dashes, clip paths, masks and filters;
-a stroked shape under a transform that is not a similarity; a stroked open
+a colour with an alpha of its own under a fill or stroke opacity (give the
+alpha in one of them); a stroked shape under a transform that is not a similarity; a stroked open
 subpath whose ends meet, and a stroked subpath that begins where the one
 before it ended (an editor's combine command writes these); a miter join
 cut otherwise by the file's ``stroke-miterlimit`` than by the engine's 10

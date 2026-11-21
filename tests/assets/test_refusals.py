@@ -91,6 +91,65 @@ def test_a_file_the_reader_cannot_draw_exactly_is_refused(tmp_path, broken, says
     assert says in found.detail["reason"]
 
 
+_NEEDLE = 'd="M 150 78 L 156 160 L 150 172 L 144 160 Z"'
+
+
+def _needle_file(body: str) -> str:
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">{body}</svg>'
+
+
+@pytest.mark.parametrize(
+    ("body", "says"),
+    [
+        (f'<path {_NEEDLE} fill="#ff000000" fill-opacity="0.5"/>', "fill '#ff000000'"),
+        (f'<path {_NEEDLE} style="fill:#f008;fill-opacity:0.5"/>', "fill '#f008'"),
+        (
+            f'<g fill-opacity="0.5"><path {_NEEDLE} fill="#c0392b80"/></g>',
+            "fill-opacity 0.5",
+        ),
+        (
+            f'<g fill="rgba(192,57,43,0.5)"><path {_NEEDLE} fill-opacity="1"/></g>',
+            "fill 'rgba(192,57,43,0.5)'",
+        ),
+        (
+            f'<g color="#c0392b80"><path {_NEEDLE} fill="currentColor"'
+            ' fill-opacity="0.5"/></g>',
+            "fill '#c0392b80'",
+        ),
+        (
+            f'<path {_NEEDLE} fill="#c0392b" stroke="hsla(0,100%,50%,0.5)"'
+            ' stroke-opacity="0.8" stroke-width="2" stroke-linejoin="round"/>',
+            "stroke-opacity 0.8",
+        ),
+    ],
+)
+def test_a_colour_with_its_own_alpha_under_an_opacity_is_refused(tmp_path, body, says):
+    # SVG multiplies the two; the shape conversion would draw the opacity
+    # alone, so #ff000000 under fill-opacity 0.5 would paint at half.
+    directory = copied(tmp_path, "dial")
+    (directory / "pieces" / "needle.svg").write_text(_needle_file(body))
+    found = refused("asset.unreadable", lambda: Rig(directory))
+    assert found.detail["file"] == "pieces/needle.svg"
+    assert says in found.detail["reason"]
+    assert "SVG multiplies" in found.detail["reason"]
+
+
+@pytest.mark.parametrize(
+    ("paint", "opacity"),
+    [
+        ('fill="#c0392b80"', 128 / 255),
+        ('fill="#c0392bff" fill-opacity="0.5"', 0.5),
+        ('fill="#c0392b" fill-opacity="0.5"', 0.5),
+    ],
+)
+def test_an_alpha_or_an_opacity_alone_is_drawn_as_svg_draws_it(paint, opacity):
+    from arachne.assets.svg_parts import read_svg
+
+    # The parser keeps an opacity in eight bits, as it keeps an alpha.
+    (shape,) = read_svg(_needle_file(f"<path {_NEEDLE} {paint}/>").encode()).shapes()
+    assert shape.get_fill_opacity() == pytest.approx(opacity, abs=0.5 / 255)
+
+
 def test_reading_a_file_writes_nothing_beside_it(tmp_path):
     directory = copied(tmp_path, "figure")
     before = sorted(p.relative_to(directory) for p in directory.rglob("*"))
