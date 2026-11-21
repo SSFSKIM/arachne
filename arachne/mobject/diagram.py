@@ -645,11 +645,11 @@ class FlowDriver:
     instant, at a cost of the flows held, whatever else the scene holds.
 
     A scene has at most one in each execution, made with its first flow
-    there and found with :func:`flow_driver`. It runs as the scene updater :attr:`updater`, last
-    in every instant, after the animations and the mobjects' updaters, and
-    unsuspended by any animation. :attr:`updater` is a plain function whose
-    code never reads ``dt``, so it changes no play's ticking more than any
-    scene updater does. Calling the driver moves, as one unit, every flow it
+    there and found with :func:`flow_driver`. It runs as the scene updater
+    :attr:`updater`, last in every instant, after the animations and the
+    mobjects' updaters, and unsuspended by any animation. :attr:`updater`
+    is a plain function whose code never reads ``dt``, so it changes no
+    play's ticking more than any scene updater does. Calling the driver moves, as one unit, every flow it
     holds that is not stopped; a flow that has left the scene is moved too
     and draws nothing. A flow joins its scene's driver only through
     :func:`hold_flow`. It is the first of the scene drivers a timing clock

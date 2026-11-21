@@ -51,14 +51,14 @@ class PoseSettle:
     animations and the mobjects' updaters.
 
     A scene has at most one in each execution, made with its first
-    :class:`Pose` there and found with :func:`pose_settle`. While it holds a rig it runs as the scene
-    updater :attr:`updater`, a plain function whose code never reads
-    ``dt``. A rig joins it through :func:`hold_pose` when a pose of it
-    begins and leaves through :func:`release_pose` when that pose is cleaned
-    up. Something else that is to settle the posed rigs itself, at its own
-    place in the instant (a clock that runs last), sets :attr:`registers`
-    to false, takes :attr:`updater` out of the scene's updaters if it is
-    there, and calls the settle itself.
+    :class:`Pose` there and found with :func:`pose_settle`. While it holds
+    a rig it runs as the scene updater :attr:`updater`, a plain function
+    whose code never reads ``dt``. A rig joins it through :func:`hold_pose`
+    when a pose of it begins and leaves through :func:`release_pose` when
+    that pose is cleaned up. Something else that is to settle the posed
+    rigs itself, at its own place in the instant (a clock that runs last),
+    sets :attr:`registers` to false, takes :attr:`updater` out of the
+    scene's updaters if it is there, and calls the settle itself.
 
     It is the scene's engine state, kept beside the scene, and no record
     reads it; it refers to the scene and to its rigs weakly.
