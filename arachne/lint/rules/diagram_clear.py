@@ -33,13 +33,15 @@ every instant it is asked, and reports them under the clearance codes:
   connector that has carried no flow): its plate over its own line, leaving
   less than :data:`MIN_STUB` (0.08 screen units, a unit of the home frame)
   of the line showing on either side of it, so a viewer cannot see a line
-  runs there. The stubs run along the line as drawn (its corners, its ends
-  where the head and the pieces cut it) from where the plate's box leaves
-  it, and are measured on screen: a zoomed-in frame makes a stub longer, by
-  the home frame's width over the frame's. The label is judged at the
-  instants, and when shown, as its legible height is; the message gives the
-  stubs in scene units at that frame and the fix, to widen the gap or drop
-  the label.
+  runs there. The plate hides the line only where it paints (some fill)
+  and is drawn after it. The stubs run along the line as drawn (its
+  corners, its ends where the head and the pieces cut it), each curve
+  sampled at 65 points, from where the plate's box covers a length of it;
+  each is measured in scene units and put on screen by the home frame's
+  width over the frame's (a zoomed-in frame makes it longer), whatever the
+  frame's height. The label is judged at the instants, and when shown, as
+  its legible height is; the message gives the stubs in scene units at
+  that frame and the fix, to widen the gap or drop the label.
 
 A diagram is an engine :class:`~arachne.mobject.diagram.Diagram` (or a
 class made from it), known by the mobject the record holds, never by a
@@ -75,7 +77,7 @@ import numpy as np
 from ..findings import Finding, Holder
 from ..parts import Part, Parts, source_of
 from ._excuse import muted, paired
-from ._geometry import box_gap
+from ._geometry import box_gap, union
 from ._rule import InstantRule, Terms
 from ._units import Measured, measured_units
 from .frame_edge import EDGE_SLACK
@@ -110,6 +112,13 @@ BESIDE_FIX = "set the connector's label_side= to a side with room"
 MIN_STUB = 0.08
 #: What a label on its connector's middle that hides its line is told.
 INLINE_FIX = "widen the gap or drop the label"
+#: How far under :data:`MIN_STUB` a stub may fall as floating point's
+#: error, not as a line shorter on screen.
+STUB_TOLERANCE = 1e-9
+#: The points each curve of a connector is sampled at for its stubs: 64
+#: steps, as a path's arc length is read (``ArcLength``), so a curved stub
+#: near the least is measured as the connector's own length is.
+STUB_SAMPLES = 65
 
 
 def diagram_findings(parts: Parts, terms: Terms) -> list[Finding]:
@@ -251,22 +260,40 @@ def _inline_findings(
 ) -> list[Finding]:
     """Each label on its connector's middle whose plate leaves less than
     :data:`MIN_STUB` of the connector's drawn line showing, on screen, on
-    either side of it. A connector whose line is not drawn, or a plate off
-    its line, reports nothing.
+    either side of it. A plate hides the line where it paints (some fill)
+    and is drawn after it; a label with no such plate, a connector whose
+    line is not drawn, or a plate off its line reports nothing.
     """
     found = []
-    # Points are on screen, in home-frame units: a scene unit there is
-    # this many of them.
-    scale = parts.view.home_width / parts.view.frame_width
+    view = parts.view
+    # Points are on screen, in home-frame units: back to scene units, and a
+    # scene length on screen, by the home frame's width over the frame's.
+    to_scene = (
+        view.frame_width / view.home_width,
+        view.frame_height / view.home_height,
+    )
+    scale = view.home_width / view.frame_width
     for unit in labels:
         connector = inline.get(unit.id)
         line = next((p for p in parts.parts if p.id == connector), None)
         if line is None:
             continue
-        stubs = _stubs(line, unit.outer)
-        if stubs is None or min(stubs) >= MIN_STUB:
+        (drawn,) = line.leaves
+        plates = [
+            leaf.screen_box
+            for leaf in unit.leaves
+            if leaf.plate and leaf.fill_opacity > 0 and leaf.order > drawn.order
+        ]
+        curves = drawn.outline(STUB_SAMPLES)
+        if not plates or curves is None:
             continue
-        before, after = (stub / scale for stub in stubs)
+        stubs = line_stubs(curves, union(plates), to_scene=to_scene)
+        if stubs is None:
+            continue
+        before, after = stubs
+        on_screen = (before * scale, after * scale)
+        if not _shows_too_little(on_screen):
+            continue
         t = Fraction(parts.t)
         found.append(
             Finding(
@@ -277,45 +304,50 @@ def _inline_findings(
                 message=(
                     f"diagram label {unit.said!r} leaves too little of its own"
                     f" connector's line showing: {before:.3f} units before its"
-                    f" plate and {after:.3f} after at this frame ({stubs[0]:.3f}"
-                    f" and {stubs[1]:.3f} on screen, under the {MIN_STUB} a side"
+                    f" plate and {after:.3f} after at this frame ({on_screen[0]:.3f}"
+                    f" and {on_screen[1]:.3f} on screen, under the {MIN_STUB} a side"
                     f" needs to read as a line): {INLINE_FIX}"
                 ),
                 detail={
                     "before": round(before, 4),
                     "after": round(after, 4),
-                    "before_screen": round(stubs[0], 4),
-                    "after_screen": round(stubs[1], 4),
+                    "before_screen": round(on_screen[0], 4),
+                    "after_screen": round(on_screen[1], 4),
                 },
+                fix=INLINE_FIX,
             )
         )
     return found
 
 
-def _stubs(part: Part, box: Box) -> tuple[float, float] | None:
-    """:func:`line_stubs` of the line ``part`` draws, each curve sampled at
-    17 points; ``None`` when it draws no whole curve.
+def _shows_too_little(on_screen: tuple[float, float]) -> bool:
+    """Whether either stub, on screen, falls short of :data:`MIN_STUB` by
+    more than floating point's error.
     """
-    (leaf,) = part.leaves
-    curves = leaf.outline()
-    return None if curves is None else line_stubs(curves, box)
+    return min(on_screen) < MIN_STUB - STUB_TOLERANCE
 
 
-def line_stubs(curves: np.ndarray, box: Box) -> tuple[float, float] | None:
-    """How far a line runs, along its path, before ``box`` first covers it
-    and after ``box`` last leaves it: ``curves`` its curves as polylines,
-    ``(curves, samples, 2)``, joined as straight steps; a jump from one
+def line_stubs(
+    curves: np.ndarray, box: Box, to_scene: tuple[float, float] = (1.0, 1.0)
+) -> tuple[float, float] | None:
+    """How far a line runs, along its path, before ``box`` first covers a
+    length of it and after ``box`` last does: ``curves`` its curves as
+    polylines, ``(curves, samples, 2)``, joined as straight steps, clipped
+    against ``box`` where they lie; each length a step's run between its cut
+    shares, with ``to_scene`` scaling its two axes (screen to scene units).
+    A box that only touches the line covers none of it; a jump from one
     curve to the next, where they do not meet, runs no length. ``None``
     when the box covers none of it.
     """
     low, high = np.array(box[:2]), np.array(box[2:])
+    axes = np.array(to_scene)
     run = 0.0
     first = last = None
     for curve in curves:
         for start, stop in zip(curve[:-1], curve[1:], strict=True):
-            length = float(np.linalg.norm(stop - start))
+            length = float(np.linalg.norm((stop - start) * axes))
             inside = _crossing(start, stop, low, high)
-            if inside is not None:
+            if inside is not None and inside[1] > inside[0]:
                 enter, leave = inside
                 if first is None:
                     first = run + float(enter) * length
