@@ -9,6 +9,8 @@ import types
 import weakref
 from types import SimpleNamespace
 
+import numpy as np
+
 from arachne import (
     DOWN,
     LEFT,
@@ -31,6 +33,7 @@ from arachne import (
     SlideJoint,
     Square,
     ThreeDScene,
+    VMobject,
     World,
 )
 
@@ -791,3 +794,50 @@ class FloorShiftedAndBack(Rearranged):
     moved = "floor"
     before = "back"
     between = "back"
+
+
+class HeldThenAwayAndBack(Scene):
+    """A falling ball whose world the scene holds (its updating suspended) a
+    quarter second in, removes at 1/2 s, resumes and adds again at 3/4 s:
+    the ball is drawn where the world last placed it, at an earlier row than
+    the one the second stay begins at. With ``shifted``, the ball is shifted
+    while its world is away.
+    """
+
+    shifted = False
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = Circle(radius=0.3).shift(UP)  # the held ball
+        world.body(ball)
+        self.add(world)
+        self.wait(0.25)
+        world.suspend_updating()
+        self.wait(0.25)
+        self.remove(world)
+        self.wait(0.25)
+        world.resume_updating()
+        if self.shifted:
+            ball.shift(RIGHT * 0.37)
+        self.add(world)
+        self.wait(0.5)
+
+
+class HeldShiftedThenBack(HeldThenAwayAndBack):
+    shifted = True
+
+
+class IntegerPointsMovedBeforeEntry(Scene):
+    """A point body drawn by a mobject whose points the scene set as 8-bit
+    integers, set again before its world's entry with each point 128 units
+    left of where it was declared.
+    """
+
+    def construct(self):
+        world = World()
+        mark = VMobject()  # the integer mark
+        mark.points = np.zeros((4, 3), dtype=np.int8)
+        world.body(mark, shape=None, mass=1.0)
+        mark.points = np.tile(np.array([-128, 0, 0], dtype=np.int8), (4, 1))
+        self.add(world)
+        self.wait(0.25)

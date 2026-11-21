@@ -687,6 +687,8 @@ def _made_at(marker):
         ("FloorShiftedBeforeEntry", "# the floor", "0"),
         ("BallShiftedBetweenStays", "# the ball", "0.75"),
         ("FloorShiftedBetweenStays", "# the floor", "0.75"),
+        ("HeldShiftedThenBack", "# the held ball", "0.75"),
+        ("IntegerPointsMovedBeforeEntry", "# the integer mark", "0"),
     ],
 )
 def test_a_body_drawn_away_from_where_its_world_left_it_is_refused(
@@ -704,6 +706,10 @@ def test_a_body_drawn_away_from_where_its_world_left_it_is_refused(
     assert f"as its world enters the scene at {entered} s" in message
     assert "Arrange the drawing first, then declare the body" in message
     assert "between stays, leave a body where the world left it" in message
+    if "floor" in marker:
+        assert "it is fixed, so its world would simulate it apart from" in message
+    else:
+        assert "the simulation drives the stay's first placement" in message
 
 
 @pytest.mark.parametrize(
@@ -730,3 +736,16 @@ def test_a_body_moved_back_where_its_world_left_it_enters_as_if_unmoved(opened, 
     assert len(contents[0]) == 2
     assert contents[0] == contents[1]
     assert drawn[0] == pytest.approx(drawn[1], abs=1e-9)
+
+
+def test_a_body_held_then_away_is_compared_with_its_last_placement(opened):
+    """The ball's world held for a quarter second before it left: the second
+    stay begins at a later row than the one the ball was last placed at, and
+    the ball, left where it was placed, enters.
+    """
+    session = opened("HeldThenAwayAndBack")
+    bakes, (first, second) = _occurrences(session)
+    assert (first.last_tick, second.first_tick) == (30, 45)
+    left = bakes.row(first.ordinal, 30)["pose"]
+    held = bakes.row(first.ordinal, 15)["pose"]
+    assert left[0, 1] < held[0, 1] - 0.1
