@@ -35,7 +35,10 @@ for a driver that compares machines::
 The file holds the scene, each world's three digests, the committed ones,
 the engine's identity string and the build, and, to find the first
 difference between two machines, each world's declared fields, a digest of
-each of its rows, its contact events and the open world's pushes.
+each of its rows, its contact events and the open world's stored pushes.
+With ``--ready`` and ``--go`` it starts its bake behind a barrier, and it
+records the host's monotonic clock as the bake starts and ends, so that
+runs meant to overlap can be shown to.
 """
 
 from __future__ import annotations
@@ -67,6 +70,8 @@ COMPUTED = "ComputedWorlds"
 CONFIG = {"pixel_width": 96, "pixel_height": 54, "frame_rate": 15}
 #: Every stay spans the whole scene: ticks 0 to 20 s at 60 a second.
 LAST_TICK = 1200
+#: How long the script waits for its --go file, in seconds.
+GO_TIMEOUT_S = 600
 
 #: The build the trace digests were committed on (x86-64 Linux): where a
 #: bake's build is another, its trace bytes carry that build's identity and
@@ -140,6 +145,41 @@ def motion_digest(pose: np.ndarray, velocity: np.ndarray, contacts: np.ndarray) 
     return digest.hexdigest()
 
 
+def _declaration_digest(declared: bytes, rows: int) -> bytes:
+    """The digest an occurrence holds of a stay from row 0 through ``rows``."""
+    digest = hashlib.blake2b(digest_size=16)
+    for part in (declared, f"window:0:{rows}".encode()):
+        digest.update(len(part).to_bytes(8, "big"))
+        digest.update(part)
+    return digest.digest()
+
+
+def _applied(world: World, declared: bytes, steps: int) -> list[list[Any]]:
+    """An open world's stored pushes, read from the end of its declaration
+    bytes: for each step in order, ``[row, bits]``, where ``bits`` holds the
+    force then the torque of each body in declaration order, each number's
+    single-precision bits as eight hex digits (a negative zero is
+    ``80000000``).
+    """
+    bodies = len(world._declaration.bodies)
+    numbers = bodies * (world.dimension + (1 if world.dimension == 2 else 3))
+    size = 1 + 4 + 4 * numbers
+    tail = declared[len(declared) - steps * size :]
+    if len(tail) != steps * size:
+        raise AssertionError("The declaration bytes hold fewer pushes than steps.")
+    found = []
+    for step in range(steps):
+        record = tail[step * size : (step + 1) * size]
+        row = int.from_bytes(record[1:5], "little")
+        words = np.frombuffer(record[5:], dtype="<u4")
+        found.append([row, [f"{int(word):08x}" for word in words]])
+    kinds = {tail[step * size] for step in range(steps)}
+    rows = [row for row, _ in found]
+    if len(kinds) != 1 or rows != list(range(rows[0], rows[0] + steps)):
+        raise AssertionError("The declaration bytes do not end in one push per step.")
+    return found
+
+
 def _fields(value: Any, path: str = "") -> list[list[Any]]:
     """A declaration's fields, ``[path, value]`` in a fixed order: every
     number the solver is given, as stored. A body's drawing at rest is not
@@ -169,6 +209,12 @@ def _world(world: World, session: Session, scene: str) -> dict[str, Any]:
             f" {occurrence.first_tick} to {occurrence.last_tick}, not 0 to {LAST_TICK}"
         )
     content = bakes.contents[occurrence.content]
+    declared = session.module.DECLARED[_name(world)]
+    if _declaration_digest(declared, content.ticks) != occurrence.declaration:
+        raise AssertionError(
+            f"{scene}'s {_name(world)} world: the declaration bytes the scene kept"
+            " are not the ones its occurrence's digest covers"
+        )
     identity = content.identity
     pose = content.channels["pose"].values
     velocity = content.channels["velocity"].values
@@ -215,7 +261,7 @@ def _world(world: World, session: Session, scene: str) -> dict[str, Any]:
                 for row in range(content.ticks)
             ],
             "contacts": contacts.tolist(),
-            "inputs": [list(row) for row in session.module.PUSHED]
+            "inputs": _applied(world, declared, content.ticks - 1)
             if world.is_open
             else None,
         },
@@ -329,8 +375,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("scene", choices=SCENES)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--ready",
+        type=Path,
+        help="a file to make once the engine is imported, before waiting for --go",
+    )
+    parser.add_argument(
+        "--go", type=Path, help="a file whose existence starts the bake (a barrier)"
+    )
     args = parser.parse_args(argv)
+    if args.ready is not None:
+        args.ready.touch()
+    if args.go is not None:
+        waited = time.monotonic()
+        while not args.go.exists():
+            if time.monotonic() - waited > GO_TIMEOUT_S:
+                print(f"no {args.go} within {GO_TIMEOUT_S} s", file=sys.stderr)
+                return 2
+            time.sleep(0.005)
+    started = time.monotonic_ns()
     case = bake(args.scene)
+    case["window_ns"] = [started, time.monotonic_ns()]
+    case["clock"] = "monotonic"
     case["problems"] = problems(case)
     written = args.out.with_name(f".{args.out.name}.{os.getpid()}")
     written.write_text(json.dumps(case, sort_keys=True) + "\n")

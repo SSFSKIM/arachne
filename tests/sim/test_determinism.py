@@ -23,6 +23,19 @@ def test_every_world_bakes_its_committed_digests(scene):
     assert not found, determinism.report(case, found)
 
 
+def test_the_open_world_s_stored_pushes_are_read_from_its_declaration_bytes():
+    """One push per step, rows 1 to 1200, each two bodies' force and torque
+    as stored single-precision bits: a point mass's torque is a zero.
+    """
+    case = determinism.bake("ComputedWorlds")
+    (pulled,) = [w for w in case["worlds"] if w["world"] == "open"]
+    pushes = pulled["detail"]["inputs"]
+    assert [row for row, _ in pushes] == list(range(1, 1201))
+    assert all(len(bits) == 6 for _, bits in pushes)
+    assert {bits[2] for _, bits in pushes} == {"00000000"}
+    assert all(w["detail"]["inputs"] is None for w in case["worlds"] if w is not pulled)
+
+
 def _case(scene: str, **changed: dict) -> dict:
     """A baked scene as the committed digests say, on the committed build,
     with ``changed`` worlds' fields (declaration, motion, trace, build) in
@@ -96,17 +109,49 @@ def test_a_missing_world_is_a_problem():
     assert "open" in found
 
 
-def test_the_script_writes_the_scene_s_digests(tmp_path, monkeypatch):
-    """The entry point a driver runs: one bake, its JSON written whole."""
+def _made(monkeypatch):
     made = {
         "scene": "LiteralWorlds",
         "worlds": [{"world": "plane", "declaration": "a", "motion": "m", "trace": "b"}],
     }
     monkeypatch.setattr(determinism, "bake", lambda scene: dict(made))
+
+
+def test_the_script_writes_the_scene_s_digests_and_its_bake_s_window(
+    tmp_path, monkeypatch
+):
+    """The entry point a driver runs: one bake, its JSON written whole, with
+    the monotonic clock at its start and end.
+    """
+    _made(monkeypatch)
     out = tmp_path / "case.json"
     assert determinism.main(["LiteralWorlds", "--out", str(out)]) == 0
     written = json.loads(out.read_text())
     assert written["scene"] == "LiteralWorlds"
     assert written["worlds"][0]["declaration"] == "a"
     assert written["problems"]
+    start, end = written["window_ns"]
+    assert start <= end
+    assert written["clock"] == "monotonic"
     assert [p.name for p in tmp_path.iterdir()] == ["case.json"]
+
+
+def test_behind_a_barrier_the_script_says_it_is_ready_and_bakes_once_it_may_go(
+    tmp_path, monkeypatch
+):
+    _made(monkeypatch)
+    ready, go, out = tmp_path / "ready", tmp_path / "go", tmp_path / "case.json"
+    go.touch()
+    argv = ["LiteralWorlds", "--out", str(out), "--ready", str(ready), "--go", str(go)]
+    assert determinism.main(argv) == 0
+    assert ready.exists()
+    assert out.exists()
+
+
+def test_with_no_go_the_script_bakes_nothing(tmp_path, monkeypatch):
+    _made(monkeypatch)
+    monkeypatch.setattr(determinism, "GO_TIMEOUT_S", 0.05)
+    out = tmp_path / "case.json"
+    argv = ["LiteralWorlds", "--out", str(out), "--go", str(tmp_path / "go")]
+    assert determinism.main(argv) == 2
+    assert not out.exists()

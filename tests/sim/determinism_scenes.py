@@ -60,9 +60,11 @@ LITERAL: dict[str, float | tuple[float, ...]] = {
     "paddle_spin": (0.0, 0.0, 1.0),
 }
 
-#: What the open world's callback pushed, at each call in order: the
-#: (x, y) of each of its two bodies' forces, as the callback returned them.
-PUSHED: list[tuple[float, ...]] = []
+#: Each world's declaration bytes as its solver holds them when the scene
+#: ends, by world ("plane", "space", "open"): the bytes its occurrence's
+#: declaration digest covers, the open world's stored pushes at every tick
+#: among them.
+DECLARED: dict[str, bytes] = {}
 
 
 def computed() -> dict[str, float | tuple[float, ...]]:
@@ -90,6 +92,15 @@ def computed() -> dict[str, float | tuple[float, ...]]:
         "link_2_velocity": (0.0, float(np.sin(0.5236)), 0.0),
         "paddle_spin": (0.0, 0.0, math.erf(1.2)),
     }
+
+
+def keep_declarations(**worlds: World) -> None:
+    """Keep each world's declaration bytes in :data:`DECLARED`, as its
+    solver holds them now.
+    """
+    DECLARED.clear()
+    for name, world in worlds.items():
+        DECLARED[name] = bytes(world._crate_now().declaration_bytes())
 
 
 def _at(point) -> np.ndarray:
@@ -220,7 +231,6 @@ def open_world() -> World:
     origin by a callback force whose strength and swirl are computed through
     ``math`` and numpy from the state it is handed, and damped by it.
     """
-    PUSHED.clear()
     world = World()
     a = world.body(
         Square(0.2).shift(_at((1.5 * math.cos(0.7), 1.5 * float(np.sin(0.7))))),
@@ -238,7 +248,6 @@ def open_world() -> World:
 
     def swirl(state):
         pushed = {}
-        row = []
         for body in (a, b):
             x, y = (float(c) for c in state.position(body)[:2])
             vx, vy = (float(c) for c in state.velocity(body)[:2])
@@ -254,8 +263,6 @@ def open_world() -> World:
                 + 0.01 * float(np.log1p(r)),
             )
             pushed[body] = force
-            row.extend(force)
-        PUSHED.append(tuple(row))
         return pushed
 
     world.add_force(swirl)
@@ -266,8 +273,10 @@ class LiteralWorlds(ThreeDScene):
     """The 2D and the 3D world from literal numbers, 20 s."""
 
     def construct(self):
-        self.add(plane_world(LITERAL), space_world(LITERAL))
+        plane, space = plane_world(LITERAL), space_world(LITERAL)
+        self.add(plane, space)
         self.wait(DURATION)
+        keep_declarations(plane=plane, space=space)
 
 
 class ComputedWorlds(ThreeDScene):
@@ -277,5 +286,7 @@ class ComputedWorlds(ThreeDScene):
 
     def construct(self):
         values = computed()
-        self.add(plane_world(values), space_world(values), open_world())
+        plane, space, pulled = plane_world(values), space_world(values), open_world()
+        self.add(plane, space, pulled)
         self.wait(DURATION)
+        keep_declarations(plane=plane, space=space, open=pulled)
