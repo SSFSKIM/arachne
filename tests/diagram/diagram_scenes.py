@@ -69,7 +69,7 @@ def zoomed_diagram(inside_size: float, colliding: bool) -> tuple[Diagram, Block]
     ``inside_size`` points, and with ``colliding`` a third label set on the
     second's.
     """
-    inside = Diagram(cell=(2.6, 1.6))
+    inside = Diagram(cell=(3.2, 1.6))
     first = inside.place(Node("in", font_size=inside_size), 0, 0)
     second = inside.place(Node("out", font_size=inside_size), 1, 0)
     inside.connect(first, second, label="signal", font_size=inside_size)
