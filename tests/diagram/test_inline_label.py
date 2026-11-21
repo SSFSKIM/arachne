@@ -49,14 +49,6 @@ def opened():
     admission.DEMOTED.clear()
 
 
-def _hidden(session, **kwargs) -> list:
-    return [
-        f
-        for f in lint(session, rules=(diagram_clear,), **kwargs).findings
-        if f.message.endswith(INLINE_FIX)
-    ]
-
-
 def test_a_label_hiding_its_own_line_is_reported_with_its_fix(opened):
     findings = lint(opened("LineHiddenByItsLabel"), rules=(diagram_clear,)).findings
     (finding,) = findings
