@@ -21,7 +21,14 @@ or before it), the bake's row and its contact events, and nothing else:
   before the instant.
 
 Each is exact as baked, the contact instants to within a tick (their
-tolerance, 1/60 s). Outside the stay its occurrence covers, every one is
+tolerance, 1/60 s). A body left on screen after its world left reads the
+row its placement shows, the stay's last, at every instant after it while
+its own drawing stays as the stay left it, whichever route answers the
+instant: a held wait's one capture or a ticked play's own. That holds for
+a body drawn by its own points alone; a body with submobjects (a group)
+is drawn by them too, which its capture does not hold, so past its stay
+it is unreadable, moved or not. Outside its stay otherwise (moved,
+redrawn, or before the stay) every one is
 unreadable, with the reason, and the lint reports
 ``sim.quantity_unreadable``. A contact begins where two shapes come within
 the world's allowed linear error, touching or overlapping
@@ -30,9 +37,10 @@ the world's allowed linear error, touching or overlapping
 
 from __future__ import annotations
 
-__all__ = ["SimBody", "bind"]
+__all__ = ["SimBody", "bind", "body_quantities", "drawn_key"]
 
-from collections.abc import Iterable, Mapping
+import hashlib
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -45,6 +53,7 @@ from arachne.timeline.clock import TICK_RATE
 
 if TYPE_CHECKING:
     from arachne.mobject.mobject import Mobject
+    from arachne.timeline.bake import Bakes
 
 #: Each quantity a body declares, and its unit.
 UNITS: Mapping[str, str] = {
@@ -62,67 +71,132 @@ CONTACT_TOLERANCE = 1 / TICK_RATE
 class SimBody:
     """A simulated body's source: the occurrence ``ordinal`` of its world's
     stay in the record's bakes, and its number ``body`` among the world's
-    bodies.
+    bodies; once the stay has ended, ``drawn``, the key of the body's own
+    drawing as the stay left it (:func:`drawn_key`).
     """
 
     ordinal: int
     body: int
+    drawn: bytes | None = None
 
 
-def bind(mobject: Mobject, ordinal: int, body: int) -> None:
-    """Make ``mobject``'s source the body ``body`` of the stay ``ordinal``,
-    in place of the one an earlier stay set; its other sources stay.
+def bind(mobject: Mobject, ordinal: int, body: int, drawn: bytes | None = None) -> None:
+    """Make ``mobject``'s source the body ``body`` of the stay ``ordinal``
+    (its drawing as the stay left it ``drawn``), in place of the one an
+    earlier stay set; its other sources stay.
     """
     held = mobject.__dict__.get(SOURCES, ())
     kept = tuple(each for each in held if type(each) is not SimBody)
     setattr(mobject, SOURCES, kept)
-    quantities.attach(mobject, SimBody(ordinal, body))
+    quantities.attach(mobject, SimBody(ordinal, body, drawn))
+
+
+def drawn_key(own: Mapping[str, Any]) -> bytes | None:
+    """The key of what a mobject's own attributes ``own`` draw, when they
+    draw all of it: its placement's, or its points'; ``None`` for one with
+    submobjects (its drawing is also theirs, which its capture does not
+    hold) or with no points of its own.
+    """
+    if own.get("submobjects"):
+        return None
+    placement = own.get("_placement")
+    points = own.get("_points")
+    if placement is not None and (points is None or points is placement.materialized):
+        return bytes(placement.key)
+    if points is None or not len(points):
+        return None
+    array = np.ascontiguousarray(points)
+    return hashlib.blake2b(array.tobytes(), digest_size=16).digest()
 
 
 @quantities.source(SimBody)
 def _sim_body(found: SimBody, held: Mapping[str, Any], at: At) -> Iterable[Quantity]:
-    row = None if at.bakes is None else at.bakes.row(found.ordinal, at.tick)
+    return body_quantities(at.bakes, found.ordinal, found.body, _tick(found, held, at))
+
+
+def _tick(found: SimBody, held: Mapping[str, Any], at: At) -> int:
+    """The tick a body's capture shows: the instant's; past the end of its
+    stay, while its drawing is still as the stay left it, the stay's last.
+    """
+    if found.drawn is None or at.bakes is None:
+        return at.tick
+    occurrence = at.bakes.occurrence(found.ordinal)
+    if occurrence is None or at.tick <= occurrence.last_tick:
+        return at.tick
+    if drawn_key(held) != found.drawn:
+        # Moved, redrawn, or drawn by its submobjects: not the stay's row.
+        return at.tick
+    return occurrence.last_tick
+
+
+def body_quantities(
+    bakes: Bakes | None,
+    ordinal: int,
+    body: int,
+    tick: int,
+    names: Collection[str] | None = None,
+) -> tuple[Quantity, ...]:
+    """The quantities of the body ``body`` of the stay ``ordinal`` at
+    ``tick``, read from ``bakes``: what the body's source answers, and what a
+    readout of it shows (:mod:`.readout`). With ``names``, only those, in
+    the source's order: the contact events are read only for a contact's
+    quantity.
+    """
+    wanted = tuple(name for name in UNITS if names is None or name in names)
+    row = None if bakes is None else bakes.row(ordinal, tick)
     if row is None:
-        why = f"no bake holds tick {at.tick} of this body's stay"
+        why = f"no bake holds tick {tick} of this body's stay"
         return tuple(
-            Quantity(name, None, unit, unreadable=why) for name, unit in UNITS.items()
+            Quantity(name, None, UNITS[name], unreadable=why) for name in wanted
         )
-    pose, velocity = row["pose"][found.body], row["velocity"][found.body]
+    assert bakes is not None
+    found: dict[str, Quantity] = {}
+    pose, velocity = row["pose"][body], row["velocity"][body]
     planar = len(pose) == 3
-    position = (*pose[:2], 0.0) if planar else tuple(pose[:3])
-    linear = (*velocity[:2], 0.0) if planar else tuple(velocity[:3])
-    angular: float | tuple[float, ...] = (
-        float(velocity[2]) if planar else _floats(velocity[3:6])
-    )
-    first_tick = row.tick - row.index
-    began = _began(at, found, row.index)
-    times = tuple(
-        float(Fraction(first_tick + int(index), TICK_RATE)) for index in began
-    )
-    return (
-        Quantity("sim.position", _floats(position), UNITS["sim.position"]),
-        Quantity("sim.velocity", _floats(linear), UNITS["sim.velocity"]),
-        Quantity("sim.angular_velocity", angular, UNITS["sim.angular_velocity"]),
-        Quantity(
+    if "sim.position" in wanted:
+        position = (*pose[:2], 0.0) if planar else tuple(pose[:3])
+        found["sim.position"] = Quantity(
+            "sim.position", _floats(position), UNITS["sim.position"]
+        )
+    if "sim.velocity" in wanted:
+        linear = (*velocity[:2], 0.0) if planar else tuple(velocity[:3])
+        found["sim.velocity"] = Quantity(
+            "sim.velocity", _floats(linear), UNITS["sim.velocity"]
+        )
+    if "sim.angular_velocity" in wanted:
+        angular: float | tuple[float, ...] = (
+            float(velocity[2]) if planar else _floats(velocity[3:6])
+        )
+        found["sim.angular_velocity"] = Quantity(
+            "sim.angular_velocity", angular, UNITS["sim.angular_velocity"]
+        )
+    if "sim.contact_times" in wanted or "sim.contact_count" in wanted:
+        first_tick = row.tick - row.index
+        began = _began(bakes, ordinal, body, row.index)
+        times = tuple(
+            float(Fraction(first_tick + int(index), TICK_RATE)) for index in began
+        )
+        found["sim.contact_times"] = Quantity(
             "sim.contact_times",
             times[-MAX_VECTOR:],
             UNITS["sim.contact_times"],
             tolerance=CONTACT_TOLERANCE,
-        ),
-        Quantity("sim.contact_count", len(times), UNITS["sim.contact_count"]),
-    )
+        )
+        found["sim.contact_count"] = Quantity(
+            "sim.contact_count", len(times), UNITS["sim.contact_count"]
+        )
+    return tuple(found[name] for name in wanted)
 
 
-def _began(at: At, found: SimBody, index: int) -> np.ndarray:
-    """The rows of the stay, at or before ``index``, at which a contact of
-    the body began, one per contact, in order.
+def _began(bakes: Bakes, ordinal: int, body: int, index: int) -> np.ndarray:
+    """The rows of the stay ``ordinal``, at or before ``index``, at which a
+    contact of the body ``body`` began, one per contact, in order.
     """
-    assert at.bakes is not None
-    table = at.bakes.events(found.ordinal, "contact")
+    table = bakes.events(ordinal, "contact")
     if table is None or not len(table):
         return np.zeros(0, dtype=np.uint32)
     rows, a, b, kind = table.T
-    mine = (kind == 1) & (rows <= index) & ((a == found.body) | (b == found.body))
+    mine = (kind == 1) & (rows <= index) & ((a == body) | (b == body))
     return np.asarray(rows[mine])
 
 

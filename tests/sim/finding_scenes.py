@@ -18,6 +18,7 @@ from arachne import (
     Dot,
     Rectangle,
     Scene,
+    VGroup,
     World,
 )
 
@@ -132,6 +133,176 @@ class HeldAfterItsWorld(Scene):
         self.remove(world)
         self.add(dot)
         self.wait(0.5)
+
+
+class BackAfterItsWorld(Scene):
+    """A falling point's world removed at 1/2 s and the point's mobject added
+    back alone, unmoving, through a held wait.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2, radius=0.15)
+        world.body(dot, shape=None, mass=1.0, velocity=RIGHT * 3)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
+class BackAfterItsWorldTicked(BackAfterItsWorld):
+    """As :class:`BackAfterItsWorld`, with a scene updater that reads ``dt``
+    throughout, so the wait after is ticked and captured at each frame.
+    """
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        super().construct()
+
+
+class GroupBackAfterItsWorld(Scene):
+    """A falling body drawn by a group of two dots, its world removed at 1/2
+    s and the group added back; then, with ``moves``, one dot of it moved by
+    a play, else a wait over a scene updater that reads ``dt``.
+    """
+
+    moves = True
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        pair = VGroup(Dot(UP * 2 + LEFT * 0.3), Dot(UP * 2 + RIGHT * 0.3))
+        world.body(pair, shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(pair)
+        if self.moves:
+            self.play(pair[0].animate.shift(LEFT), run_time=0.5)
+        else:
+            self.wait(0.5)
+
+
+class GroupBackAfterItsWorldUnmoved(GroupBackAfterItsWorld):
+    """As :class:`GroupBackAfterItsWorld`, the group left as it was."""
+
+    moves = False
+
+
+class HeldThenBack(Scene):
+    """A falling point's world held by hand (its updating suspended) until it
+    is removed at 1/2 s, the point drawn as declared, then added back alone
+    over a wait a scene updater reading ``dt`` ticks.
+    """
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2, radius=0.15)
+        world.body(dot, shape=None, mass=1.0, velocity=RIGHT * 3)
+        self.add(world)
+        world.suspend_updating()
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
+class DotWithAChildBackAfterItsWorld(GroupBackAfterItsWorld):
+    """As :class:`GroupBackAfterItsWorldUnmoved`, the body a dot with a
+    smaller dot of its own: drawn by its points and its child's.
+    """
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2)
+        dot.add(Dot(UP * 2 + RIGHT * 0.3, radius=0.05))
+        world.body(dot, shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
+class ShiftedThenLeft(Scene):
+    """A falling point's mobject shifted by the scene's code just before its
+    world is removed at 1/2 s, with no world update between, then left on
+    screen over a wait a scene updater reading ``dt`` ticks.
+    """
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2, radius=0.15)
+        world.body(dot, shape=None, mass=1.0, velocity=RIGHT * 3)
+        self.add(world)
+        self.wait(0.5)
+        dot.shift(RIGHT)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
+class FixedBackAfterItsWorld(Scene):
+    """A fixed dot's world removed at 1/2 s and the dot left on screen over
+    a wait a scene updater reading ``dt`` ticks; with ``shifted``, the dot
+    shifted by the scene's code after it was declared and before its world
+    entered, so it is drawn away from its baked pose throughout.
+    """
+
+    shifted = False
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2, radius=0.15)
+        world.body(dot, shape=None, fixed=True)
+        if self.shifted:
+            dot.shift(RIGHT)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
+class FixedShiftedBackAfterItsWorld(FixedBackAfterItsWorld):
+    """As :class:`FixedBackAfterItsWorld`, the dot shifted."""
+
+    shifted = True
 
 
 class ShownAfterItsWorld(Scene):
