@@ -1133,6 +1133,43 @@ mod tests {
     }
 
     #[test]
+    fn a_depth_beyond_the_rounding_s_reach_is_not_certified() {
+        // Two coincident balls of radius 0.004 a million units out, 0.008 deep: single
+        // precision there cannot resolve it, and the rounding covers no such coordinates.
+        let ball = Ball::new(0.004);
+        let far = along_x(1.0e6);
+        let sweep = Sweep {
+            motions: (still(&far), still(&far)),
+            shapes: (&ball, &ball),
+            rate: 1.0e-3,
+            allowance: 0.005,
+        };
+        let least = sweep.least();
+        assert!(least.is_none_or(|least| least <= -0.008), "{least:?}");
+    }
+
+    #[test]
+    fn a_carried_axis_does_not_certify_an_instant_its_queries_cannot() {
+        // Exactly tangent balls: the contact query answers none and the closest points
+        // intersect, so the instant offers no axis, though the carried one would certify.
+        let ball = Ball::new(0.1);
+        let sweep = Sweep {
+            motions: (still(&[0.0; DIM]), still(&along_x(0.2))),
+            shapes: (&ball, &ball),
+            rate: 1.0e-3,
+            allowance: 0.005,
+        };
+        let x = vector(&along_x(1.0));
+        let (origin, tangent) = (
+            Pose::from_translation(vector(&[0.0; DIM])),
+            Pose::from_translation(vector(&along_x(0.2))),
+        );
+        assert!(separation(&origin, &ball, &tangent, &ball, x).is_some());
+        assert_eq!(sweep.bound(0.0, None), None);
+        assert_eq!(sweep.bound(0.0, Some(x)), None);
+    }
+
+    #[test]
     fn the_least_bound_is_certified_or_none() {
         let ball = Ball::new(0.1);
         let sweep = |x: f32, travel: f32| Sweep {
