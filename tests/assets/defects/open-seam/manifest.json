@@ -42,7 +42,7 @@
     {"name": "latch", "part": "frame", "attach": "interior", "at": [240, 150]}
   ],
   "checks": {
-    "tool": "arachne.assets 1",
+    "tool": "arachne.assets 2",
     "digest": "sha256:fc06b150a288817c0157cea6226064970f79d79f1903a10266c6da7c2a603711",
     "results": [
       {"name": "hole", "pass": false},

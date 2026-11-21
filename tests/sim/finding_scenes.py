@@ -305,6 +305,87 @@ class FixedShiftedBackAfterItsWorld(FixedBackAfterItsWorld):
     shifted = True
 
 
+class FixedShiftedAndBackAfterItsWorld(FixedBackAfterItsWorld):
+    """As :class:`FixedBackAfterItsWorld`, the dot shifted right and back
+    before its world entered: drawn where it was declared, by other points.
+    """
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2, radius=0.15)
+        world.body(dot, shape=None, fixed=True)
+        dot.shift(RIGHT)
+        dot.shift(LEFT)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
+class CopiedFixedBackAfterItsWorld(Scene):
+    """As :class:`FixedBackAfterItsWorld`, the world in the scene a copy of
+    the one declared: its fixed dot is the copy's.
+    """
+
+    def construct(self):
+        self.elapsed = 0.0
+
+        def count(dt):
+            self.elapsed += dt
+
+        self.add_updater(count)
+        declared = World(gravity=DOWN * 9.8)
+        declared.body(Dot(UP * 2, radius=0.15), shape=None, fixed=True)
+        world = declared.copy()
+        (dot,) = world.submobjects
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        self.add(dot)
+        self.wait(0.5)
+
+
+class ShiftedAfterItsWorld(Scene):
+    """A falling point's world removed at 1/2 s, the point's mobject then
+    shifted a unit right by the scene's code and added back alone, over a
+    held wait whose one capture is of 1/2 s: tick 30, the stay's last.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2, radius=0.15)
+        world.body(dot, shape=None, mass=1.0, velocity=RIGHT * 3)
+        self.add(world)
+        self.wait(0.5)
+        self.remove(world)
+        dot.shift(RIGHT)
+        self.add(dot)
+        self.wait(0.5)
+
+
+class CopiedWhileFalling(Scene):
+    """A falling point copied a quarter second in, the copy left in the
+    scene where the point was then, a marker that does not move.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        dot = Dot(UP * 2)
+        world.body(dot, shape=None, mass=1.0)
+        self.add(world)
+        self.wait(0.25)
+        marker = dot.copy()  # the marker
+        self.add(marker)
+        self.wait(0.25)
+
+
 class ShownAfterItsWorld(Scene):
     """A falling point's mobject shown on its own after its world left the
     scene, and moved there: no bake holds its quantities then.

@@ -12,9 +12,12 @@ from arachne import (
     UL,
     UP,
     UR,
+    Attraction,
     Circle,
     Dot,
     FadeIn,
+    Group,
+    Indicate,
     Readout,
     Rectangle,
     Scene,
@@ -232,3 +235,112 @@ class SpunAndDropped(Scene):
             world.readout(ball, "contact_count", format="{:.0f}").to_corner(UL),
         )
         self.wait(0.75)
+
+
+class HeldWhileRead(Scene):
+    """A point read by a readout already in the scene as its world enters by
+    a fade, which holds the world's drawing: the point falls in a closed
+    world; with ``open``, a callback pushes it along x. With ``grouped``,
+    the fade is of a group holding the world and a square.
+    """
+
+    open = False
+    grouped = False
+
+    def construct(self):
+        world = World(gravity=None if self.open else DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        if self.open:
+
+            def push(state):
+                return {ball: RIGHT * 3}
+
+            world.add_force(push)
+        part = "x" if self.open else "y"
+        reading = world.readout(ball, "position", part=part, format="{:.6f}")
+        self.add(reading.to_corner(UL))
+        shown = (
+            Group(world, Square(side_length=0.5).to_corner(DR))
+            if self.grouped
+            else world
+        )
+        self.play(FadeIn(shown), run_time=0.5)
+        self.wait(0.25)
+
+
+class HeldInAGroupWhileRead(HeldWhileRead):
+    grouped = True
+
+
+class OpenHeldWhileRead(HeldWhileRead):
+    open = True
+
+
+class OpenHeldInAGroupWhileRead(HeldWhileRead):
+    open = True
+    grouped = True
+
+
+class CollapsingRead(Scene):
+    """Two point masses declared at one place, attracting each other by the
+    inverse square, and a readout of one's speed: the first step divides by
+    a zero distance, and every number after it is not a number.
+    """
+
+    def construct(self):
+        world = World()
+        a = world.body(Dot(), shape=None, mass=1.0)
+        b = world.body(Dot(), shape=None, mass=1.0)
+        world.add_force(Attraction(a, b, strength=0.01))
+        self.add(world, world.readout(a, "velocity").to_corner(UL))
+        self.wait(0.5)
+
+
+class FadedInWithItsReadout(Scene):
+    """A world at rest faded in, its readout added with it as the fade
+    begins: nothing moves, and the fade holds the world's drawing.
+    """
+
+    def construct(self):
+        world = World()
+        ball = world.body(Dot(UP), shape=None, mass=1.0)
+        reading = world.readout(ball, "position", part="y")
+        self.add(reading.to_corner(UL))
+        self.play(FadeIn(world), run_time=0.5)
+        self.wait(0.25)
+
+
+class IndicatedOverAFall(Scene):
+    """A readout added with its falling point's world, then held by an
+    animation of its own (Indicate) while the point falls.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        reading = world.readout(ball, "velocity", part="y")
+        self.add(world, reading.to_corner(UL))
+        self.wait(0.2)
+        self.play(Indicate(reading), run_time=0.5)
+        self.wait(0.2)
+
+
+class HeldAwayAndBackRead(Scene):
+    """A falling point and its readout, its world held by hand a quarter
+    second in, removed while held at 1/2 s and added again, still held, at
+    3/4 s: the point is drawn at the row of the first stay the world last
+    placed it at, and the readout keeps that row's value.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        reading = world.readout(ball, "velocity", part="y", format="{:.3f}")
+        self.add(world, reading.to_corner(UL))
+        self.wait(0.25)
+        world.suspend_updating()
+        self.wait(0.25)
+        self.remove(world)
+        self.wait(0.25)
+        self.add(world)
+        self.wait(0.25)

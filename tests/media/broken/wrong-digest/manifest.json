@@ -21,7 +21,7 @@
     ]
   },
   "checks": {
-    "tool": "arachne.assets 1",
+    "tool": "arachne.assets 2",
     "digest": "sha256:e9156ceaec024314c492d57ad1f95a3a6f662c29b8c534c9697128318c84a388",
     "results": [
       {"name": "frames_exact", "pass": false},

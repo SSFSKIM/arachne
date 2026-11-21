@@ -188,7 +188,9 @@ class Rig(VGroup):
 
     #: What a content key leaves out: the frame of the camera the rig is
     #: viewed through, a handle on another object, not content (the view
-    #: itself, its home and distance, is keyed).
+    #: itself, its home and distance, is keyed); and the asset and its model,
+    #: which ``_asset_digest`` stands for (the asset's directory is where it
+    #: was read, not what it is).
     _content_key_omits: ClassVar[frozenset[str]] = frozenset(
         {"_view_frame", "asset", "model"}
     )
@@ -205,9 +207,11 @@ class Rig(VGroup):
         self.asset = asset
         self.model = model
         # The asset as content keys know it, by its digest, as a raster
-        # member's is: they read neither ``asset`` nor ``model``, so two rigs
-        # whose assets differ only where their points and values show
-        # nothing (a drive's unit) key apart.
+        # member's is: ``asset`` and ``model`` are omitted by declaration
+        # (``_content_key_omits``), the digest standing for both, so two rigs
+        # whose assets differ only where their points and values show nothing
+        # (a drive's unit) key apart, and one asset read from two directories
+        # keys alike.
         self._asset_digest: str = asset.digest
         manifest = asset.manifest
         self.carrier = VGroup(

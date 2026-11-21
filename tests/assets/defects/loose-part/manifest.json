@@ -50,7 +50,7 @@
     {"name": "base", "part": "body", "attach": "interior", "at": [150, 200]}
   ],
   "checks": {
-    "tool": "arachne.assets 1",
+    "tool": "arachne.assets 2",
     "digest": "sha256:91761395e674474941f5322e3208f00b016849af3d91a2536fe1a481c88fb749",
     "results": [
       {"name": "hole", "pass": true},

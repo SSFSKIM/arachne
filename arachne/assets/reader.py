@@ -88,8 +88,13 @@ from .manifest import (
 from .svg_parts import SvgFile, Unreadable, read_svg, structure
 
 #: The admission tool's version this engine supports: an asset loads only
-#: with the passing checks of this version recorded at its digest.
-TOOL = "arachne.assets 1"
+#: with the passing checks of this version recorded at its digest. It moves
+#: when a check comes to measure otherwise, so a record of the old checker
+#: admits nothing: 2 draws the masks on a grid of painted geometry alone.
+TOOL = "arachne.assets 2"
+#: The versions before :data:`TOOL`, whose records are refused with the
+#: command that admits the asset again.
+_OLDER = ("arachne.assets 1",)
 #: The checks of :data:`TOOL` an asset of the kind ``parts`` holds, in the
 #: order its record lists them.
 CHECKS = ("hole", "detached_part", "anchor_off_part")
@@ -334,6 +339,17 @@ def _admitted(asset: Asset, label: str) -> None:
             "unchecked",
         )
     tool = checks.get("tool")
+    if tool in _OLDER:
+        _unadmitted(
+            label,
+            f"the asset {label} was admitted by {tool!r}, an older checker than"
+            f" {TOOL!r}, the admission this engine supports, whose checks measure"
+            " otherwise: admit it again with python -m arachne.assets admit"
+            f" {asset.directory} --write",
+            "tool",
+            expected=TOOL,
+            found=tool,
+        )
     if tool != TOOL:
         _unadmitted(
             label,

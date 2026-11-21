@@ -39,8 +39,8 @@ def opened():
     sessions: list[Session] = []
     admission.DEMOTED.clear()
 
-    def open_scene(name: str, module=finding_scenes) -> Session:
-        session = Session.open(Path(module.__file__), name, config=SMALL)
+    def open_scene(name: str, module=finding_scenes, grid="render") -> Session:
+        session = Session.open(Path(module.__file__), name, grid=grid, config=SMALL)
         sessions.append(session)
         return session
 
@@ -289,6 +289,72 @@ def test_a_fixed_body_left_as_declared_reads_its_pose_past_its_stay(opened):
     assert read["sim.position"].value == pytest.approx((0.0, 2.0, 0.0), abs=1e-6)
 
 
+@pytest.mark.parametrize(
+    "scene", ["FixedShiftedAndBackAfterItsWorld", "CopiedFixedBackAfterItsWorld"]
+)
+def test_a_fixed_body_drawn_where_it_was_declared_reads_its_pose_past_its_stay(
+    opened, scene
+):
+    """Shifted and shifted back before its world entered, or a body of a
+    copy of the world declared, the fixed dot enters drawn by other points
+    than the ones it was declared with, where it was declared: past its
+    stay it reads its pose.
+    """
+    session = opened(scene)
+    (body,) = _bodies(session)
+    state = session.state_at(Fraction(3, 4))
+    assert math.floor(state.as_of * 60) > 30
+    read = _read(state, body)
+    assert all(q.unreadable is None for q in read.values()), read
+    assert read["sim.position"].value == pytest.approx((0.0, 2.0, 0.0), abs=1e-6)
+    assert _simulation(session)[1] == []
+
+
+def test_a_body_shifted_after_its_world_left_is_unreadable_at_the_tick_it_left(
+    opened,
+):
+    """Shifted by the scene's code after its world left at 1/2 s, the point
+    is drawn a unit right of the stay's last row (tick 30). The wait after
+    is held as one capture of 1/2 s, whose tick is that row's: it reads
+    nothing there, as it reads nothing at a later tick.
+    """
+    session = opened("ShiftedAfterItsWorld")
+    (body,) = _bodies(session)
+    bakes = session.record.bakes
+    (occurrence,) = bakes.occurrences
+    assert occurrence.last_tick == 30
+    x, y = bakes.contents[occurrence.content].channels["pose"].values[30, 0, :2]
+    state = session.state_at(Fraction(3, 4))
+    assert state.as_of == Fraction(1, 2)
+    x0, y0, x1, y1 = state.node(body).scene_box
+    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx(
+        (float(x) + 1, float(y)), abs=1e-6
+    )
+    quantities = state.quantities[body]
+    assert len(quantities) == 5
+    for quantity in quantities:
+        assert quantity.value is None
+        assert quantity.unreadable == (
+            "its drawing is not the one its world's stay left at tick 30"
+        )
+    _, found = _simulation(session)
+    assert {f.code for f in found} == {"sim.quantity_unreadable"}
+    assert all(f.objects[0].id == body for f in found)
+
+
+def test_a_body_past_its_stay_reads_alike_in_a_forward_lint_and_the_record(opened):
+    """A record kept on every instant is linted through a forward run, which
+    reads the point past its stay while the stay is not yet sealed: it reads
+    the stay's last row there as from the finished record, and neither lint
+    finds anything.
+    """
+    recorded = opened("BackAfterItsWorldTicked")
+    forward = opened("BackAfterItsWorldTicked", grid=None)
+    found = _simulation(forward)[1]
+    assert [(f.code, f.message) for f in found] == []
+    assert _simulation(recorded)[1] == []
+
+
 def test_a_fixed_body_shifted_after_its_declaration_is_refused_as_its_world_enters(
     opened,
 ):
@@ -323,6 +389,29 @@ def test_a_body_shown_after_its_world_left_is_unreadable(opened):
         for q in twin.state_at(Fraction(3, 4)).quantities[_bodies(twin)[0]]
     )
     assert _simulation(twin)[1] == []
+
+
+def test_a_copy_of_a_body_s_mobject_declares_none_of_its_quantities(opened):
+    """A marker copied from a falling point is another mobject, not the body:
+    it declares no ``sim.`` quantity, and the point declares its own.
+    """
+    session = opened("CopiedWhileFalling")
+    (body,) = _bodies(session)
+    t = Fraction(7, 15)
+    state = session.state_at(t)
+    (marker,) = [
+        node.id for node in state.nodes if node.type == "Dot" and node.id != body
+    ]
+    assert not [
+        q.name for q in state.quantities.get(marker, ()) if q.name.startswith("sim.")
+    ]
+    bakes = session.record.bakes
+    (occurrence,) = bakes.occurrences
+    tick = math.floor(t * 60)
+    x, y = bakes.contents[occurrence.content].channels["pose"].values[tick, 0, :2]
+    read = _read(state, body)
+    assert read["sim.position"].value == (float(x), float(y), 0.0)
+    assert _simulation(session)[1] == []
 
 
 # The findings

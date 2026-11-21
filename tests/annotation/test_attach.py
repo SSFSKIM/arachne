@@ -29,6 +29,7 @@ from arachne import (
     Rig,
     Square,
     Text,
+    VectorizedPoint,
     anchor,
 )
 from arachne.assets import Anchor
@@ -169,15 +170,26 @@ def test_annotation_classes_are_the_engine_s():
     assert engine_class(Annotation)
 
 
+def _draws_nothing(annotation) -> bool:
+    """Whether no member of ``annotation`` but a point drawing nothing holds
+    points.
+    """
+    return not any(
+        len(m.points)
+        for m in annotation.get_family()
+        if not isinstance(m, VectorizedPoint)
+    )
+
+
 @pytest.mark.parametrize("follow", [True, False])
 def test_an_annotation_on_a_drawing_hidden_at_first_appears_with_it(follow):
     figure = Rig("fixture:figure")
     (pointing,) = [d for d in figure.part("hand").submobjects if d.name == "point"]
     callout = Callout("points", at=anchor(pointing, at=UR), offset=UR, follow=follow)
     # Hidden while what it names is.
-    assert not any(len(m.points) for m in callout.get_family())
+    assert _draws_nothing(callout)
     _update(callout)
-    assert not any(len(m.points) for m in callout.get_family())
+    assert _draws_nothing(callout)
     figure.show(hand="point")
     _update(callout)
     # Shown with it, as if made while it showed.
@@ -205,10 +217,75 @@ def test_a_readout_changed_while_its_target_is_hidden_appears_with_its_value():
     reading = Readout(4, "{:.0f}", at=anchor(pointing, at=UR), offset=UR)
     reading.set_value(12)
     _update(reading)
-    assert not any(len(m.points) for m in reading.get_family())
+    assert _draws_nothing(reading)
     figure.show(hand="point")
     _update(reading)
     made = Readout(12, "{:.0f}", at=anchor(pointing, at=UR), offset=UR)
     assert reading.label.original_text == "12"
     for got, want in zip(reading.get_family(), made.get_family(), strict=True):
         np.testing.assert_allclose(got.points, want.points, atol=1e-9)
+
+
+def _pointing_hand():
+    """The figure, its hand's ``point`` drawing hidden, and that drawing."""
+    figure = Rig("fixture:figure")
+    (pointing,) = [d for d in figure.part("hand").submobjects if d.name == "point"]
+    return figure, pointing
+
+
+def _shape(mobject) -> list[np.ndarray]:
+    """Each member's points of ``mobject``'s family, about its centre."""
+    centre = mobject.get_center()
+    return [np.asarray(m.points) - centre for m in mobject.get_family()]
+
+
+def _assert_same_shape(got, want) -> None:
+    got, want = _shape(got), _shape(want)
+    assert [len(p) for p in got] == [len(p) for p in want]
+    for a, b in zip(got, want, strict=True):
+        np.testing.assert_allclose(a, b, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda at: BarGauge(0.6, at=at),
+        lambda at: ColumnGauge(0.6, at=at),
+        lambda at: DialGauge(0.6, at=at),
+    ],
+)
+def test_a_gauge_on_a_target_hidden_at_first_shows_its_value_with_it(make):
+    figure, pointing = _pointing_hand()
+    gauge = make(anchor(pointing, at=UR))
+    gauge.set_value(0.3)
+    _update(gauge)
+    figure.show(hand="point")
+    _update(gauge)
+    # Drawn at its value, as one made while the target showed.
+    shown, also = _pointing_hand()
+    shown.show(hand="point")
+    made = make(anchor(also, at=UR)).set_value(0.3)
+    _assert_same_shape(gauge.body, made.body)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda at: Callout("points", at=at, offset=UR),
+        lambda at: Readout(4, "{:.0f} mV", at=at, offset=UR),
+    ],
+)
+def test_an_annotation_turned_and_scaled_while_hidden_appears_so(make):
+    figure, pointing = _pointing_hand()
+    hidden = make(anchor(pointing, at=UR)).scale(2).rotate(np.pi / 6)
+    figure.show(hand="point")
+    _update(hidden)
+    # At the size and angle given it while it waited, as one so changed
+    # while its target showed.
+    shown, also = _pointing_hand()
+    shown.show(hand="point")
+    made = make(anchor(also, at=UR)).scale(2).rotate(np.pi / 6)
+    _assert_same_shape(hidden.body, made.body)
+    np.testing.assert_allclose(
+        hidden.points_at(), pointing.get_critical_point(UR), atol=1e-9
+    )
