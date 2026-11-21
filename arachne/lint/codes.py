@@ -97,7 +97,8 @@ _TABLE = (
         _CLEARANCE,
         "a text overlaps another text or a shape",
         "Move one of the two apart, or place one against the other with a gap.",
-        ("overlap", "clock_margin"),
+        # A diagram label on its own line: the line shown each side of it.
+        ("overlap", "before", "after", "before_screen", "after_screen", "clock_margin"),
     ),
     Code(
         "gap.text",
