@@ -44,7 +44,6 @@ from arachne.mobject.geometry.arc import Dot
 from arachne.mobject.marks._paths import ArcLength, as_point, direction, head, line
 from arachne.mobject.marks._running import running_scene
 from arachne.mobject.marks._style import (
-    Opacities,
     apply_style,
     opacities_of,
     scaled,
@@ -843,11 +842,9 @@ class ZoomInto(Animation):
                 )
             self._fade_in = _window(self._legible_from(inside))
         #: Each piece the frame's edge cuts, or a connector or label whose
-        #: ends it cuts: its family, how each member shows now, and the
-        #: share of the zoom it fades out over.
-        self._fading: list[
-            tuple[list[Mobject], list[Opacities], tuple[float, float]]
-        ] = []
+        #: ends it cuts: how its family shows now, and the share of the zoom
+        #: it fades out over.
+        self._fading: list[_Faded] = []
         pieces = _pieces(self._scene_mobjects, block, frame)
         cuts = {id(piece): self._cut_at(piece) for piece in pieces}
         joins = _joins(self._scene_mobjects)
@@ -860,10 +857,7 @@ class ZoomInto(Animation):
             cut = min((c for c in held if c is not None), default=None)
             if cut is None:
                 continue
-            family = list(piece.get_family())
-            self._fading.append(
-                (family, [opacities_of(m) for m in family], (max(0.0, cut - FADE), cut))
-            )
+            self._fading.append(_Faded(piece, (max(0.0, cut - FADE), cut)))
         super().begin()
 
     def _height(self, alpha: float) -> float:
@@ -952,10 +946,53 @@ class ZoomInto(Animation):
                 inside.get_family(), self.block.inside_shown, strict=True
             ):
                 set_opacities(member, scaled(shown, shown_share))
-        for family, faded, window in self._fading:
-            keep = 1.0 - _ramp(share, window)
-            for member, opacities in zip(family, faded, strict=True):
-                set_opacities(member, scaled(opacities, keep))
+        for faded in self._fading:
+            faded.show(1.0 - _ramp(share, faded.window))
+
+
+class _Faded:
+    """A piece a zoom fades, ``window`` the share of the zoom it fades out
+    over, and how each member of its family showed when the zoom began.
+
+    It is shown for its family as it is then: a member put in since (the
+    glyphs a readout's new value replaced its own with) shows as the member
+    it stands in place of, its parent's child at its place when the zoom
+    began, else that parent's last child then, else the parent; a member
+    since taken out, as it showed.
+    """
+
+    def __init__(self, piece: Mobject, window: tuple[float, float]) -> None:
+        self.piece = piece
+        self.window = window
+        # Held, so that no member's id is taken by a later mobject.
+        self._family = list(piece.get_family())
+        self._shown = {id(m): opacities_of(m) for m in self._family}
+        self._children = {
+            id(m): [id(child) for child in m.submobjects] for m in self._family
+        }
+
+    def show(self, keep: float) -> None:
+        """Show the piece at ``keep`` of how it showed."""
+        done: set[int] = set()
+
+        def walk(member: Mobject, stands_for: int) -> None:
+            if id(member) in done:
+                return
+            done.add(id(member))
+            set_opacities(member, scaled(self._shown[stands_for], keep))
+            had = self._children[stands_for]
+            for place, child in enumerate(member.submobjects):
+                if id(child) in self._shown:
+                    walk(child, id(child))
+                elif had:
+                    walk(child, had[min(place, len(had) - 1)])
+                else:
+                    walk(child, stands_for)
+
+        walk(self.piece, id(self.piece))
+        for member in self._family:
+            if id(member) not in done:
+                set_opacities(member, scaled(self._shown[id(member)], keep))
 
 
 #: The zooms that hold each camera frame, by the frame's id: each entry
@@ -1136,10 +1173,10 @@ class ZoomOut(Animation):
         scene = self._scene() if self._scene is not None else None
         if scene is not None:
             present = {id(m) for m in scene.get_mobject_family_members()}
-            for family, _, _ in zoom._fading:
-                if id(family[0]) not in present:
+            for faded in zoom._fading:
+                if id(faded.piece) not in present:
                     raise ValueError(
-                        f"a {type(family[0]).__name__} the ZoomInto faded has left"
+                        f"a {type(faded.piece).__name__} the ZoomInto faded has left"
                         " the scene: ZoomOut brings back each piece its ZoomInto"
                         " faded, so keep it in the scene until the return"
                     )

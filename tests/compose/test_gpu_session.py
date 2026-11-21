@@ -410,3 +410,22 @@ def test_an_object_map_of_every_drawable_holds_none_of_what_layers_read(
         footprint = found.objects[carrier]
         assert footprint.mask is not None
         assert footprint.mask.any()
+
+
+def test_a_picture_a_zoom_fades_is_drawn_faded_and_back_as_before(session_of, software):
+    session = session_of("ZoomPastAPictureOnGpu")
+    assert session.route == "gpu"
+    rate = SMALL["frame_rate"]
+    before = _pixels(session, Fraction(3, rate))
+    # Drawn through the move-in, the picture's pixels uploaded faded.
+    for tick in range(8, 39):
+        session.frame(Fraction(tick, rate))
+    alphas = {
+        int(rgba[..., 3].max())
+        for opened in software.opened
+        for _, rgba in opened.images
+        if rgba.shape[:2] == (16, 16)
+    }
+    assert any(0 < alpha < int(255 * 0.6) for alpha in alphas)
+    # Back, the frame is drawn as before the move-in, to the byte.
+    assert _close(_pixels(session, Fraction(78, rate)), before, within=0)
