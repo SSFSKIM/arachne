@@ -49,6 +49,12 @@ def _raster_part() -> Mobject:
     ).scale(0.02)
 
 
+def _body_readout() -> Mobject:
+    world = World(gravity=DOWN * 9.8)
+    body = world.body(Dot(UP), shape=None, mass=1.0)
+    return world.readout(body, "velocity")
+
+
 def _world() -> World:
     world = World(gravity=DOWN * 9.8)
     world.body(Circle(radius=0.25), velocity=RIGHT)
@@ -67,6 +73,7 @@ MADE_WITH_ARGUMENTS = {
         _field, x_range=[-1, 1, 1], y_range=[-1, 1, 1]
     ),
     "BarChart": lambda: BarChart([1, 2, 3]),
+    "BodyReadout": _body_readout,
     "Brace": lambda: Brace(Square()),
     "BraceBetweenPoints": lambda: BraceBetweenPoints(LEFT, RIGHT),
     "BraceLabel": lambda: BraceLabel(Square(), "a"),
