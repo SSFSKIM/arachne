@@ -342,12 +342,11 @@ class Stay:
         self.sealed = False
         #: The solver's row the bodies were last placed at.
         self._placed = -1
-        #: Each body's own drawing as the stay last left it (:func:`_drawing`):
-        #: as it began, then as each placement made it. A body whose drawing
-        #: is another when the stay ends was redrawn since.
-        self._drawings: list[object | None] = [
-            _drawing(mobject) for mobject in world._body_mobjects
-        ]
+        #: Each body's own drawing as the world last vouched for it
+        #: (:func:`drawing_of`): as it was declared, then as each placement
+        #: made it. A body whose drawing is another when the stay ends was
+        #: moved or redrawn since, and is not of the stay's last row.
+        self._drawings: list[object | None] = list(world._declared_drawings())
 
     @classmethod
     def begin(
@@ -486,7 +485,7 @@ class Stay:
         ):
             if not item.fixed:
                 _place_body(mobject, item, pose[number], world.dimension)
-                self._drawings[number] = _drawing(mobject)
+                self._drawings[number] = drawing_of(mobject)
 
     def leave(self, at: Fraction) -> None:
         """The world left the scene at ``at``: a closed world's stay is
@@ -508,7 +507,7 @@ class Stay:
         # and reads nothing past the stay.
         placed = self._placed == self._solver_row(self.left_tick)
         for number, mobject in enumerate(self.world._body_mobjects):
-            kept = placed and _drawing(mobject) is self._drawings[number]
+            kept = placed and drawing_of(mobject) is self._drawings[number]
             measures.bind(
                 mobject,
                 self.ordinal,
@@ -873,7 +872,7 @@ def rest_points(mobject: Mobject) -> tuple[FrozenPoints, ...]:
     return tuple(freeze(own_points(m), FrozenPoints) for m in drawn_members(mobject))
 
 
-def _drawing(mobject: Mobject) -> object | None:
+def drawing_of(mobject: Mobject) -> object | None:
     """What holds a mobject's own points: its placement, or else its points
     array; a move or a redraw replaces it.
     """

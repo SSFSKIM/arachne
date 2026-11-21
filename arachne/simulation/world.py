@@ -263,7 +263,10 @@ class World(Mobject):
     )
     # The callback forces: held by the world, outside what a capture keeps
     # of it (its __dict__), and not copied with it.
-    __slots__ = ("_callbacks",)
+    # Each body's drawing as it was declared (stay.drawing_of), by body:
+    # held by the world apart from its captured state and not copied with
+    # it, so a copy vouches for none.
+    __slots__ = ("_callbacks", "_drawn_as_declared")
 
     def __init__(
         self,
@@ -292,6 +295,7 @@ class World(Mobject):
         limits = _limits(speed_limit, angular_speed_limit)
         super().__init__(**kwargs)
         self._callbacks: tuple[Any, ...] = ()
+        self._drawn_as_declared: tuple[object | None, ...] = ()
         self._declare(
             Declaration(
                 dimension,
@@ -326,6 +330,14 @@ class World(Mobject):
         self._declaration = declaration
         #: The digest of the declaration: what a content key reads of it.
         self._declared = declaration.digest()
+
+    def _declared_drawings(self) -> tuple[object | None, ...]:
+        """Each body's drawing as it was declared; for a copy, which vouches
+        for none, ``None`` for each.
+        """
+        found: tuple[object | None, ...] = getattr(self, "_drawn_as_declared", ())
+        missing = len(self._body_mobjects) - len(found)
+        return (*found, *(None,) * missing)
 
     def _callback_functions(self) -> tuple[Any, ...]:
         """The world's callback forces, in the order declared."""
@@ -494,8 +506,10 @@ class World(Mobject):
                 order=(*self._declaration.order, "body"),
             )
         )
+        drawings = self._declared_drawings()
         self._body_mobjects = (*self._body_mobjects, mobject)
         self.add(mobject)
+        self._drawn_as_declared = (*drawings, stay.drawing_of(mobject))
         return Body(self, len(self._declaration.bodies) - 1)
 
     def _shapes(
