@@ -411,6 +411,32 @@ def test_a_callback_that_reads_a_mobject_is_refused_as_declared():
     assert world.is_open
 
 
+def test_a_callback_that_reads_a_mapping_keyed_by_a_mobject_is_refused():
+    from arachne import Dot, World
+
+    world = World()
+    drawn = Dot()
+    body = world.body(drawn, shape=None, mass=1.0)
+    weights = {drawn: 2.0}
+
+    def reads_the_keys(state):
+        (mark,) = weights
+        return {body: -mark.get_center()}
+
+    with pytest.raises(RaisedFinding) as raised:
+        world.add_force(reads_the_keys)
+    assert raised.value.code == "sim.force_input"
+    assert raised.value.detail["names"] == ["weights"]
+
+    by_body = {body: 2.0}
+
+    def reads_a_mapping_of_handles(state):
+        return {each: -by_body[each] * state.position(each) for each in by_body}
+
+    world.add_force(reads_a_mapping_of_handles)
+    assert world.is_open
+
+
 def test_a_withheld_feature_is_refused_as_declared(monkeypatch):
     from arachne import Circle, World
     from arachne.simulation import inputs

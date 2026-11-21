@@ -517,3 +517,58 @@ def test_a_readout_added_over_a_moving_body_is_not_stale(opened):
 
 def test_an_open_world_s_readout_a_tick_behind_is_not_stale(opened):
     assert _stale(opened("PushedRead")) == []
+
+
+@pytest.mark.parametrize(
+    ("scene", "axis"),
+    [
+        ("HeldWhileRead", 1),
+        ("HeldInAGroupWhileRead", 1),
+        ("OpenHeldWhileRead", 0),
+        ("OpenHeldInAGroupWhileRead", 0),
+    ],
+)
+def test_a_readout_of_a_held_world_shows_the_row_its_body_is_drawn_at(
+    opened, scene, axis
+):
+    """While a fade holds the world's drawing (a fade of the world, or of a
+    group holding it), its rows go on (a closed world's computed to the
+    clock, an open world's stepped) and the point stays where it entered: a
+    readout updating meanwhile shows the row the point is drawn at, not the
+    latest row computed.
+    """
+    session = opened(scene)
+    (ball,) = _bodies(session)
+    t = Fraction(4, 15)
+    state = session.state_at(t)
+    (readout,) = _readouts(state).values()
+    read = _read(state, readout)
+    tick = int(read["sim.reads_tick"].value)
+    assert tick < math.floor(t * 60)
+    pose = _row(session, 0, "pose", tick)
+    x0, y0, x1, y1 = state.node(ball).scene_box
+    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((pose[0], pose[1]), abs=1e-6)
+    assert read["annotation.count"].value == pose[axis]
+
+
+def test_a_readout_of_a_body_gone_non_finite_keeps_its_last_number(opened):
+    """The two point masses go non-finite at tick 1: the readout keeps the
+    last number it showed, of tick 0, and the scene runs to its end; the lint
+    reports the bodies unstable and the readout stale, of tick 0.
+    """
+    session = opened("CollapsingRead")
+    assert session.record.duration == Fraction(1, 2)
+    a, _ = _bodies(session)
+    state = session.state_at(Fraction(7, 15))
+    (readout,) = _readouts(state).values()
+    read = _read(state, readout)
+    assert read["sim.reads_tick"].value == 0
+    assert _linked(session, read) == a
+    assert _text(state, readout) == "0.0"
+    found = lint(session, rules=()).findings
+    unstable = [f for f in found if f.code == "sim.unstable"]
+    assert {f.objects[0].id for f in unstable} == set(_bodies(session))
+    assert all(f.detail["signal"] == "non_finite" for f in unstable)
+    stale = [f for f in found if f.code == "sim.readout_stale"]
+    assert stale
+    assert {(f.detail["body"], f.detail["tick"]) for f in stale} == {(a, 0)}
