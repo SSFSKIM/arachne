@@ -41,6 +41,7 @@ from arachne.animation.animation import Animation
 from arachne.constants import LEFT, ORIGIN, RIGHT
 from arachne.mobject.text.text_mobject import Text
 from arachne.mobject.types.vectorized_mobject import VMobject
+from arachne.mobject.values import FrozenPoints, freeze
 from arachne.quantities import At, Quantity
 from arachne.utils.color import WHITE, ParsableManimColor
 
@@ -210,6 +211,9 @@ class Readout(Annotation):
             self.format.format(number), font_size=font_size, color=color
         )
         self._value = number
+        #: The points the label's text drew as made, upright, before
+        #: anything moved it: what :meth:`set_value` reads its turn from.
+        self._text_as_made = _drawn_points(self.label)
         super().__init__(
             self.label,
             at=at,
@@ -241,17 +245,30 @@ class Readout(Annotation):
 
     def set_value(self, value: float) -> Self:
         """Declare ``value`` and show it in the format, in place of the
-        text shown: only the text changes, at the label's size with its
-        :attr:`hold` point where it was, its glyphs styled as its first
+        text shown: only the text changes, at the label's size and turned
+        as it is (rotated or flipped as a whole, the new text is too) with
+        its :attr:`hold` point where it was, its glyphs styled as its first
         glyph was (fill, stroke, opacity, depth) and its pill as its pill
-        was.
+        was. A label reshaped otherwise than by one linear map is shown
+        upright, at the size its height reads.
         """
         number = _finite(value, "A readout's value")
         said = self.format.format(number)
         self._value = number
         label = self.label
         if said != label.original_text:
-            made = self._label_class(said, font_size=label.font_size)
+            hidden = self._unplaced
+            if hidden:
+                # Waiting for its anchor: rebuilt from the points it will draw.
+                self._show_once_placed()
+            turn = self._turn(label)
+            if turn is None:
+                made = self._label_class(said, font_size=label.font_size)
+                upright = _drawn_points(made)
+            else:
+                made = self._label_class(said, font_size=label._font_size)
+                upright = _drawn_points(made)
+                made.apply_matrix(turn)
             held = self.held_point(label)
             made.shift(held - self.held_point(made))
             self.note_held(made, held)
@@ -266,7 +283,33 @@ class Readout(Annotation):
             for key in _TEXT_DATA:
                 if key in made.__dict__:
                     label.__dict__[key] = made.__dict__[key]
+            self._text_as_made = upright
+            if hidden:
+                self._hide_until_placed()
         return self
+
+    def _turn(self, label: Text) -> np.ndarray | None:
+        """The linear map (3 x 3) that took ``label``'s text, as made
+        upright, to how it stands now, when that map turns or flips it;
+        ``None`` when it stands upright (moved and scaled alone) or when no
+        one map takes the text as made to its points now.
+        """
+        made, now = np.asarray(self._text_as_made), _drawn_points(label)
+        if made.shape != now.shape or len(made) < 3:
+            return None
+        design = np.column_stack([made[:, :2], np.ones(len(made))])
+        fit, *_ = np.linalg.lstsq(design, now, rcond=None)
+        size = max(float(np.ptp(now, axis=0).max()), 1e-12)
+        if float(np.abs(design @ fit - now).max()) > _FIT * size:
+            return None
+        turn = np.identity(3)
+        turn[:, 0], turn[:, 1] = fit[0], fit[1]
+        scale = turn[0, 0]
+        upright = np.zeros((3, 2))
+        upright[0, 0] = upright[1, 1] = scale
+        if scale > 0 and float(np.abs(turn[:, :2] - upright).max()) <= _FIT * scale:
+            return None
+        return turn
 
 
 @quantities.provider(Readout)
@@ -287,6 +330,19 @@ _TEXT_DATA = (
     "_font_size",
     "background_rectangle",
 )
+
+
+#: How far, as a share of a text's size, its points may stand from where one
+#: linear map of its upright text puts them, or from upright, as floating
+#: point's error leaves them.
+_FIT = 1e-7
+
+
+def _drawn_points(label: Text) -> FrozenPoints:
+    """Every point ``label`` draws, its plate's and its glyphs', in order."""
+    members = label.family_members_with_points()
+    points = [np.asarray(m.points) for m in members]
+    return freeze(np.concatenate(points) if points else np.zeros((0, 3)), FrozenPoints)
 
 
 def _plate_ids(label: Text) -> set[int]:
