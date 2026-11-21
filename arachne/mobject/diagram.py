@@ -152,7 +152,11 @@ class Diagram(VGroup):
         ``"left"`` above). Which end the connector starts from does not
         change it. The lint :data:`~arachne.lint.rules.diagram_clear`
         reports a label set beside its line that lands on another piece,
-        connector or label of the diagram; ``label_side`` is the fix.
+        connector or label of the diagram; ``label_side`` is the fix. On a
+        connector with no flow it reports a label whose plate leaves less
+        than :data:`~arachne.lint.rules.diagram_clear.MIN_STUB` of the line
+        showing on screen on either side; ``label_side`` does not move that
+        label: widen the gap between the pieces, or drop the label.
 
         An elbow runs ``stub`` straight out of its start before it turns,
         and ``end_stub`` (``stub`` when ``None``) into its end, each cut to
