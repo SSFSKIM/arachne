@@ -52,7 +52,7 @@ import numpy as np
 
 from arachne.assets.anchor import Anchor
 from arachne.constants import ORIGIN, UR
-from arachne.mobject.types.vectorized_mobject import VGroup, VMobject
+from arachne.mobject.types.vectorized_mobject import VectorizedPoint, VGroup, VMobject
 from arachne.mobject.values import FrozenArray, freeze
 from arachne.utils.color import WHITE, ParsableManimColor
 
@@ -273,6 +273,10 @@ class Annotation(VGroup):
         self.attached: Attached | None = None
         #: Whether it waits for its anchor's first point, drawing nothing.
         self._unplaced = False
+        #: While it waits, the three points held where its own were, and
+        #: where they stood then (:meth:`_hide_until_placed`).
+        self._unplaced_frame: VGroup | None = None
+        self._unplaced_corners: FrozenArray | None = None
         if at is None:
             return
         place = np.zeros(3)
@@ -314,18 +318,50 @@ class Annotation(VGroup):
         self.attach()
 
     def _hide_until_placed(self) -> None:
-        """Keep each member's points aside, so that it draws nothing."""
-        for member in self.get_family():
-            if len(member.points):
-                member.__dict__[_UNTIL_PLACED] = member.points
-                member.points = np.zeros((0, self.dim))
+        """Keep each member's points aside, so that it draws nothing, and
+        hold in their place three points that draw nothing at three corners
+        of their box (lower left, lower right, upper left): what moves,
+        turns or scales the annotation meanwhile moves those, and the points
+        kept aside come back moved as they were (:meth:`_show_once_placed`).
+        """
+        self._show_once_placed()
+        members = [m for m in self.get_family() if len(m.points)]
+        if not members:
+            return
+        points = np.concatenate([np.asarray(m.points) for m in members])
+        low, high = points.min(axis=0), points.max(axis=0)
+        # A box flat along an axis is given a unit's span along it.
+        span = np.where(high - low > 0, high - low, 1.0)
+        corners = np.array([low, low + [span[0], 0.0, 0.0], low + [0.0, span[1], 0.0]])
+        for member in members:
+            member.__dict__[_UNTIL_PLACED] = member.points
+            member.points = np.zeros((0, self.dim))
+        self._unplaced_frame = VGroup(*(VectorizedPoint(c) for c in corners))
+        self._unplaced_corners = freeze(corners, FrozenArray)
+        self.add(self._unplaced_frame)
 
     def _show_once_placed(self) -> None:
-        """Give each member back the points :meth:`_hide_until_placed` kept aside."""
+        """Give each member back the points :meth:`_hide_until_placed` kept
+        aside, moved as the corners held in their place were moved.
+        """
+        frame = self._unplaced_frame
+        if frame is None:
+            return
+        was = np.asarray(self._unplaced_corners)
+        now = np.array([np.asarray(p.points)[0] for p in frame.submobjects])
+        moved = np.identity(3)
+        moved[:, 0] = (now[1] - now[0]) / (was[1] - was[0])[0]
+        moved[:, 1] = (now[2] - now[0]) / (was[2] - was[0])[1]
         for member in self.get_family():
             kept = member.__dict__.pop(_UNTIL_PLACED, None)
-            if kept is not None:
+            if kept is None:
+                continue
+            if np.array_equal(now, was):
                 member.points = kept
+            else:
+                member.points = now[0] + (np.asarray(kept) - was[0]) @ moved.T
+        self.remove(frame)
+        self._unplaced_frame = None
 
     def held_point(self, body: Mobject) -> np.ndarray:
         """Where ``body`` (this annotation's body, or one about to replace
@@ -368,7 +404,10 @@ class Annotation(VGroup):
         if self._unplaced:
             if point is None:
                 # Anything given points since draws nothing yet either.
-                self._hide_until_placed()
+                frame = self._unplaced_frame
+                held = set() if frame is None else {id(m) for m in frame.get_family()}
+                if any(len(m.points) for m in self.get_family() if id(m) not in held):
+                    self._hide_until_placed()
                 return
             self._unplaced = False
             self._show_once_placed()
