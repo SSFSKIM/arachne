@@ -407,7 +407,9 @@ class World(Mobject):
     ) -> Body:
         """Declare a body drawn by ``mobject``, which joins the world's
         submobjects, as it stands now: its centre and its drawing are read
-        here, so shape it first. Returns its handle.
+        here, so shape it first. The world enters the scene only while each
+        body is drawn where the world last drew it, as declared or as its
+        last stay placed it (:func:`.stay.check_drawn`). Returns its handle.
 
         ``shape`` is taken from the mobject by default (a circle or a sphere
         is a ball, anything else the convex hull of its points); a shape

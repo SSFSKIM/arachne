@@ -44,6 +44,13 @@ record's bakes are first read (:meth:`Stay.settle`): a closed world's
 through the scene's last tick, an open world's through the last tick its
 callbacks were called for. Before that, its computed rows are readable through the bakes as
 a sealed occurrence's are (:meth:`Stay.row`).
+
+A stay begins only where its world left its bodies drawn: each as it was
+declared, and a moving one, once placed, as the world last placed it
+(:func:`check_drawn`). A body the scene's code moved or redrew since,
+farther than :data:`DRAWN_TOLERANCE`, refuses the stay, since a moving body
+would be drawn back at its first placement and a fixed one would part from
+what the world simulates.
 """
 
 from __future__ import annotations
@@ -64,7 +71,7 @@ import inspect
 import math
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn
 
 import numpy as np
 
@@ -113,7 +120,7 @@ class _Run:
     world and its open stay, until the run's stays are sealed.
     """
 
-    __slots__ = ("crate", "recorder", "stay", "stays")
+    __slots__ = ("crate", "placed", "recorder", "stay", "stays")
 
     def __init__(self, recorder: Recorder, crate: Any) -> None:
         self.recorder = recorder
@@ -121,6 +128,9 @@ class _Run:
         self.stay: Stay | None = None
         #: How many stays of the world have begun in the run.
         self.stays = 0
+        #: The solver's row the world's moving bodies were last placed at, in
+        #: any of its stays; ``None`` before the first placement.
+        self.placed: int | None = None
 
     def settle(self) -> None:
         """Once the scene's script has ended and the world's stays are
@@ -360,6 +370,7 @@ class Stay:
         """Begin ``world``'s stay at the instant ``at``: from the state its
         last stay left it in, if it had one, else as declared.
         """
+        check_drawn(world, record, run, at)
         if run.crate.rows == 0:
             run.crate.advance_to(0)
         stay = cls(world, recorder, record, run, math.floor(at * TICK_RATE))
@@ -478,6 +489,7 @@ class Stay:
         if row == self._placed:
             return
         self._placed = row
+        self.run.placed = row
         world = self.world
         pose = self.crate.pose(row, row + 1)[0]
         for number, (item, mobject) in enumerate(
@@ -884,6 +896,21 @@ def drawing_of(mobject: Mobject) -> object | None:
     return points
 
 
+def _motion(
+    item: BodyItem, row: np.ndarray, dimension: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """A body's rigid motion since its declaration, at a row's pose, as a
+    placement's ``linear`` and ``offset``.
+    """
+    linear = turn(row, dimension).T
+    declared = np.zeros(3)
+    declared[:dimension] = item.position
+    offset = centre(row, dimension) - declared @ linear
+    linear.flags.writeable = False
+    offset.flags.writeable = False
+    return linear, offset
+
+
 def _place_body(
     mobject: Mobject, item: BodyItem, row: np.ndarray, dimension: int
 ) -> None:
@@ -896,13 +923,91 @@ def _place_body(
             "A body's mobject has other members with points than when it was"
             " declared: declare a body once its drawing is complete."
         )
-    linear = turn(row, dimension).T
-    declared = np.zeros(3)
-    declared[:dimension] = item.position
-    offset = centre(row, dimension) - declared @ linear
-    linear.flags.writeable = False
-    offset.flags.writeable = False
+    linear, offset = _motion(item, row, dimension)
     for member, points in zip(members, item.rest, strict=True):
         own = member.__dict__
         own["_placement"] = Placement(points, linear, offset)
         own.pop("_points", None)
+
+
+#: How far, in scene units, a point of a body's drawing may lie from where
+#: its world last drew it as a stay begins (:func:`check_drawn`). A move
+#: undone (a shift and its reverse, a move to the centre a body has) leaves
+#: only rounding, under 1e-12 units at the coordinates a world serves
+#: (within about 1000 units of the origin); a pixel of a 4K frame is about
+#: 0.004 units. 1e-6 is far above the one and far below the other.
+DRAWN_TOLERANCE = 1e-6
+
+
+def check_drawn(world: World, record: Record, run: _Run, at: Fraction) -> None:
+    """Refuse a stay of ``world`` beginning at ``at`` while a body is drawn
+    other than where its world last drew it: as declared, or, for a moving
+    body the run has placed, at the run's last placement. Points are
+    compared, not the objects holding them, within :data:`DRAWN_TOLERANCE`,
+    over the members :func:`_place_body` places.
+    """
+    placed = run.placed
+    pose = None if placed is None else run.crate.pose(placed, placed + 1)[0]
+    for number, (item, mobject) in enumerate(
+        zip(world._declaration.bodies, world._body_mobjects, strict=True)
+    ):
+        vouched: tuple[np.ndarray, ...] = item.rest
+        if pose is not None and not item.fixed:
+            linear, offset = _motion(item, pose[number], world.dimension)
+            vouched = tuple(
+                Placement(points, linear, offset).points for points in item.rest
+            )
+        # As floats: a mobject's points keep the type they were given, and an
+        # integer's absolute value can overflow (-128 stays negative in int8).
+        drawn = [
+            np.asarray(own_points(member), dtype=np.float64)
+            for member in drawn_members(mobject)
+        ]
+        vouched = tuple(np.asarray(points, dtype=np.float64) for points in vouched)
+        if [own.shape for own in drawn] != [points.shape for points in vouched]:
+            _refuse_drawn(
+                record,
+                mobject,
+                item,
+                at,
+                "has other members or points than when its world last drew it",
+            )
+        gap = max(
+            (
+                float(np.max(np.abs(own - points)))
+                for own, points in zip(drawn, vouched, strict=True)
+            ),
+            default=0.0,
+        )
+        if gap > DRAWN_TOLERANCE:
+            _refuse_drawn(
+                record,
+                mobject,
+                item,
+                at,
+                f"is drawn up to {gap:.3g} {'unit' if gap == 1 else 'units'} from"
+                " where its world last drew it",
+            )
+
+
+def _refuse_drawn(
+    record: Record, mobject: Mobject, item: BodyItem, at: Fraction, what: str
+) -> NoReturn:
+    origin = record.origin(mobject)
+    where = (
+        f"made at {origin.source_line}"
+        if origin.source_line is not None
+        else f"with the id {origin.id}"
+    )
+    then = (
+        "it is fixed, so its world would simulate it apart from its drawing"
+        if item.fixed
+        else "it moves, and the simulation drives the stay's first placement, not"
+        " where the scene's code put it"
+    )
+    raise ValueError(
+        f"The {type(mobject).__name__} {where}, a body of a world, {what} as its"
+        f" world enters the scene at {float(at):g} s: {then}. Arrange the drawing"
+        " first, then declare the body; or, between stays, leave a body where the"
+        " world left it."
+    )
