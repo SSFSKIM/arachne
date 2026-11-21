@@ -28,5 +28,5 @@ for version in "${@:-3.14}"; do
   echo "--- Python $version"
   uv venv --quiet --python "$version" "$work/venv-$version"
   VIRTUAL_ENV="$work/venv-$version" uv pip install --quiet "$wheel" pytest
-  "$work/venv-$version/bin/python" -m pytest -q
+  "$work/venv-$version/bin/python" -m pytest -q -rP
 done
