@@ -363,7 +363,9 @@ class _Grid:
     """The pixel grid every pose of one rig is drawn on: the box of the
     art at all of ``poses``, as far as its strokes can reach past its points
     (:func:`_stroke_reach`), fitted with a margin of :data:`MASK_MARGIN`
-    into :data:`MASK_SIZE` pixels on its longer side.
+    into :data:`MASK_SIZE` pixels on its longer side. Only paint counts: a
+    shape painted at no opacity (an exported artboard or guide) widens no
+    grid, and an unpainted stroke reaches nowhere (:func:`_paint`).
     """
 
     def __init__(
@@ -379,10 +381,15 @@ class _Grid:
         for pose in poses:
             shapes = _drawn(_posed(rig, pose))
             for shape in shapes:
+                fill, stroke = _paint(shape)
+                if not (fill or stroke):
+                    continue  # an artboard or a guide: it paints no pixel
                 points = np.asarray(shape.points)[:, :2]
-                reach = _stroke_reach(shape)
+                reach = _stroke_reach(shape) if stroke else 0.0
                 low = np.minimum(low, points.min(axis=0) - reach)
                 high = np.maximum(high, points.max(axis=0) + reach)
+        if not np.isfinite(low).all():  # nothing paints at any pose
+            low, high = np.zeros(2), np.ones(2)
         extent = np.maximum(high - low, 1e-9)
         scale = (MASK_SIZE - 2 * MASK_MARGIN) / float(extent.max())
         width, height = (
@@ -448,11 +455,26 @@ def _stroke_reach(shape: VMobject) -> float:
     return half * max(ENGINE_LIMIT, math.sqrt(2))
 
 
+def _paint(shape: VMobject) -> tuple[bool, bool]:
+    """Whether ``shape`` paints its fill and its stroke: each at an opacity
+    above 0 anywhere, the stroke at a width above 0. A raster member's
+    picture is always painted, as :meth:`_Grid.draw` draws it.
+    """
+    from .raster import RasterPart
+
+    if isinstance(shape, RasterPart):
+        return True, False
+    fill = bool(np.any(np.asarray(shape.get_fill_opacities()) > 0))
+    stroke = shape.get_stroke_width() > 0 and bool(
+        np.any(np.asarray(shape.get_stroke_opacities()) > 0)
+    )
+    return fill, stroke
+
+
 def _opaque(shape: VMobject) -> VMobject:
     """A copy of ``shape`` painted opaque wherever it is painted at all."""
     copy = shape.copy()
-    fill = bool(np.any(np.asarray(shape.get_fill_opacities()) > 0))
-    stroke = bool(np.any(np.asarray(shape.get_stroke_opacities()) > 0))
+    fill, stroke = _paint(shape)
     copy.set_fill(WHITE, opacity=1.0 if fill else 0.0)
     copy.set_stroke(WHITE, opacity=1.0 if stroke else 0.0)
     copy.set_stroke(WHITE, width=0, background=True)

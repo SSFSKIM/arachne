@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +66,38 @@ def test_a_hole_the_figure_is_drawn_with_is_not_one_it_opens(tmp_path):
     )
     report = admit(directory)
     assert report.passed, report.lines()
+
+
+@pytest.mark.parametrize(
+    "paint",
+    [
+        'fill="none" stroke="none"',
+        'fill="#ffffff" fill-opacity="0" stroke="none"',
+        'fill="none" stroke="#000000" stroke-opacity="0" stroke-width="40"',
+    ],
+)
+def test_an_unpainted_shape_does_not_widen_the_grid(tmp_path, paint):
+    # An exported artboard paints no pixel: drawn on a grid widened to its
+    # extent, the seam would shrink to a few pixels and pass.
+    directory = _defect(tmp_path, "open-seam")
+    frame = directory / "pieces" / "frame.svg"
+    artboard = f'  <rect x="-874" y="-874" width="2048" height="2048" {paint}/>\n'
+    frame.write_text(frame.read_text().replace("</svg>", artboard + "</svg>"))
+    hole = admit(directory).result("hole")
+    assert not hole.passed
+    assert hole.worst == admit(DEFECTS / "open-seam").result("hole").worst
+
+
+def test_an_asset_that_paints_nothing_is_measured_on_a_grid_of_its_own(tmp_path):
+    directory = _defect(tmp_path, "open-seam")
+    for file in (directory / "pieces").iterdir():
+        text = re.sub(r'(fill|stroke)="#[0-9a-f]+"', r'\1="none"', file.read_text())
+        file.write_text(text)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        report = admit(directory)
+    assert report.result("hole").passed
+    assert not report.result("anchor_off_part").passed
 
 
 #: A window frame's four bars, on a canvas 300 units square.
