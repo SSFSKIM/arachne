@@ -12,11 +12,13 @@ Coordinates are the file's user units, y down: the asset's canvas. The root's
 conversion :class:`~arachne.mobject.svg.svg_mobject.SVGMobject` uses, each
 an ordinary :class:`~arachne.mobject.types.vectorized_mobject.VMobject` with
 its file's flat paint and stroke join, its stroke as wide as the file's
-transform makes it. A stroke the engine would draw otherwise than the file
-means is refused: one under a transform that is not a similarity, an open
-subpath ending where it starts, a subpath starting where the one before it
-ends, and a miter join the engine's own miter limit cuts otherwise than the
-file's (:mod:`.joins`).
+transform makes it. A colour with an alpha of its own under a
+``fill-opacity`` or ``stroke-opacity``, its own or inherited, is refused:
+SVG multiplies the two, and the conversion draws the opacity alone. A stroke
+the engine would draw otherwise than the file means is refused: one under a
+transform that is not a similarity, an open subpath ending where it starts,
+a subpath starting where the one before it ends, and a miter join the
+engine's own miter limit cuts otherwise than the file's (:mod:`.joins`).
 
 Two such strokes still pass, drawn otherwise than SVG draws them:
 
@@ -179,12 +181,33 @@ def _convert(shape: se.SVGElement) -> VMobject | None:
         return None
     if not mob.has_points():
         return None
+    _single_alpha(shape)
     SVGMobject.apply_style_to_mobject(mob, shape)
     if shape.apply:
         SVGMobject.handle_transform(mob, shape.transform)
     if _stroked(mob):
         _stroke(mob, shape)
     return mob
+
+
+def _single_alpha(shape: se.SVGElement) -> None:
+    """Refuse a fill or stroke whose colour carries an alpha below 1 under
+    an opacity, each its own or inherited: SVG multiplies the two, and the
+    conversion draws the opacity alone in place of the colour's alpha.
+    """
+    values = shape.values
+    for paint in ("fill", "stroke"):
+        colour, opacity = values.get(paint), values.get(f"{paint}-opacity")
+        if colour is None or opacity is None:
+            continue
+        alpha = se.Color(colour).alpha
+        if alpha is not None and alpha < 255:
+            raise Unreadable(
+                f"its <{values.get('tag')}> has {paint} {str(colour)!r}, a colour"
+                f" with an alpha of its own, and {paint}-opacity {opacity}, its own"
+                " or inherited; SVG multiplies the two and the reader would draw"
+                f" the {paint}-opacity alone: give the alpha in one of them"
+            )
 
 
 def _stroked(mob: VMobject) -> bool:

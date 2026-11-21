@@ -275,7 +275,7 @@ class FixedBackAfterItsWorld(Scene):
     """A fixed dot's world removed at 1/2 s and the dot left on screen over
     a wait a scene updater reading ``dt`` ticks; with ``shifted``, the dot
     shifted by the scene's code after it was declared and before its world
-    entered, so it is drawn away from its baked pose throughout.
+    entered, so its world's entry is refused.
     """
 
     shifted = False

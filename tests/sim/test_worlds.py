@@ -671,3 +671,81 @@ def test_a_capture_s_key_changes_with_the_world_and_its_bodies(opened):
     assert starts[0] != starts[1]
     later = opened("AwayAndBack").record.plays
     assert later[0].start_state.content_key() != later[2].start_state.content_key()
+
+
+def _made_at(marker):
+    """Where the scenes' file makes the mobject whose line ends in ``marker``."""
+    lines = SCENES.read_text().splitlines()
+    (number,) = [i for i, line in enumerate(lines, 1) if line.endswith(marker)]
+    return f"{SCENES.name}:{number}"
+
+
+@pytest.mark.parametrize(
+    ("name", "marker", "entered"),
+    [
+        ("BallShiftedBeforeEntry", "# the ball", "0"),
+        ("FloorShiftedBeforeEntry", "# the floor", "0"),
+        ("BallShiftedBetweenStays", "# the ball", "0.75"),
+        ("FloorShiftedBetweenStays", "# the floor", "0.75"),
+        ("HeldShiftedThenBack", "# the held ball", "0.75"),
+        ("IntegerPointsMovedBeforeEntry", "# the integer mark", "0"),
+    ],
+)
+def test_a_body_drawn_away_from_where_its_world_left_it_is_refused(
+    opened, name, marker, entered
+):
+    """A moving body would be drawn back at its world's first step, and a
+    fixed one would part from what its world simulates: the stay that would
+    begin so is refused, naming the body by the line that made it and the
+    fix.
+    """
+    with pytest.raises(ValueError) as raised:
+        opened(name)
+    message = str(raised.value)
+    assert f"made at {_made_at(marker)}" in message
+    assert f"as its world enters the scene at {entered} s" in message
+    assert "Arrange the drawing first, then declare the body" in message
+    assert "between stays, leave a body where the world left it" in message
+    if "floor" in marker:
+        assert "it is fixed, so its world would simulate it apart from" in message
+    else:
+        assert "the simulation drives the stay's first placement" in message
+
+
+@pytest.mark.parametrize(
+    "name", ["BallMovedToItsPlace", "BallShiftedAndBack", "FloorShiftedAndBack"]
+)
+def test_a_body_moved_back_where_its_world_left_it_enters_as_if_unmoved(opened, name):
+    """A move to the centre a body has, and a shift undone, leave it where
+    its world drew it: both stays begin, and the bodies move as in the twin
+    left alone.
+    """
+    drawn = []
+    contents = []
+    for session in (opened(name), opened("Rearranged")):
+        _, occurrences = _occurrences(session)
+        contents.append([occurrence.content for occurrence in occurrences])
+        world = next(
+            m
+            for m in session.record.plays[-1].samples[-1].roots
+            if type(m).__name__ == "World"
+        )
+        drawn.append(
+            np.concatenate([m.points for m in world.family_members_with_points()])
+        )
+    assert len(contents[0]) == 2
+    assert contents[0] == contents[1]
+    assert drawn[0] == pytest.approx(drawn[1], abs=1e-9)
+
+
+def test_a_body_held_then_away_is_compared_with_its_last_placement(opened):
+    """The ball's world held for a quarter second before it left: the second
+    stay begins at a later row than the one the ball was last placed at, and
+    the ball, left where it was placed, enters.
+    """
+    session = opened("HeldThenAwayAndBack")
+    bakes, (first, second) = _occurrences(session)
+    assert (first.last_tick, second.first_tick) == (30, 45)
+    left = bakes.row(first.ordinal, 30)["pose"]
+    held = bakes.row(first.ordinal, 15)["pose"]
+    assert left[0, 1] < held[0, 1] - 0.1

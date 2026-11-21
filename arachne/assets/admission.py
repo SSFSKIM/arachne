@@ -58,16 +58,18 @@ It judges shape and nothing else: neither style, nor identity, nor whether
 a person also looks. What the asset reader refuses is refused before any
 pose is drawn, as loading refuses it (:mod:`.svg_parts`): text, embedded
 images, gradient and pattern paint, dashes, clip paths, masks and filters;
-a stroked shape under a transform that is not a similarity; a stroked open
-subpath whose ends meet, and a stroked subpath that begins where the one
-before it ended (an editor's combine command writes these); a miter join
-cut otherwise by the file's ``stroke-miterlimit`` than by the engine's 10
-(state ``stroke-miterlimit="10"``, or use a round or bevel join); a
-``miter-clip`` or ``arcs`` join. Two forms pass both the reader and this
-tool and are drawn otherwise than SVG draws them, so a supplier's export
-should avoid them: subpath ends that nearly meet, which the camera may join
-once the asset is drawn small; and drawing on after ``Z`` with no move,
-which the engine runs on from the closed outline where SVG starts afresh.
+a colour with an alpha of its own under a fill or stroke opacity (give the
+alpha in one of them); a stroked shape under a transform that is not a
+similarity; a stroked open subpath whose ends meet, and a stroked subpath
+that begins where the one before it ended (an editor's combine command
+writes these); a miter join cut otherwise by the file's
+``stroke-miterlimit`` than by the engine's 10 (state
+``stroke-miterlimit="10"``, or use a round or bevel join); a ``miter-clip``
+or ``arcs`` join. Two forms pass both the reader and this tool and are drawn
+otherwise than SVG draws them, so a supplier's export should avoid them:
+subpath ends that nearly meet, which the camera may join once the asset is
+drawn small; and drawing on after ``Z`` with no move, which the engine runs
+on from the closed outline where SVG starts afresh.
 """
 
 from __future__ import annotations
@@ -87,6 +89,7 @@ import contextlib
 import json
 import math
 import os
+import stat
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -273,10 +276,12 @@ def write_checks(directory: str | os.PathLike[str], report: AdmissionReport) -> 
     ``directory``, its other members as they were, and give the manifest's
     path. The record attests the digest the report was made at, so an
     asset changed since loads as unadmitted. The manifest is written whole
-    beside the old one, in UTF-8, and replaces it only once written: a
-    write that fails leaves the old manifest as it was.
+    beside the old one, in UTF-8, with the old one's permissions, and
+    replaces it only once written: a write that fails leaves the old
+    manifest as it was.
     """
     path = Path(directory) / MANIFEST
+    mode = stat.S_IMODE(path.stat().st_mode)
     document = read_json(path.read_bytes())
     document = {key: value for key, value in document.items() if key != "checks"}
     ordered: dict[str, Any] = {}
@@ -294,6 +299,7 @@ def write_checks(directory: str | os.PathLike[str], report: AdmissionReport) -> 
             written.write(text)
             written.flush()
             os.fsync(written.fileno())
+        os.chmod(temporary, mode)  # mkstemp's file is the owner's alone
         os.replace(temporary, path)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
@@ -363,7 +369,9 @@ class _Grid:
     """The pixel grid every pose of one rig is drawn on: the box of the
     art at all of ``poses``, as far as its strokes can reach past its points
     (:func:`_stroke_reach`), fitted with a margin of :data:`MASK_MARGIN`
-    into :data:`MASK_SIZE` pixels on its longer side.
+    into :data:`MASK_SIZE` pixels on its longer side. Only paint counts: a
+    shape painted at no opacity (an exported artboard or guide) widens no
+    grid, and an unpainted stroke reaches nowhere (:func:`_paint`).
     """
 
     def __init__(
@@ -379,10 +387,15 @@ class _Grid:
         for pose in poses:
             shapes = _drawn(_posed(rig, pose))
             for shape in shapes:
+                fill, stroke = _paint(shape)
+                if not (fill or stroke):
+                    continue  # an artboard or a guide: it paints no pixel
                 points = np.asarray(shape.points)[:, :2]
-                reach = _stroke_reach(shape)
+                reach = _stroke_reach(shape) if stroke else 0.0
                 low = np.minimum(low, points.min(axis=0) - reach)
                 high = np.maximum(high, points.max(axis=0) + reach)
+        if not np.isfinite(low).all():  # nothing paints at any pose
+            low, high = np.zeros(2), np.ones(2)
         extent = np.maximum(high - low, 1e-9)
         scale = (MASK_SIZE - 2 * MASK_MARGIN) / float(extent.max())
         width, height = (
@@ -448,11 +461,26 @@ def _stroke_reach(shape: VMobject) -> float:
     return half * max(ENGINE_LIMIT, math.sqrt(2))
 
 
+def _paint(shape: VMobject) -> tuple[bool, bool]:
+    """Whether ``shape`` paints its fill and its stroke: each at an opacity
+    above 0 anywhere, the stroke at a width above 0. A raster member's
+    picture is always painted, as :meth:`_Grid.draw` draws it.
+    """
+    from .raster import RasterPart
+
+    if isinstance(shape, RasterPart):
+        return True, False
+    fill = bool(np.any(np.asarray(shape.get_fill_opacities()) > 0))
+    stroke = shape.get_stroke_width() > 0 and bool(
+        np.any(np.asarray(shape.get_stroke_opacities()) > 0)
+    )
+    return fill, stroke
+
+
 def _opaque(shape: VMobject) -> VMobject:
     """A copy of ``shape`` painted opaque wherever it is painted at all."""
     copy = shape.copy()
-    fill = bool(np.any(np.asarray(shape.get_fill_opacities()) > 0))
-    stroke = bool(np.any(np.asarray(shape.get_stroke_opacities()) > 0))
+    fill, stroke = _paint(shape)
     copy.set_fill(WHITE, opacity=1.0 if fill else 0.0)
     copy.set_stroke(WHITE, opacity=1.0 if stroke else 0.0)
     copy.set_stroke(WHITE, width=0, background=True)

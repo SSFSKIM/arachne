@@ -167,3 +167,48 @@ def test_annotation_classes_are_the_engine_s():
         if isinstance(found, type):
             assert engine_class(found), name
     assert engine_class(Annotation)
+
+
+@pytest.mark.parametrize("follow", [True, False])
+def test_an_annotation_on_a_drawing_hidden_at_first_appears_with_it(follow):
+    figure = Rig("fixture:figure")
+    (pointing,) = [d for d in figure.part("hand").submobjects if d.name == "point"]
+    callout = Callout("points", at=anchor(pointing, at=UR), offset=UR, follow=follow)
+    # Hidden while what it names is.
+    assert not any(len(m.points) for m in callout.get_family())
+    _update(callout)
+    assert not any(len(m.points) for m in callout.get_family())
+    figure.show(hand="point")
+    _update(callout)
+    # Shown with it, as if made while it showed.
+    shown = Rig("fixture:figure").show(hand="point")
+    (also,) = [d for d in shown.part("hand").submobjects if d.name == "point"]
+    made = Callout("points", at=anchor(also, at=UR), offset=UR, follow=follow)
+    corner = pointing.get_critical_point(UR)
+    np.testing.assert_allclose(callout.pill.get_center(), corner + UR, atol=1e-9)
+    np.testing.assert_allclose(callout.leader.points[-1], corner, atol=1e-12)
+    assert [len(m.points) for m in callout.get_family()] == [
+        len(m.points) for m in made.get_family()
+    ]
+    assert callout.pill.width == pytest.approx(made.pill.width, abs=1e-12)
+    np.testing.assert_allclose(callout.points_at(), corner, atol=1e-9)
+    # Placed once, it follows, or stays, as any annotation does.
+    figure.shift(LEFT)
+    _update(callout)
+    moved = corner + (LEFT if follow else ORIGIN)
+    np.testing.assert_allclose(callout.pill.get_center(), moved + UR, atol=1e-9)
+
+
+def test_a_readout_changed_while_its_target_is_hidden_appears_with_its_value():
+    figure = Rig("fixture:figure")
+    (pointing,) = [d for d in figure.part("hand").submobjects if d.name == "point"]
+    reading = Readout(4, "{:.0f}", at=anchor(pointing, at=UR), offset=UR)
+    reading.set_value(12)
+    _update(reading)
+    assert not any(len(m.points) for m in reading.get_family())
+    figure.show(hand="point")
+    _update(reading)
+    made = Readout(12, "{:.0f}", at=anchor(pointing, at=UR), offset=UR)
+    assert reading.label.original_text == "12"
+    for got, want in zip(reading.get_family(), made.get_family(), strict=True):
+        np.testing.assert_allclose(got.points, want.points, atol=1e-9)

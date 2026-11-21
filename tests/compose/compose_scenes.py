@@ -28,6 +28,7 @@ from arachne import (
 )
 from arachne.compose.layer import LayerSpec, set_focus, set_layer
 from arachne.routing import declare
+from tests.diagram.zoom_out_scenes import ZoomPastAPicture
 
 
 class LastPlay(Scene):
@@ -371,3 +372,16 @@ class WindowMaskNotShown(WindowMaskShownToo):
     """The circle neither added nor listed."""
 
     shown = False
+
+
+class ZoomPastAPictureOnGpu(ZoomPastAPicture):
+    """:class:`~tests.diagram.zoom_out_scenes.ZoomPastAPicture`, the zoom
+    fading the picture it cuts and the return bringing it back, with a
+    blurred layer painting nothing, which puts the scene on the gpu route.
+    """
+
+    def construct(self):
+        unseen = Dot(fill_opacity=0, stroke_width=0)
+        set_layer(unseen, LayerSpec(blur=0.1))
+        self.add(unseen)
+        super().construct()

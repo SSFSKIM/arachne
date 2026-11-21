@@ -44,7 +44,6 @@ from arachne.mobject.geometry.arc import Dot
 from arachne.mobject.marks._paths import ArcLength, as_point, direction, head, line
 from arachne.mobject.marks._running import running_scene
 from arachne.mobject.marks._style import (
-    Opacities,
     apply_style,
     opacities_of,
     scaled,
@@ -152,7 +151,11 @@ class Diagram(VGroup):
         ``"left"`` above). Which end the connector starts from does not
         change it. The lint :data:`~arachne.lint.rules.diagram_clear`
         reports a label set beside its line that lands on another piece,
-        connector or label of the diagram; ``label_side`` is the fix.
+        connector or label of the diagram; ``label_side`` is the fix. On a
+        connector with no flow it reports a label whose plate leaves less
+        than :data:`~arachne.lint.rules.diagram_clear.MIN_STUB` of the line
+        showing on screen on either side; ``label_side`` does not move that
+        label: widen the gap between the pieces, or drop the label.
 
         An elbow runs ``stub`` straight out of its start before it turns,
         and ``end_stub`` (``stub`` when ``None``) into its end, each cut to
@@ -406,14 +409,16 @@ class Flow(VGroup):
     tokens.
 
     A connector's label (the one :meth:`Diagram.connect` makes) moves
-    beside the line as the flow is made, so the tokens never pass under
-    it: at the line's middle, to the connector's ``label_side``, by half
-    the pill's extent along the line's normal there, the tokens' reach
-    (``flow_reach``, in scene units: the largest of every flow on the
+    beside the line once, as the flow is made, placed from the line as it
+    stands then: at the line's middle, to the connector's ``label_side``,
+    by half the pill's extent along the line's normal there, the tokens'
+    reach (``flow_reach``, in scene units: the largest of every flow on the
     connector, whatever order they were made in) and :data:`LABEL_GAP`.
-    Its place hangs on the connector and its flows alone. Make the flow
-    before the diagram is shown, or the label moves as it is made. The
-    label is also drawn above the tokens.
+    Its place hangs on the connector and its flows alone, and it is not
+    kept: a later play that moves or bends the line apart from its label
+    takes the tokens along the new path and leaves the label where it was
+    put. Make the flow before the diagram is shown, or the label moves as
+    it is made. The label is also drawn above the tokens.
     """
 
     def __init__(
@@ -638,12 +643,12 @@ class FlowDriver:
     scene, each moved to where :attr:`~.Scene.time` puts it at every
     instant, at a cost of the flows held, whatever else the scene holds.
 
-    A scene has at most one, made with its first flow and found with
-    :func:`flow_driver`. It runs as the scene updater :attr:`updater`, last
-    in every instant, after the animations and the mobjects' updaters, and
-    unsuspended by any animation. :attr:`updater` is a plain function whose
-    code never reads ``dt``, so it changes no play's ticking more than any
-    scene updater does. Calling the driver moves, as one unit, every flow it
+    A scene has at most one in each execution, made with its first flow
+    there and found with :func:`flow_driver`. It runs as the scene updater
+    :attr:`updater`, last in every instant, after the animations and the
+    mobjects' updaters, and unsuspended by any animation. :attr:`updater`
+    is a plain function whose code never reads ``dt``, so it changes no
+    play's ticking more than any scene updater does. Calling the driver moves, as one unit, every flow it
     holds that is not stopped; a flow that has left the scene is moved too
     and draws nothing. A flow joins its scene's driver only through
     :func:`hold_flow`. It is the first of the scene drivers a timing clock
@@ -701,13 +706,41 @@ class FlowDriver:
             flow.follow(now)
 
 
-#: Each scene's flow driver, by the scene; gone with the scene.
-_DRIVERS: weakref.WeakKeyDictionary[Scene, FlowDriver] = weakref.WeakKeyDictionary()
+#: Each scene's flow driver, by the scene's id, with the scene and the
+#: execution it was made in (the scene's recorder), both held weakly, as the
+#: scene's timing clock is (:mod:`arachne.assets.timing`): kept by identity,
+#: so a scene's own hash or equality is never asked, and an entry answers
+#: only for its very scene in that execution: a scene executed again in
+#: place (made anew on the same object, its updaters gone) has no driver
+#: until its first flow there. An entry goes with its scene.
+_DRIVERS: dict[int, tuple[weakref.ref[Scene], weakref.ref[Any], FlowDriver]] = {}
 
 
 def flow_driver(scene: Scene) -> FlowDriver | None:
-    """``scene``'s flow driver, or ``None`` before its first flow."""
-    return _DRIVERS.get(scene)
+    """``scene``'s flow driver in its current execution, or ``None`` before
+    its first flow there.
+    """
+    held = _DRIVERS.get(id(scene))
+    if held is None or held[0]() is not scene:
+        return None
+    if held[1]() is not scene.__dict__.get("_arachne_timeline"):
+        return None
+    return held[2]
+
+
+def _keep_driver(scene: Scene, driver: FlowDriver) -> None:
+    key = id(scene)
+    held = _DRIVERS.get(key)
+    if held is None or held[0]() is not scene:
+        weakref.finalize(scene, _forget_driver, key)
+    execution = weakref.ref(scene._arachne_timeline)
+    _DRIVERS[key] = (weakref.ref(scene), execution, driver)
+
+
+def _forget_driver(key: int) -> None:
+    held = _DRIVERS.get(key)
+    if held is not None and held[0]() is None:
+        del _DRIVERS[key]
 
 
 def hold_flow(scene: Scene, flow: Flow) -> None:
@@ -716,11 +749,12 @@ def hold_flow(scene: Scene, flow: Flow) -> None:
     the scene's updaters, or handed to the scene's timing clock when it has
     one (:func:`arachne.assets.timing.drive`).
     """
-    driver = _DRIVERS.get(scene)
+    driver = flow_driver(scene)
     if driver is None:
         from arachne.assets.timing import drive
 
-        driver = _DRIVERS[scene] = FlowDriver(scene)
+        driver = FlowDriver(scene)
+        _keep_driver(scene, driver)
         drive(scene, driver)
     driver.hold(flow)
 
@@ -808,11 +842,9 @@ class ZoomInto(Animation):
                 )
             self._fade_in = _window(self._legible_from(inside))
         #: Each piece the frame's edge cuts, or a connector or label whose
-        #: ends it cuts: its family, how each member shows now, and the
-        #: share of the zoom it fades out over.
-        self._fading: list[
-            tuple[list[Mobject], list[Opacities], tuple[float, float]]
-        ] = []
+        #: ends it cuts: how its family shows now, and the share of the zoom
+        #: it fades out over.
+        self._fading: list[_Faded] = []
         pieces = _pieces(self._scene_mobjects, block, frame)
         cuts = {id(piece): self._cut_at(piece) for piece in pieces}
         joins = _joins(self._scene_mobjects)
@@ -825,10 +857,7 @@ class ZoomInto(Animation):
             cut = min((c for c in held if c is not None), default=None)
             if cut is None:
                 continue
-            family = list(piece.get_family())
-            self._fading.append(
-                (family, [opacities_of(m) for m in family], (max(0.0, cut - FADE), cut))
-            )
+            self._fading.append(_Faded(piece, (max(0.0, cut - FADE), cut)))
         super().begin()
 
     def _height(self, alpha: float) -> float:
@@ -917,10 +946,53 @@ class ZoomInto(Animation):
                 inside.get_family(), self.block.inside_shown, strict=True
             ):
                 set_opacities(member, scaled(shown, shown_share))
-        for family, faded, window in self._fading:
-            keep = 1.0 - _ramp(share, window)
-            for member, opacities in zip(family, faded, strict=True):
-                set_opacities(member, scaled(opacities, keep))
+        for faded in self._fading:
+            faded.show(1.0 - _ramp(share, faded.window))
+
+
+class _Faded:
+    """A piece a zoom fades, ``window`` the share of the zoom it fades out
+    over, and how each member of its family showed when the zoom began.
+
+    It is shown for its family as it is then: a member put in since (the
+    glyphs a readout's new value replaced its own with) shows as the member
+    it stands in place of, its parent's child at its place when the zoom
+    began, else that parent's last child then, else the parent; a member
+    since taken out, as it showed.
+    """
+
+    def __init__(self, piece: Mobject, window: tuple[float, float]) -> None:
+        self.piece = piece
+        self.window = window
+        # Held, so that no member's id is taken by a later mobject.
+        self._family = list(piece.get_family())
+        self._shown = {id(m): opacities_of(m) for m in self._family}
+        self._children = {
+            id(m): [id(child) for child in m.submobjects] for m in self._family
+        }
+
+    def show(self, keep: float) -> None:
+        """Show the piece at ``keep`` of how it showed."""
+        done: set[int] = set()
+
+        def walk(member: Mobject, stands_for: int) -> None:
+            if id(member) in done:
+                return
+            done.add(id(member))
+            set_opacities(member, scaled(self._shown[stands_for], keep))
+            had = self._children[stands_for]
+            for place, child in enumerate(member.submobjects):
+                if id(child) in self._shown:
+                    walk(child, id(child))
+                elif had:
+                    walk(child, had[min(place, len(had) - 1)])
+                else:
+                    walk(child, stands_for)
+
+        walk(self.piece, id(self.piece))
+        for member in self._family:
+            if id(member) not in done:
+                set_opacities(member, scaled(self._shown[id(member)], keep))
 
 
 #: The zooms that hold each camera frame, by the frame's id: each entry
@@ -1101,10 +1173,10 @@ class ZoomOut(Animation):
         scene = self._scene() if self._scene is not None else None
         if scene is not None:
             present = {id(m) for m in scene.get_mobject_family_members()}
-            for family, _, _ in zoom._fading:
-                if id(family[0]) not in present:
+            for faded in zoom._fading:
+                if id(faded.piece) not in present:
                     raise ValueError(
-                        f"a {type(family[0]).__name__} the ZoomInto faded has left"
+                        f"a {type(faded.piece).__name__} the ZoomInto faded has left"
                         " the scene: ZoomOut brings back each piece its ZoomInto"
                         " faded, so keep it in the scene until the return"
                     )

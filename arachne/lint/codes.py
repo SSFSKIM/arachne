@@ -97,7 +97,8 @@ _TABLE = (
         _CLEARANCE,
         "a text overlaps another text or a shape",
         "Move one of the two apart, or place one against the other with a gap.",
-        ("overlap", "clock_margin"),
+        # A diagram label on its own line: the line shown each side of it.
+        ("overlap", "before", "after", "before_screen", "after_screen", "clock_margin"),
     ),
     Code(
         "gap.text",
@@ -485,8 +486,8 @@ _TABLE = (
         " readout itself, such as FadeIn) while the body moved, so the number on"
         " screen is not the body's; one tick behind is the lag of a readout"
         " added before an open world, and is not reported",
-        "Add the readout with self.add(...), or bring it in before the world"
-        " starts, so it updates while the body moves.",
+        "Add the readout with self.add(...), with its world or after it, and"
+        " do not animate it in, so it updates while the body moves.",
         ("body", "tick", "scene_tick"),
     ),
 )

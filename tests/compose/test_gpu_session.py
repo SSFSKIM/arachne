@@ -410,3 +410,18 @@ def test_an_object_map_of_every_drawable_holds_none_of_what_layers_read(
         footprint = found.objects[carrier]
         assert footprint.mask is not None
         assert footprint.mask.any()
+
+
+def test_a_picture_a_zoom_fades_is_drawn_faded_and_back_as_before(session_of, software):
+    stacked = session_of("ZoomPastAPictureOnGpu")
+    assert stacked.route == "gpu"
+    drawn = session_of("ZoomPastAPicture")
+    rate = SMALL["frame_rate"]
+    before = _pixels(stacked, Fraction(3, rate))
+    # Through the move-in, as the picture fades, the stack draws what the
+    # camera draws of the same scene.
+    for tick in range(8, 39):
+        t = Fraction(tick, rate)
+        assert _close(_pixels(stacked, t), _pixels(drawn, t))
+    # Back, the frame is drawn as before the move-in, to the byte.
+    assert _close(_pixels(stacked, Fraction(78, rate)), before, within=0)

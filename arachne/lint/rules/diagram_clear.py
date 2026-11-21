@@ -29,6 +29,21 @@ every instant it is asked, and reports them under the clearance codes:
   its drawn line, each curve sampled at 17 points, as wide as
   :data:`LINE_REACH` (0.03 units) each side of its centre, so a line that
   passes the pill without touching it is clear though its box holds it.
+- ``overlap.text`` for a label on its plate at its connector's middle (a
+  connector that has carried no flow): its plate over its own line, leaving
+  less than :data:`MIN_STUB` (0.08 screen units, a unit of the home frame)
+  of the line showing on either side of it, so a viewer cannot see a line
+  runs there. The plate hides the line only where it paints (some fill)
+  and is drawn after it. The stubs run along the line as drawn (its
+  corners, its ends where the head and the pieces cut it), each curve
+  sampled at 65 points, from where the plate's box covers a length of it,
+  counting only what the frame shows of it (a line running on off the
+  screen shows only to the frame's edge);
+  each is measured in scene units and put on screen by the home frame's
+  width over the frame's (a zoomed-in frame makes it longer), whatever the
+  frame's height. The label is judged at the instants, and when shown, as
+  its legible height is; the message gives the stubs in scene units at
+  that frame and the fix, to widen the gap or drop the label.
 
 A diagram is an engine :class:`~arachne.mobject.diagram.Diagram` (or a
 class made from it), known by the mobject the record holds, never by a
@@ -39,17 +54,21 @@ with no diagram has no finding here, whatever else it draws.
 from __future__ import annotations
 
 __all__ = [
+    "INLINE_FIX",
+    "MIN_STUB",
     "Beside",
     "DiagramRule",
     "beside_labels",
     "diagram_clear",
     "diagram_findings",
     "diagram_ids",
+    "inline_labels",
+    "line_stubs",
 ]
 
 import itertools
 import math
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from fractions import Fraction
@@ -60,7 +79,7 @@ import numpy as np
 from ..findings import Finding, Holder
 from ..parts import Part, Parts, source_of
 from ._excuse import muted, paired
-from ._geometry import box_gap
+from ._geometry import box_gap, union
 from ._rule import InstantRule, Terms
 from ._units import Measured, measured_units
 from .frame_edge import EDGE_SLACK
@@ -85,6 +104,23 @@ _DIAGRAMS: ContextVar[frozenset[str]] = ContextVar("diagrams", default=frozenset
 LINE_REACH = 0.03
 #: What a label set beside its line is told.
 BESIDE_FIX = "set the connector's label_side= to a side with room"
+#: The least stretch of its own line a label on its connector's middle
+#: leaves showing on each side of its plate, in screen units: units of the
+#: home frame (the configuration's), whatever the camera's frame is then;
+#: about 5 pixels at -ql and 11 at 1080p. Under it a viewer cannot see a
+#: line runs under the label. Measured on Linux's fonts: the shortest stub
+#: of a scene that hid its line, 0.031; the shortest kept, 0.148 (a zoom's
+#: inner wire at the frame it ends on) and 0.211 at the whole frame.
+MIN_STUB = 0.08
+#: What a label on its connector's middle that hides its line is told.
+INLINE_FIX = "widen the gap or drop the label"
+#: How far under :data:`MIN_STUB` a stub may fall as floating point's
+#: error, not as a line shorter on screen.
+STUB_TOLERANCE = 1e-9
+#: The points each curve of a connector is sampled at for its stubs: 64
+#: steps, as a path's arc length is read (``ArcLength``), so a curved stub
+#: near the least is measured as the connector's own length is.
+STUB_SAMPLES = 65
 
 
 def diagram_findings(parts: Parts, terms: Terms) -> list[Finding]:
@@ -104,7 +140,14 @@ def diagram_findings(parts: Parts, terms: Terms) -> list[Finding]:
     ]
     source = source_of(parts)
     beside = beside_labels(*source) if source is not None else {}
-    found = [*_edge_findings(parts, labels), *_beside_findings(parts, labels, beside)]
+    inline = inline_labels(*source) if source is not None else {}
+    seen = text_heights(parts)
+    shown = {part.id for part, _, _ in seen}
+    found = [
+        *_edge_findings(parts, labels),
+        *_beside_findings(parts, labels, beside),
+        *_inline_findings(parts, [unit for unit in labels if unit.id in shown], inline),
+    ]
     on = [unit for unit in labels if unit.on(parts.frame)]
     for a, b in itertools.combinations(on, 2):
         finding = _pair(parts, terms, a, b, beside)
@@ -112,7 +155,7 @@ def diagram_findings(parts: Parts, terms: Terms) -> list[Finding]:
             found.append(finding)
     small = {
         part.id
-        for part, _, tall in text_heights(parts)
+        for part, _, tall in seen
         if tall < SMALL_PIXELS and _held(part.within, kinds)
     }
     if small:
@@ -214,6 +257,127 @@ def _beside_findings(
     return found
 
 
+def _inline_findings(
+    parts: Parts, labels: list[Measured], inline: Mapping[str, str]
+) -> list[Finding]:
+    """Each label on its connector's middle whose plate leaves less than
+    :data:`MIN_STUB` of the connector's drawn line showing, on screen, on
+    either side of it. A plate hides the line where it paints (some fill)
+    and is drawn after it; a label with no such plate, a connector whose
+    line is not drawn, or a plate off its line reports nothing.
+    """
+    found = []
+    view = parts.view
+    # Points are on screen, in home-frame units: back to scene units, and a
+    # scene length on screen, by the home frame's width over the frame's.
+    to_scene = (
+        view.frame_width / view.home_width,
+        view.frame_height / view.home_height,
+    )
+    scale = view.home_width / view.frame_width
+    for unit in labels:
+        connector = inline.get(unit.id)
+        line = next((p for p in parts.parts if p.id == connector), None)
+        if line is None:
+            continue
+        (drawn,) = line.leaves
+        plates = [
+            leaf.screen_box
+            for leaf in unit.leaves
+            if leaf.plate and leaf.fill_opacity > 0 and leaf.order > drawn.order
+        ]
+        curves = drawn.outline(STUB_SAMPLES)
+        if not plates or curves is None:
+            continue
+        stubs = line_stubs(curves, union(plates), to_scene=to_scene, frame=parts.frame)
+        if stubs is None:
+            continue
+        before, after = stubs
+        on_screen = (before * scale, after * scale)
+        if not _shows_too_little(on_screen):
+            continue
+        t = Fraction(parts.t)
+        found.append(
+            Finding(
+                "overlap.text",
+                t,
+                t,
+                (unit.object, line.as_object(parts)),
+                message=(
+                    f"diagram label {unit.said!r} leaves too little of its own"
+                    f" connector's line showing: {before:.3f} units before its"
+                    f" plate and {after:.3f} after at this frame ({on_screen[0]:.3f}"
+                    f" and {on_screen[1]:.3f} on screen, under the {MIN_STUB} a side"
+                    f" needs to read as a line): {INLINE_FIX}"
+                ),
+                detail={
+                    "before": round(before, 4),
+                    "after": round(after, 4),
+                    "before_screen": round(on_screen[0], 4),
+                    "after_screen": round(on_screen[1], 4),
+                },
+                fix=INLINE_FIX,
+            )
+        )
+    return found
+
+
+def _shows_too_little(on_screen: tuple[float, float]) -> bool:
+    """Whether either stub, on screen, falls short of :data:`MIN_STUB` by
+    more than floating point's error.
+    """
+    return min(on_screen) < MIN_STUB - STUB_TOLERANCE
+
+
+def line_stubs(
+    curves: np.ndarray,
+    box: Box,
+    to_scene: tuple[float, float] = (1.0, 1.0),
+    frame: Box | None = None,
+) -> tuple[float, float] | None:
+    """How far a line runs, along its path, before ``box`` first covers a
+    length of it and after ``box`` last does: ``curves`` its curves as
+    polylines, ``(curves, samples, 2)``, joined as straight steps, clipped
+    against ``box`` where they lie; each length a step's run between its cut
+    shares, with ``to_scene`` scaling its two axes (screen to scene units).
+    With ``frame``, only what lies inside it runs: a line leaving the frame
+    runs no length until it comes back. A box that only touches the line
+    covers none of it; a jump from one curve to the next, where they do not
+    meet, runs no length. ``None`` when the box covers none of it.
+    """
+    low, high = np.array(box[:2]), np.array(box[2:])
+    axes = np.array(to_scene)
+    run = 0.0
+    first = last = None
+    for curve in curves:
+        for start, stop in zip(curve[:-1], curve[1:], strict=True):
+            length = float(np.linalg.norm((stop - start) * axes))
+            shown = (
+                (0.0, 1.0)
+                if frame is None
+                else _crossing(start, stop, np.array(frame[:2]), np.array(frame[2:]))
+            )
+            inside = _crossing(start, stop, low, high)
+            if inside is not None and (inside[1] - inside[0]) * length > 0:
+                enter, leave = inside
+                if first is None:
+                    first = run + _shown_up_to(float(enter), shown) * length
+                last = run + _shown_up_to(float(leave), shown) * length
+            run += _shown_up_to(1.0, shown) * length
+    if first is None or last is None:
+        return None
+    return first, run - last
+
+
+def _shown_up_to(share: float, shown: tuple[float, float] | None) -> float:
+    """How much of a step, up to its ``share``, lies in its ``shown`` shares
+    (``None`` when it lies outside the frame).
+    """
+    if shown is None:
+        return 0.0
+    return max(0.0, min(share, shown[1]) - shown[0])
+
+
 def _line_distance(box: Box, part: Part) -> float:
     """How far the box stands from the line ``part`` draws (0 where the
     line runs through it): its curves sampled, as straight steps.
@@ -242,16 +406,7 @@ def _step_distance(
     0 where the step enters it.
     """
     step = stop - start
-    enter, leave = 0.0, 1.0
-    for axis in (0, 1):
-        if abs(step[axis]) < 1e-15:
-            if not low[axis] <= start[axis] <= high[axis]:
-                enter, leave = 1.0, 0.0
-            continue
-        a = (low[axis] - start[axis]) / step[axis]
-        b = (high[axis] - start[axis]) / step[axis]
-        enter, leave = max(enter, min(a, b)), min(leave, max(a, b))
-    if enter <= leave:
+    if _crossing(start, stop, low, high) is not None:
         return 0.0
     ends = [
         float(np.linalg.norm(np.maximum(np.maximum(low - p, p - high), 0.0)))
@@ -266,6 +421,25 @@ def _step_distance(
         )
         ends.append(float(np.linalg.norm(start + t * step - corner)))
     return min(ends)
+
+
+def _crossing(
+    start: np.ndarray, stop: np.ndarray, low: np.ndarray, high: np.ndarray
+) -> tuple[float, float] | None:
+    """The shares of the step ``start``-``stop`` at which it enters and
+    leaves the box ``low``-``high``; ``None`` where it misses it.
+    """
+    step = stop - start
+    enter, leave = 0.0, 1.0
+    for axis in (0, 1):
+        if abs(step[axis]) < 1e-15:
+            if not low[axis] <= start[axis] <= high[axis]:
+                return None
+            continue
+        a = (low[axis] - start[axis]) / step[axis]
+        b = (high[axis] - start[axis]) / step[axis]
+        enter, leave = max(enter, min(a, b)), min(leave, max(a, b))
+    return (enter, leave) if enter <= leave else None
 
 
 def _edge_findings(parts: Parts, labels: list[Measured]) -> list[Finding]:
@@ -325,27 +499,14 @@ def beside_labels(record: Record, capture: Capture) -> dict[str, Beside]:
     ``flow_reach``). A diagram, connector or label the record holds no
     state of at ``capture`` adds nothing.
     """
-    from arachne.mobject.diagram import Diagram, Flow
-
-    def held(mob: Mobject, name: str, default: Any) -> Any:
-        state = record.node_state(mob, capture)
-        return default if state is None else state.get(name, default)
-
-    def members(mob: Mobject) -> tuple[Mobject, ...]:
-        state = record.node_state(mob, capture)
-        return () if state is None else state.submobjects
+    from arachne.mobject.diagram import Flow
 
     found: dict[str, Beside] = {}
-    for diagram in record.mobjects():
-        if not isinstance(diagram, Diagram):
-            continue
-        inside = members(diagram)
-        edges = [e for e in held(diagram, "edges", ()) if any(e is m for m in inside)]
-        labels = {id(held(e, "label", None)) for e in edges}
-        connectors = {id(e) for e in edges}
-        for edge in edges:
-            label = held(edge, "label", None)
-            if label is None or not float(held(edge, "flow_reach", 0.0)) > 0:
+    for inside, edges in _diagram_connectors(record, capture):
+        labels = {id(label) for _, label, _ in edges}
+        connectors = {id(edge) for edge, _, _ in edges}
+        for edge, label, flowed in edges:
+            if label is None or not flowed:
                 continue
             others = [
                 m
@@ -361,6 +522,51 @@ def beside_labels(record: Record, capture: Capture) -> dict[str, Beside]:
                 ),
             )
     return found
+
+
+def inline_labels(record: Record, capture: Capture) -> dict[str, str]:
+    """The labels of ``record``'s engine diagrams on their plates at their
+    connectors' middles in ``capture`` (each connector's that has carried
+    no flow), by stable id, each with its connector's stable id.
+    """
+    return {
+        record.origin(label).id: record.origin(edge).id
+        for _, edges in _diagram_connectors(record, capture)
+        for edge, label, flowed in edges
+        if label is not None and not flowed
+    }
+
+
+def _diagram_connectors(
+    record: Record, capture: Capture
+) -> Iterator[tuple[tuple[Mobject, ...], list[tuple[Mobject, Any, bool]]]]:
+    """Each engine diagram of ``record`` as ``capture`` holds it: its
+    members, and each connector among them with its label (``None`` without
+    one) and whether it has carried a flow (its ``flow_reach``).
+    """
+    from arachne.mobject.diagram import Diagram
+
+    def held(mob: Mobject, name: str, default: Any) -> Any:
+        state = record.node_state(mob, capture)
+        return default if state is None else state.get(name, default)
+
+    for diagram in record.mobjects():
+        if not isinstance(diagram, Diagram):
+            continue
+        state = record.node_state(diagram, capture)
+        inside = () if state is None else state.submobjects
+        yield (
+            inside,
+            [
+                (
+                    edge,
+                    held(edge, "label", None),
+                    float(held(edge, "flow_reach", 0.0)) > 0,
+                )
+                for edge in held(diagram, "edges", ())
+                if any(edge is m for m in inside)
+            ],
+        )
 
 
 def diagram_ids(record: Record) -> frozenset[str]:

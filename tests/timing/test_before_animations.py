@@ -123,8 +123,8 @@ def test_a_scene_without_a_hash_that_declares_nothing_plays(opened):
 @pytest.mark.xfail(
     strict=True,
     raises=TypeError,
-    reason="pre-existing: the scene-keyed registries diagram.py:523 _DRIVERS,"
-    " media/clock.py:297 _DRIVERS and motion.py:109 _SETTLES hash the scene",
+    reason="pre-existing: the scene-keyed registry media/clock.py _DRIVERS"
+    " hashes the scene",
 )
 def test_a_scene_without_a_hash_declares_timing(opened):
     session = opened("EqualScenesDeclared", 60)

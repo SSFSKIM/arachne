@@ -27,6 +27,7 @@ from arachne import (
     there_and_back,
 )
 from arachne.mobject.diagram import _ramp
+from arachne.mobject.marks._style import opacities_of
 from arachne.session import Session
 from arachne.timeline import admission, hooks
 from arachne.timeline.draw import Drawing
@@ -139,7 +140,7 @@ def test_the_return_plays_each_fade_window_backwards(opened):
     scene = session.scene
     zoom = scene.zoom
     (neighbour_window,) = [
-        window for family, _, window in zoom._fading if family[0] is scene.neighbour
+        faded.window for faded in zoom._fading if faded.piece is scene.neighbour
     ]
     inside = scene.middle.inside
     shown = max(
@@ -245,7 +246,7 @@ def test_a_return_under_declared_timing_runs_through_the_clock(opened):
     (points, shown), (points_after, shown_after) = scene.before, scene.after
     assert np.array_equal(points_after, points)
     assert shown_after == shown
-    assert any(family[0] is scene.picture for family, _, _ in scene.zoom._fading)
+    assert any(faded.piece is scene.picture for faded in scene.zoom._fading)
     steps = range(0, 2 * TICKS + 1)
     seen = _drawn(
         session,
@@ -349,3 +350,40 @@ def test_a_return_refuses_a_reversed_easing():
     zoom, _ = _played(Block("b", width=2.2, height=1.4).shift(RIGHT * 2))
     with pytest.raises(ValueError, match="rate_func"):
         ZoomOut(zoom, reverse_rate_function=True).begin()
+
+
+def test_a_readout_changed_while_zoomed_in_comes_back_with_its_new_glyphs(opened):
+    scene = opened("ZoomPastReadouts").scene
+    nine, ten = scene.before
+    # Hidden on the block, its new glyphs too.
+    assert all(max(f + s + b, default=0) == 0 for f, s, b in scene.while_in[0][1:])
+    for readout, said in ((scene.nine, "9"), (scene.ten, "10")):
+        assert readout.label.original_text == said
+        # Back, every glyph shows as the glyph it replaced did.
+        glyphs = readout.label.family_members_with_points()
+        assert len(glyphs) == len(said)
+        assert [opacities_of(g) for g in glyphs] == [scene.glyph] * len(said)
+        assert _shows(readout) == 1
+    assert shows(scene.nine) == nine
+    assert shows(scene.ten)[:2] == ten[:2]
+
+
+def test_a_picture_the_move_in_cuts_fades_and_comes_back_as_it_was(opened):
+    session = opened("ZoomPastAPicture")
+    scene = session.scene
+    alpha = scene.before[..., 3]
+    # At its own opacity before; hidden on the block, its colours kept; back
+    # pixel for pixel.
+    assert alpha.max() == int(255 * 0.6)
+    assert scene.while_in[..., 3].max() == 0
+    assert np.array_equal(scene.while_in[..., :3], scene.before[..., :3])
+    assert np.array_equal(scene.after, scene.before)
+    # Faded through its window, drawn as before once back.
+    seen = _drawn(
+        session,
+        [Fraction(j, 20) for j in range(111)],
+        lambda s: int(s.picture.pixel_array[..., 3].max()),
+    )
+    assert seen[0] == seen[-1] == alpha.max()
+    assert len(set(seen)) > 3
+    assert session.frame(5.25).tobytes() == session.frame(0.25).tobytes()

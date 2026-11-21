@@ -4,6 +4,7 @@ each that carries a number draws it.
 
 from __future__ import annotations
 
+import copy
 import math
 from fractions import Fraction
 from pathlib import Path
@@ -282,6 +283,34 @@ def test_a_trail_drops_each_dot_where_its_object_was_when_it_was_due():
     assert [d[0] for d in trail.dots] == pytest.approx(
         [-1.0 + 0.012 * k for k in range(26)], abs=1e-9
     )
+
+
+@pytest.mark.parametrize("trail_first", [False, True])
+def test_a_copy_of_a_dot_and_its_trail_leaves_its_dots_along_the_copied_dot(
+    trail_first,
+):
+    dot = Dot(LEFT)
+    trail = DottedTrail(dot, interval=0.5)
+    group = arachne.VGroup(trail, dot) if trail_first else arachne.VGroup(dot, trail)
+    copied = copy.deepcopy(group)
+    copied_trail, copied_dot = (
+        copied.submobjects if trail_first else copied.submobjects[::-1]
+    )
+    for _ in range(60):
+        copied_dot.shift(RIGHT * 0.05)
+        copied_trail.update(dt=1 / 60)
+    # The copy follows the copied dot; the original dot never moved.
+    assert [d[0] for d in copied_trail.dots] == pytest.approx([-1.0, 0.5, 2.0])
+    assert trail.dots == ((-1.0, 0.0, 0.0),)
+
+
+def test_a_copy_of_a_trail_alone_follows_the_dot_it_followed():
+    dot = Dot(LEFT)
+    copied = copy.deepcopy(DottedTrail(dot, interval=0.5))
+    for _ in range(60):
+        dot.shift(RIGHT * 0.05)
+        copied.update(dt=1 / 60)
+    assert [d[0] for d in copied.dots] == pytest.approx([-1.0, 0.5, 2.0])
 
 
 def test_a_trail_drops_a_dot_every_interval():
