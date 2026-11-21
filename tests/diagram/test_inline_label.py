@@ -226,6 +226,9 @@ def test_a_box_that_only_touches_a_line_covers_none_of_it():
     low, high = np.array(box[:2]), np.array(box[2:])
     corners = np.array([low, high, [low[0], high[1]], [high[0], low[1]]])
     assert _step_distance(curves[0][0], curves[0][-1], low, high, corners) == 0.0
+    # Nor does it cover a curve that stands still at a point inside it.
+    still = np.array([[[1.5, 1.5]] * 4])
+    assert line_stubs(np.concatenate([curves, still]), box) is None
 
 
 def test_a_stub_is_measured_in_scene_units_from_the_screen():

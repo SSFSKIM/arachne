@@ -347,7 +347,7 @@ def line_stubs(
         for start, stop in zip(curve[:-1], curve[1:], strict=True):
             length = float(np.linalg.norm((stop - start) * axes))
             inside = _crossing(start, stop, low, high)
-            if inside is not None and inside[1] > inside[0]:
+            if inside is not None and (inside[1] - inside[0]) * length > 0:
                 enter, leave = inside
                 if first is None:
                     first = run + float(enter) * length
