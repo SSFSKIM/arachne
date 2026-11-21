@@ -76,7 +76,7 @@
     }
   ],
   "checks": {
-    "tool": "arachne.assets 1",
+    "tool": "arachne.assets 2",
     "digest": "sha256:3c1a8d62163dd085a5216ed90852eba94d085ab572b995f5cb1b6b5df2ec7019",
     "results": [
       {"name": "hole", "pass": true},

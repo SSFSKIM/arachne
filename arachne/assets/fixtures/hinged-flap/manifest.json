@@ -85,7 +85,7 @@
   ],
   "anchors": [{"name": "tip", "part": "flap", "attach": "interior", "at": [150, 32]}],
   "checks": {
-    "tool": "arachne.assets 1",
+    "tool": "arachne.assets 2",
     "digest": "sha256:a2acd4c078134554bf1b382d86ce59f39d42f2d792d282e12829d69f07d3ee7d",
     "results": [
       {"name": "hole", "pass": true},

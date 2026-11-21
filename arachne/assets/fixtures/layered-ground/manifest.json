@@ -44,7 +44,7 @@
   ],
   "anchors": [{"name": "peak", "part": "middle", "attach": "interior", "at": [120, 90]}],
   "checks": {
-    "tool": "arachne.assets 1",
+    "tool": "arachne.assets 2",
     "digest": "sha256:2befdaef314db5246a3effdac66d07821248f9e62643ef5ac436202469cf6316",
     "results": [
       {"name": "hole", "pass": true},
