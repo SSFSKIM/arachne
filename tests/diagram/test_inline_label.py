@@ -117,7 +117,7 @@ def test_a_zoom_reports_the_inside_s_label_until_its_line_shows_on_screen(opened
         assert screen < MIN_STUB
     # At the next instant the frame is narrow enough to show the least.
     after = next(width for t, _, width, _ in seen if t > finding.t_end)
-    assert HIDDEN * config.frame_width / after >= MIN_STUB - 0.005
+    assert HIDDEN * config.frame_width / after >= MIN_STUB
 
 
 def test_a_line_s_stubs_run_along_its_bends():
