@@ -957,7 +957,13 @@ def check_drawn(world: World, record: Record, run: _Run, at: Fraction) -> None:
             vouched = tuple(
                 Placement(points, linear, offset).points for points in item.rest
             )
-        drawn = [own_points(member) for member in drawn_members(mobject)]
+        # As floats: a mobject's points keep the type they were given, and an
+        # integer's absolute value can overflow (-128 stays negative in int8).
+        drawn = [
+            np.asarray(own_points(member), dtype=np.float64)
+            for member in drawn_members(mobject)
+        ]
+        vouched = tuple(np.asarray(points, dtype=np.float64) for points in vouched)
         if [own.shape for own in drawn] != [points.shape for points in vouched]:
             _refuse_drawn(
                 record,
@@ -979,7 +985,8 @@ def check_drawn(world: World, record: Record, run: _Run, at: Fraction) -> None:
                 mobject,
                 item,
                 at,
-                f"is drawn up to {gap:.3g} units from where its world last drew it",
+                f"is drawn up to {gap:.3g} {'unit' if gap == 1 else 'units'} from"
+                " where its world last drew it",
             )
 
 
@@ -995,7 +1002,8 @@ def _refuse_drawn(
     then = (
         "it is fixed, so its world would simulate it apart from its drawing"
         if item.fixed
-        else "its world would draw it back there at the stay's first placement"
+        else "it moves, and the simulation drives the stay's first placement, not"
+        " where the scene's code put it"
     )
     raise ValueError(
         f"The {type(mobject).__name__} {where}, a body of a world, {what} as its"
