@@ -72,10 +72,17 @@ pub mod finding {
     pub const SPEED: u32 = 2;
     /// A body's angular speed went above the world's angular speed limit, as its row shows.
     pub const ANGULAR_SPEED: u32 = 3;
-    /// Two bodies may have passed through each other in the step to the row: seen penetrating
-    /// each other (the finding's value is minus the depth seen), within the allowed linear error
-    /// of each other, which could not be told from a crossing (the closest distance measured),
-    /// or not shown apart (NaN).
+    /// Two bodies may have passed through each other in the step to the row: seen penetrating each
+    /// other (the finding's value is minus the depth seen), within the allowed linear error of each
+    /// other, which could not be told from a crossing (the closest distance measured), or not shown
+    /// apart (NaN). Two bodies that pass through each other and end on swapped sides, that sink
+    /// into each other deeper than the solver's allowed linear error, or that come within it and
+    /// part again without the solver registering a contact stay found; two that end the step within
+    /// the solver's prediction distance, on the side they began, never deeper into each other than
+    /// the allowed linear error, are a contact the solver registered a tick late, and are not
+    /// found. A stated limit: a body that grazes over an edge of a thin shape no deeper than the
+    /// solver's allowed linear error, and ends within the prediction distance on its far side, is
+    /// also not found.
     pub const TUNNELLED: u32 = 4;
     /// The solver scaled a body's speed down to its cap in the step to the row: the speed
     /// reached at least the cap, above the world's limit, whatever the row shows.
@@ -95,6 +102,17 @@ pub(crate) struct Recorded {
     pub quarantined: Vec<u32>,
     pub tunnelled: Vec<((u32, u32), f32)>,
     pub capped: Vec<(bool, bool)>,
+}
+
+/// The conditions of the late-contact rule ([`World::findings`]) beyond the pair's nearness at
+/// the step's end, which a test may drop to show what each keeps found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Condition {
+    /// The pair ends the step on the side it began: the directions between the two shapes'
+    /// closest points at the step's start and end agree.
+    SameSide,
+    /// The pair penetrates no deeper than the allowed linear error through the step.
+    Shallow,
 }
 
 /// A body's flags as of the last row: which of the unstable conditions hold for it.
@@ -776,8 +794,11 @@ impl World {
     /// touched the other at the step's start or end, the solver held no contact between them in
     /// the step, and the two, swept through the step's motion (each body's centre of mass along
     /// a line and its turn about it at a constant rate), came within the allowed linear error of
-    /// each other; it is found at the step's last row. The sweep's margin covers rounding while
-    /// the shapes stay within about 1000 units of the origin; beyond that nothing is claimed.
+    /// each other, unless the solver took them into contact a tick late: at the step's end within
+    /// its prediction distance, on the side they began, never deeper into each other than the
+    /// allowed linear error (both numbers the solver's own); it is found at the step's last row.
+    /// The sweep's margin covers rounding while the shapes stay within about 1000 units of the
+    /// origin; beyond that nothing is claimed.
     /// Fixed bodies, two bodies a joint keeps from colliding, and a body found non-finite are
     /// not checked. None of it is in the trace bytes.
     pub fn findings(&self) -> &[[u32; 4]] {
@@ -887,6 +908,14 @@ impl World {
         }
     }
 }
+
+// The late-contact rule's fixtures, with each of its conditions dropped.
+#[cfg(test)]
+mod late_contact;
+
+// Two contact-rich scenes that find nothing, with the evidence of any pair they would.
+#[cfg(test)]
+mod pile;
 
 impl std::fmt::Debug for World {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

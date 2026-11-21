@@ -2,6 +2,8 @@
 
 use rapier2d::parry::bounding_volume::{Aabb, BoundingVolume};
 use rapier2d::parry::query;
+#[cfg(test)]
+use rapier2d::parry::shape::HalfSpace;
 use rapier2d::parry::shape::Shape as Geometry;
 use rapier2d::prelude::*;
 
