@@ -7,11 +7,12 @@ constructors resolve a file name (as given, then under the configuration's
 ``assets_dir``), or ``fixture:<name>`` for one of the engine's own fixture
 assets. Nothing else is searched and nothing is fetched: an address, or a
 file the manifest names by anything but a plain relative path inside the
-asset's directory (an address, an absolute path, a ``..``, a link), is
-``asset.remote``. Every way an asset can be unusable is a finding raised
-with its code: no manifest (``asset.manifest_missing``), a manifest that is
-not valid (``asset.manifest_invalid``, an anchor placed off its part's
-outline and a name a pose could not tell apart included), a file not there
+asset's directory (an address, an absolute path, a ``..``, a link), and a
+manifest that is a link, is ``asset.remote``. Every way an asset can be
+unusable is a finding raised with its code: no manifest
+(``asset.manifest_missing``), a manifest that is not valid
+(``asset.manifest_invalid``, an anchor placed off its part's outline and a
+name a pose could not tell apart included), a file not there
 (``asset.file_missing``), one that cannot be read or drawn exactly
 (``asset.unreadable``), and, once all of that holds, an asset not admitted
 (``asset.unadmitted``): it loads only when its manifest's ``checks`` record
@@ -225,6 +226,7 @@ def read_asset(ref: str | os.PathLike[str]) -> Asset:
     """
     label = os.fspath(ref)
     directory = _directory(label)
+    _unlinked_manifest(directory, label)
     document = _document(_bytes(directory, MANIFEST, label), label)
     manifest = parse_manifest(document, label)
     contents: dict[str, bytes] = {}
@@ -515,6 +517,21 @@ def _local(file: str, directory: Path, label: str) -> None:
             " and through no link)",
             asset=label,
             file=file,
+        )
+
+
+def _unlinked_manifest(directory: Path, label: str) -> None:
+    """Refuse the asset in ``directory`` when its manifest is a link, as
+    :func:`_local` refuses a part file reached through one: the manifest
+    read, the one beside the files and the one the digest names are one.
+    """
+    if (directory / MANIFEST).is_symlink():
+        refuse(
+            "asset.remote",
+            f"the asset {label} has its {MANIFEST} through a link; an asset's"
+            " manifest, like its files, is a plain file inside its directory",
+            asset=label,
+            file=MANIFEST,
         )
 
 
