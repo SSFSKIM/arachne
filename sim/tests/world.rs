@@ -968,3 +968,49 @@ fn a_near_miss_inside_the_prediction_distance_is_no_contact() {
     );
     assert_eq!(w.contacts(), &[] as &[[u32; 4]], "nearest {nearest}");
 }
+
+/// Two bodies at rest attracting each other by the inverse square, each drawn by a ball off its
+/// origin: the line between their centres of mass, where the solver applies a force, is not the
+/// line between their origins. The pull acts along the first, so the isolated pair takes no net
+/// torque: its angular momentum about the origin, `sum m (c_x v_y - c_y v_x)` over the centres
+/// of mass, stays zero through the first step, to the rounding of single precision.
+#[test]
+fn an_attraction_pulls_along_the_line_between_the_centres_of_mass() {
+    let mut w = World::new(2, Integrator::Solver, false).expect("a world");
+    let mut offsets = Vec::new();
+    for (x, offset) in [(-1.0, 0.5), (1.0, -0.5)] {
+        let b = body(&mut w, false, &[x, 0.0], &[0.0, 0.0], 0.0);
+        w.add_shape(Shape {
+            body: b,
+            kind: ShapeKind::Ball { radius: 0.2 },
+            position: vec![0.0, f(offset)],
+            rotation: vec![0.0],
+            density: 1.0,
+            friction: 0.0,
+            restitution: 0.0,
+        })
+        .expect("a ball off its body's origin");
+        offsets.push((b, offset));
+    }
+    w.add_force(Force::Attraction {
+        strength: 1.0,
+        bodies: offsets.iter().map(|&(b, _)| b).collect(),
+    })
+    .expect("the attraction");
+    w.advance_to(1).expect("a tick");
+    let (mut momentum, mut scale) = (0.0, 0.0);
+    for &(b, offset) in &offsets {
+        let m = f64::from(w.mass(b).expect("a mass"));
+        let (p, v) = (&common::poses(&w, b)[1], &common::velocities(&w, b)[1]);
+        let (sin, cos) = (libm::sin(p[2]), libm::cos(p[2]));
+        let (cx, cy) = (p[0] - sin * offset, p[1] + cos * offset);
+        momentum += m * (cx * v[1] - cy * v[0]);
+        scale += m * (cx * cx + cy * cy).sqrt() * (v[0] * v[0] + v[1] * v[1]).sqrt();
+    }
+    assert!(scale > 0.0, "the attraction moved nothing");
+    assert!(
+        momentum.abs() <= 1e-6 * scale,
+        "the first step gave the pair an angular momentum of {momentum:e}, {:e} of its scale",
+        momentum.abs() / scale
+    );
+}

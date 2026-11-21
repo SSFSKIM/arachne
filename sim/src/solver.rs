@@ -9,6 +9,21 @@ use crate::encode::Settings;
 use crate::spec::{Body, Force, Joint, JointKind, Shape, ShapeKind};
 use crate::world::{Condition, Recorded};
 
+/// Body `h`'s centre of mass now, in the world: its shapes' and its point mass's, at its pose. The
+/// solver's own copy (`RigidBody::center_of_mass`) is brought up to date only as it steps, so
+/// before the first step it lacks the point mass, and a body of no shape has it at the origin.
+fn centre_of_mass(bodies: &RigidBodySet, colliders: &ColliderSet, h: RigidBodyHandle) -> Vector {
+    let body = &bodies[h];
+    let mut mass = body.mass_properties().clone();
+    mass.recompute_mass_properties_from_colliders(
+        colliders,
+        &RigidBodyColliders(body.colliders().to_vec()),
+        body.body_type(),
+        body.position(),
+    );
+    mass.world_com
+}
+
 pub(crate) struct Solver {
     world: PhysicsWorld,
     bodies: Vec<RigidBodyHandle>,
@@ -524,10 +539,18 @@ impl Solver {
                     strength,
                     bodies: those,
                 } => {
+                    // Between the centres of mass, where `add_force` applies it: one line of
+                    // action, so an isolated set takes no net torque.
+                    let centres: Vec<Vector> = those
+                        .iter()
+                        .map(|&a| {
+                            centre_of_mass(bodies, &self.world.colliders, self.bodies[a as usize])
+                        })
+                        .collect();
                     for (k, &a) in those.iter().enumerate() {
-                        for &b in &those[k + 1..] {
+                        for (j, &b) in those.iter().enumerate().skip(k + 1) {
                             let (ha, hb) = (self.bodies[a as usize], self.bodies[b as usize]);
-                            let r = bodies[hb].translation() - bodies[ha].translation();
+                            let r = centres[j] - centres[k];
                             let d2 = r.dot(r);
                             let s = strength * self.mass[a as usize] * self.mass[b as usize]
                                 / (d2 * d2.sqrt());

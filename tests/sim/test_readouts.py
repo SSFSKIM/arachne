@@ -434,9 +434,9 @@ def test_a_readout_faded_in_over_a_moving_body_is_stale(opened):
     # Made at 1/5 s, tick 12, and held there through the fade.
     assert finding.detail["body"] == ball
     assert finding.detail["tick"] == 12
-    assert finding.detail["scene_tick"] - 12 > 1
+    assert finding.detail["drawn_tick"] - 12 > 1
     assert Fraction(1, 5) < finding.t_start <= finding.t_end < Fraction(7, 10)
-    assert "shows tick 12 while the scene is at tick" in finding.message
+    assert "shows tick 12 while its body is drawn at tick" in finding.message
     assert "self.add" in finding.fix
 
 
@@ -451,7 +451,7 @@ def test_a_readout_stale_at_its_world_s_last_row_is_reported(opened):
     result = lint(session, rules=(), at=[asked])
     (finding,) = [f for f in result.findings if f.code == "sim.readout_stale"]
     assert (finding.t_start, finding.t_end) == (asked, asked)
-    assert (finding.detail["tick"], finding.detail["scene_tick"]) == (12, 41)
+    assert (finding.detail["tick"], finding.detail["drawn_tick"]) == (12, 41)
 
 
 def test_a_readout_faded_in_over_a_moving_body_is_stale_in_a_forward_lint(opened):
@@ -480,7 +480,7 @@ def test_a_stale_readout_is_reported_to_its_world_s_last_frame_not_after(opened)
         for f in lint(session, rules=(), at=[last]).findings
         if f.code == "sim.readout_stale"
     ]
-    assert [(f.t_start, f.detail["tick"], f.detail["scene_tick"]) for f in found] == [
+    assert [(f.t_start, f.detail["tick"], f.detail["drawn_tick"]) for f in found] == [
         (last, 12, 41)
     ]
     after = [
@@ -517,3 +517,116 @@ def test_a_readout_added_over_a_moving_body_is_not_stale(opened):
 
 def test_an_open_world_s_readout_a_tick_behind_is_not_stale(opened):
     assert _stale(opened("PushedRead")) == []
+
+
+@pytest.mark.parametrize(
+    ("scene", "axis"),
+    [
+        ("HeldWhileRead", 1),
+        ("HeldInAGroupWhileRead", 1),
+        ("OpenHeldWhileRead", 0),
+        ("OpenHeldInAGroupWhileRead", 0),
+    ],
+)
+def test_a_readout_of_a_held_world_shows_the_row_its_body_is_drawn_at(
+    opened, scene, axis
+):
+    """While a fade holds the world's drawing (a fade of the world, or of a
+    group holding it), its rows go on (a closed world's computed to the
+    clock, an open world's stepped) and the point stays where it entered: a
+    readout updating meanwhile shows the row the point is drawn at, not the
+    latest row computed.
+    """
+    session = opened(scene)
+    (ball,) = _bodies(session)
+    t = Fraction(4, 15)
+    state = session.state_at(t)
+    (readout,) = _readouts(state).values()
+    read = _read(state, readout)
+    tick = int(read["sim.reads_tick"].value)
+    assert tick < math.floor(t * 60)
+    (pose,) = _row(session, 0, "pose", tick)
+    x0, y0, x1, y1 = state.node(ball).scene_box
+    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((pose[0], pose[1]), abs=1e-6)
+    assert read["annotation.count"].value == pose[axis]
+    # The body's own quantities answer at that row too: its quantity and its
+    # placement share a tick.
+    body = _read(state, ball)
+    assert body["sim.position"].value[:2] == pytest.approx(
+        ((x0 + x1) / 2, (y0 + y1) / 2), abs=1e-6
+    )
+    assert body["sim.position"].value[:2] == (pose[0], pose[1])
+    # A readout showing the row its body is drawn at is not stale.
+    assert _stale(session) == []
+
+
+def test_a_readout_of_a_body_gone_non_finite_keeps_its_last_number(opened):
+    """The two point masses go non-finite at tick 1: the readout keeps the
+    last number it showed, of tick 0, and the scene runs to its end; the lint
+    reports the bodies unstable and the readout stale, of tick 0.
+    """
+    session = opened("CollapsingRead")
+    assert session.record.duration == Fraction(1, 2)
+    a, _ = _bodies(session)
+    state = session.state_at(Fraction(7, 15))
+    (readout,) = _readouts(state).values()
+    read = _read(state, readout)
+    assert read["sim.reads_tick"].value == 0
+    assert _linked(session, read) == a
+    assert _text(state, readout) == "0.0"
+    found = lint(session, rules=()).findings
+    unstable = [f for f in found if f.code == "sim.unstable"]
+    assert {f.objects[0].id for f in unstable} == set(_bodies(session))
+    assert all(f.detail["signal"] == "non_finite" for f in unstable)
+    stale = [f for f in found if f.code == "sim.readout_stale"]
+    assert stale
+    assert {(f.detail["body"], f.detail["tick"]) for f in stale} == {(a, 0)}
+
+
+def test_a_readout_added_with_a_world_faded_in_at_rest_is_not_stale(opened):
+    """The fade holds the world's drawing while the scene's ticks pass: the
+    readout shows the row its body is drawn at, as the body does, and is
+    not behind it.
+    """
+    session = opened("FadedInWithItsReadout")
+    assert _stale(session) == []
+
+
+def test_a_readout_held_by_its_own_animation_over_a_falling_body_is_stale(opened):
+    """Added with its world, then held by an animation of its own while the
+    point falls: it shows a tick of the wait before (12 at most) while its
+    body is drawn at later ticks.
+    """
+    session = opened("IndicatedOverAFall")
+    (ball,) = _bodies(session)
+    (finding,) = _stale(session)
+    tick = finding.detail["tick"]
+    assert finding.detail["body"] == ball
+    assert tick <= 12
+    assert finding.detail["drawn_tick"] - tick > 1
+    assert set(finding.detail) == {"body", "tick", "drawn_tick"}
+    assert f"shows tick {tick} while its body is drawn at tick" in finding.message
+
+
+@pytest.mark.parametrize("grid", ["render", None])
+def test_a_readout_of_a_world_held_back_into_the_scene_is_not_stale(opened, grid):
+    """Held by hand, removed and added again still held, the world draws
+    its point at a row of its first stay, which its second stay does not
+    hold: the readout keeps that row's value, which agrees with the drawing,
+    and the row its body is drawn at is no tick of the stay the scene is in.
+    Linted from the record or through a forward run, it is not reported.
+    """
+    session = opened("HeldAwayAndBackRead", grid=grid)
+    first, second = session.record.bakes.occurrences
+    assert second.first_tick == 45
+    state = session.state_at(Fraction(14, 15))
+    (readout,) = _readouts(state).values()
+    read = _read(state, readout)
+    assert int(read["sim.reads_body"].value[0]) == first.ordinal
+    assert read["sim.reads_tick"].value <= first.last_tick
+    (ball,) = _bodies(session, second.ordinal)
+    for quantity in state.quantities[ball]:
+        assert quantity.unreadable == (
+            "its world holds it drawn at a row of an earlier stay"
+        )
+    assert _stale(session) == []

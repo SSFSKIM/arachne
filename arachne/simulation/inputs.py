@@ -139,7 +139,10 @@ def _displayed(value: Any, depth: int) -> bool:
     if depth <= 0:
         return False
     if isinstance(value, dict):
-        return any(_displayed(item, depth - 1) for item in value.values())
+        return any(
+            _displayed(key, depth - 1) or _displayed(item, depth - 1)
+            for key, item in value.items()
+        )
     if isinstance(value, (list, tuple, set, frozenset)):
         return any(_displayed(item, depth - 1) for item in value)
     return False

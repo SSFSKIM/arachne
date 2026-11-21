@@ -37,7 +37,15 @@ the world enters, or at the evaluation that ends a play, that row may
 already exist and is shown. An open world steps in its own updater: its
 readout shows the tick the world has stepped to, the clock's when the
 readout comes after the world in the scene's update order (added after
-it), the tick before when it comes before.
+it), the tick before when it comes before. While an animation holds the
+world's drawing (one of the world, or of a group holding it), its rows go
+on while its bodies stay where they are: the readout shows the row they
+are drawn at, the one the world last placed them at
+(:meth:`.Stay.drawn_tick`), not the latest computed.
+
+A value that is not a finite number (its world went unstable) is not
+shown: the readout keeps the last one it showed, declared as of that one's
+tick.
 
 Outside its world's stays (the world removed from the scene) it holds the
 last value its updater set, which may come from a play's closing
@@ -47,7 +55,8 @@ row it is. Before it has read any stay, ``sim.reads_body`` and
 ``sim.quantity_unreadable``) and it shows 0. An animation of the readout
 itself (``FadeIn``) holds its updating, so it shows an old tick while its
 body moves: the lint reports ``sim.readout_stale`` when that is more than
-a tick behind the scene while its world is in the scene.
+a tick behind the row its body is drawn at while its world is in the
+scene.
 
 **Only the world sets it.** :meth:`BodyReadout.set_value`, and so
 :class:`~arachne.mobject.annotation.CountUp`, are refused, so the number
@@ -151,24 +160,40 @@ def show_quantity(readout: BodyReadout, dt: float) -> None:
     """A body readout's updater: show the body's quantity at the row its
     world shows at the scene clock's tick (:func:`.stay.clock_row`: a closed
     world computed to the clock's tick, as the world's own updater does),
-    and declare which tick it is of. Outside a stay it does nothing. It
-    names ``dt``, as the world's updater does, and never reads it: a ticked
-    play runs it only where a frame reads. It reads the scene clock and the
-    record's bakes, and writes the readout's own family. A play drawn from
+    or, while the world's drawing is held, at the row its bodies are drawn
+    at, and declare which tick it is of. Outside a stay, or where the value
+    is not a finite number, it does nothing. It names ``dt``, as the
+    world's updater does, and never reads it: a ticked play runs it only
+    where a frame reads. It reads the scene clock, the record's bakes and
+    whether its world's drawing is held, and writes the readout's own
+    family. A play drawn from
     a sealed bake admits it only for a closed world, handing it the bake's
     row through :func:`.stay.clock_row`.
     """
     shows = readout._shows
-    found = clock_row(shows.world, stepping=False)
+    world = shows.world
+    found = clock_row(world, stepping=False)
     if found is None:
         return
     stay, tick = found
+    if world.updating_suspended or world._drawing_suspended:
+        # Held (by its own animation or an ancestor's): its bodies are drawn
+        # at the row last placed, not the latest computed.
+        drawn = stay.drawn_tick()
+        if drawn is None:
+            return
+        tick = drawn
     (quantity,) = measures.body_quantities(
         bakes_of(stay.record), stay.ordinal, shows.body, tick, (shows.quantity,)
     )
     if quantity.value is None:
         return
-    readout._show(shows.scale * _part(quantity.value, shows.part))
+    value = shows.scale * _part(quantity.value, shows.part)
+    if not math.isfinite(value):
+        # Not a number to show (the world went unstable): the last one shown
+        # stays, declared as of its own tick.
+        return
+    readout._show(value)
     shown = ShownQuantity(
         shows.quantity, shows.part, shows.scale, shows.body, stay.ordinal, tick
     )

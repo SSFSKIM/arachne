@@ -243,6 +243,24 @@ def test_the_store_is_kept_under_the_simulation_extension_too(monkeypatch):
         assert store._sim_identity().startswith("arachne-sim ")
 
 
+def test_an_extension_s_identity_covers_its_python_source(tmp_path, monkeypatch):
+    """The Python an extension package runs beside its compiled code (the
+    readers its arrays are read through) is part of its identity: a changed
+    module is another identity, a type stub is not part of it.
+    """
+    package = tmp_path / "fake_extension"
+    package.mkdir()
+    module = package / "__init__.py"
+    module.write_text("def read(rows):\n    return rows\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    found = store._extension_identity("fake_extension", "fake-extension")
+    (package / "__init__.pyi").write_text("def read(rows: list) -> list: ...\n")
+    assert store._extension_identity("fake_extension", "fake-extension") == found
+    module.write_text("def read(rows):\n    return rows[::-1]\n")
+    assert store._extension_identity("fake_extension", "fake-extension") != found
+
+
 def test_a_store_filled_under_one_simulation_build_answers_nothing_under_another(
     tmp_path, monkeypatch
 ):
