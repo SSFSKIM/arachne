@@ -152,7 +152,11 @@ class Diagram(VGroup):
         ``"left"`` above). Which end the connector starts from does not
         change it. The lint :data:`~arachne.lint.rules.diagram_clear`
         reports a label set beside its line that lands on another piece,
-        connector or label of the diagram; ``label_side`` is the fix.
+        connector or label of the diagram; ``label_side`` is the fix. On a
+        connector with no flow it reports a label whose plate leaves less
+        than :data:`~arachne.lint.rules.diagram_clear.MIN_STUB` of the line
+        showing on screen on either side; ``label_side`` does not move that
+        label: widen the gap between the pieces, or drop the label.
 
         An elbow runs ``stub`` straight out of its start before it turns,
         and ``end_stub`` (``stub`` when ``None``) into its end, each cut to
@@ -406,14 +410,16 @@ class Flow(VGroup):
     tokens.
 
     A connector's label (the one :meth:`Diagram.connect` makes) moves
-    beside the line as the flow is made, so the tokens never pass under
-    it: at the line's middle, to the connector's ``label_side``, by half
-    the pill's extent along the line's normal there, the tokens' reach
-    (``flow_reach``, in scene units: the largest of every flow on the
+    beside the line once, as the flow is made, placed from the line as it
+    stands then: at the line's middle, to the connector's ``label_side``,
+    by half the pill's extent along the line's normal there, the tokens'
+    reach (``flow_reach``, in scene units: the largest of every flow on the
     connector, whatever order they were made in) and :data:`LABEL_GAP`.
-    Its place hangs on the connector and its flows alone. Make the flow
-    before the diagram is shown, or the label moves as it is made. The
-    label is also drawn above the tokens.
+    Its place hangs on the connector and its flows alone, and it is not
+    kept: a later play that moves or bends the line apart from its label
+    takes the tokens along the new path and leaves the label where it was
+    put. Make the flow before the diagram is shown, or the label moves as
+    it is made. The label is also drawn above the tokens.
     """
 
     def __init__(
