@@ -289,23 +289,15 @@ def test_a_fixed_body_left_as_declared_reads_its_pose_past_its_stay(opened):
     assert read["sim.position"].value == pytest.approx((0.0, 2.0, 0.0), abs=1e-6)
 
 
-def test_a_fixed_body_shifted_after_its_declaration_is_unreadable_past_its_stay(
+def test_a_fixed_body_shifted_after_its_declaration_is_refused_as_its_world_enters(
     opened,
 ):
     """Shifted between its declaration and its world's entry, the fixed dot
-    is drawn a unit right of the pose its bake holds: past the stay, it
-    reads nothing.
+    would be drawn a unit right of the pose its bake holds: its world's stay
+    does not begin.
     """
-    session = opened("FixedShiftedBackAfterItsWorld")
-    (body,) = _bodies(session)
-    state = session.state_at(Fraction(3, 4))
-    tick = math.floor(state.as_of * 60)
-    assert tick > 30
-    x0, y0, x1, y1 = state.node(body).scene_box
-    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((1.0, 2.0), abs=1e-9)
-    for quantity in state.quantities[body]:
-        assert quantity.value is None
-        assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
+    with pytest.raises(ValueError, match="from where its world last drew it"):
+        opened("FixedShiftedBackAfterItsWorld")
 
 
 def test_a_body_shown_after_its_world_left_is_unreadable(opened):
