@@ -50,8 +50,8 @@ class PoseSettle:
     rig settled at every instant the scene's updaters run, after the
     animations and the mobjects' updaters.
 
-    A scene has at most one, made with its first :class:`Pose` and found
-    with :func:`pose_settle`. While it holds a rig it runs as the scene
+    A scene has at most one in each execution, made with its first
+    :class:`Pose` there and found with :func:`pose_settle`. While it holds a rig it runs as the scene
     updater :attr:`updater`, a plain function whose code never reads
     ``dt``. A rig joins it through :func:`hold_pose` when a pose of it
     begins and leaves through :func:`release_pose` when that pose is cleaned
@@ -105,13 +105,42 @@ class PoseSettle:
             rig.settle()
 
 
-#: Each scene's pose settle, by the scene; gone with the scene.
-_SETTLES: weakref.WeakKeyDictionary[Scene, PoseSettle] = weakref.WeakKeyDictionary()
+#: Each scene's pose settle, by the scene's id, with the scene and the
+#: execution it was made in (the scene's recorder), both held weakly, as the
+#: scene's timing clock is (:mod:`.timing`): kept by identity, so a scene's
+#: own hash or equality is never asked, and an entry answers only for its
+#: very scene in that execution: a scene executed again in place (made anew
+#: on the same object, with no clock until it declares again) has no settle
+#: until its first pose there, which registers itself as in a scene that
+#: never declared. An entry goes with its scene.
+_SETTLES: dict[int, tuple[weakref.ref[Scene], weakref.ref[Any], PoseSettle]] = {}
 
 
 def pose_settle(scene: Scene) -> PoseSettle | None:
-    """``scene``'s pose settle, or ``None`` before its first pose."""
-    return _SETTLES.get(scene)
+    """``scene``'s pose settle in its current execution, or ``None`` before
+    its first pose there.
+    """
+    held = _SETTLES.get(id(scene))
+    if held is None or held[0]() is not scene:
+        return None
+    if held[1]() is not scene.__dict__.get("_arachne_timeline"):
+        return None
+    return held[2]
+
+
+def _keep_settle(scene: Scene, settle: PoseSettle) -> None:
+    key = id(scene)
+    held = _SETTLES.get(key)
+    if held is None or held[0]() is not scene:
+        weakref.finalize(scene, _forget_settle, key)
+    execution = weakref.ref(scene._arachne_timeline)
+    _SETTLES[key] = (weakref.ref(scene), execution, settle)
+
+
+def _forget_settle(key: int) -> None:
+    held = _SETTLES.get(key)
+    if held is not None and held[0]() is None:
+        del _SETTLES[key]
 
 
 def hold_pose(scene: Scene, rig: Rig) -> None:
@@ -120,9 +149,10 @@ def hold_pose(scene: Scene, rig: Rig) -> None:
     updaters while it holds a rig, or run by the scene's timing clock when
     it has one (:mod:`.timing`).
     """
-    settle = _SETTLES.get(scene)
+    settle = pose_settle(scene)
     if settle is None:
-        settle = _SETTLES[scene] = PoseSettle(scene)
+        settle = PoseSettle(scene)
+        _keep_settle(scene, settle)
         from .timing import clock_of
 
         # A scene that declared stepped timing settles its posed rigs from
@@ -137,7 +167,7 @@ def release_pose(scene: Scene, rig: Rig) -> None:
     """Undo one :func:`hold_pose` of ``rig``; the scene's pose settle leaves
     its updaters once it holds no rig.
     """
-    settle = _SETTLES.get(scene)
+    settle = pose_settle(scene)
     if settle is None:
         return
     settle.release(rig)
