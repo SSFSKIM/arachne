@@ -23,8 +23,9 @@ bodies' boxes are read only at a frame no later than the latest instant
 read (none when it names none), so nothing past them is replayed; a finding
 beyond is reported with its boxes null.
 
-A body readout shown more than a tick behind the scene while its body's
-world is in the scene is a ``sim.readout_stale`` finding (:mod:`.readouts`).
+A body readout shown more than a tick behind the row its body is drawn at
+while its body's world is in the scene is a ``sim.readout_stale`` finding
+(:mod:`.readouts`).
 """
 
 from __future__ import annotations

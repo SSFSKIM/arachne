@@ -252,6 +252,29 @@ def clock_row(world: World, *, stepping: bool) -> ClockRow | None:
     return ClockRow(stay, min(tick, stay.computed_tick))
 
 
+def bind_bodies(stay: Stay) -> None:
+    """Bind each body of ``stay``'s world to the stay (:func:`.measures.bind`):
+    read at the instant's tick, or, while the world's drawing is held, at
+    the row its bodies are drawn at (:meth:`Stay.drawn_tick`).
+    """
+    world = stay.world
+    held = None
+    if world.updating_suspended or world._drawing_suspended:
+        drawn = stay.drawn_tick()
+        held = measures.EARLIER if drawn is None else drawn
+    for number, mobject in enumerate(world._body_mobjects):
+        measures.bind(mobject, stay.ordinal, number, held=held)
+
+
+def held_changed(world: World) -> None:
+    """``world``'s drawing was held or let go (its updating suspended or
+    resumed): while it is in the scene, its bodies are bound again.
+    """
+    found = live_stay(world)
+    if found is not None:
+        bind_bodies(found)
+
+
 def reach(world: World, *, stepping: bool, placing: bool) -> None:
     """Bring ``world``, while it is in the scene, to the scene clock's tick:
     its rows computed through the tick (an open world's only when
@@ -294,8 +317,7 @@ def membership(world: World, scene: Scene, present: bool, at: Fraction | None) -
             stay.left_at = None
             stay.left_tick = None
             stay.left_declaration = None
-            for number, mobject in enumerate(world._body_mobjects):
-                measures.bind(mobject, stay.ordinal, number)
+            bind_bodies(stay)
             return
         stay.seal()
     if run is None:
@@ -381,8 +403,7 @@ class Stay:
         stay = cls(world, recorder, record, run, math.floor(at * TICK_RATE))
         stay.ordinal = bakes_of(record).begin(stay)
         world._bake = BakeRef(stay.ordinal)
-        for number, mobject in enumerate(world._body_mobjects):
-            measures.bind(mobject, stay.ordinal, number)
+        bind_bodies(stay)
         return stay
 
     def now_tick(self) -> int:

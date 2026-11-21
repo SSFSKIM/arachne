@@ -340,11 +340,13 @@ class World(Mobject):
         if self._declaration.open:
             self.updating_suspended = False
             self._drawing_suspended = True
+        stay.held_changed(self)
         return self
 
     def resume_updating(self, recursive: bool = True) -> World:
         self._drawing_suspended = False
         super().resume_updating(recursive)
+        stay.held_changed(self)
         return self
 
     def _scene_membership(

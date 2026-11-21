@@ -55,7 +55,8 @@ row it is. Before it has read any stay, ``sim.reads_body`` and
 ``sim.quantity_unreadable``) and it shows 0. An animation of the readout
 itself (``FadeIn``) holds its updating, so it shows an old tick while its
 body moves: the lint reports ``sim.readout_stale`` when that is more than
-a tick behind the scene while its world is in the scene.
+a tick behind the row its body is drawn at while its world is in the
+scene.
 
 **Only the world sets it.** :meth:`BodyReadout.set_value`, and so
 :class:`~arachne.mobject.annotation.CountUp`, are refused, so the number

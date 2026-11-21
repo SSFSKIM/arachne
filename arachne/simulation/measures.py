@@ -21,7 +21,10 @@ or before it), the bake's row and its contact events, and nothing else:
   before the instant.
 
 Each is exact as baked, the contact instants to within a tick (their
-tolerance, 1/60 s). A body left on screen after its world left reads the
+tolerance, 1/60 s). While an animation holds its world's drawing (one of
+the world, or of a group holding it), a body reads the row it is drawn at,
+the one its world last placed it at, not the instant's: its quantities and
+its placement share a tick. A body left on screen after its world left reads the
 row its placement shows, the stay's last, at every instant after it while
 its own drawing stays as the stay left it, whichever route answers the
 instant: a held wait's one capture or a ticked play's own. That holds for
@@ -66,6 +69,9 @@ UNITS: Mapping[str, str] = {
 }
 #: How exact a contact instant is: one tick.
 CONTACT_TOLERANCE = 1 / TICK_RATE
+#: What :attr:`SimBody.held` names when the body is held drawn at a row of an
+#: earlier stay: no row of its own stay.
+EARLIER = -1
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +81,11 @@ class SimBody:
     bodies; once its world has left the scene, ``left``, the stay's last
     tick, and ``drawn``, the key of the body's own drawing as the stay left
     it (:func:`drawn_key`), ``None`` when that drawing is not of the last
-    row. A copy of the body's mobject is not the body: its source is
+    row. While its world is in the scene with its drawing held (an
+    animation of the world or of a group holding it, or its updating
+    suspended), ``held``, the tick of the row the body is drawn at, the one
+    its world last placed it at (:data:`EARLIER` when that row is an earlier
+    stay's). A copy of the body's mobject is not the body: its source is
     ``copied`` and answers nothing (the world that owns a copy binds it as
     the copy's stay begins).
     """
@@ -85,6 +95,7 @@ class SimBody:
     drawn: bytes | None = None
     left: int | None = None
     copied: bool = False
+    held: int | None = None
 
     def __deepcopy__(self, memo: dict[int, Any]) -> SimBody:
         return replace(self, copied=True)
@@ -96,16 +107,19 @@ def bind(
     body: int,
     drawn: bytes | None = None,
     left: int | None = None,
+    *,
+    held: int | None = None,
 ) -> None:
     """Make ``mobject``'s source the body ``body`` of the stay ``ordinal``
     (once its world has left, at the stay's last tick ``left``, with its
-    drawing as the stay left it ``drawn``), in place of the one an earlier
-    stay set; its other sources stay.
+    drawing as the stay left it ``drawn``; while its world's drawing is
+    held, drawn at the row of the tick ``held``), in place of the one an
+    earlier stay set; its other sources stay.
     """
-    held = mobject.__dict__.get(SOURCES, ())
-    kept = tuple(each for each in held if type(each) is not SimBody)
+    sources = mobject.__dict__.get(SOURCES, ())
+    kept = tuple(each for each in sources if type(each) is not SimBody)
     setattr(mobject, SOURCES, kept)
-    quantities.attach(mobject, SimBody(ordinal, body, drawn, left))
+    quantities.attach(mobject, SimBody(ordinal, body, drawn, left, held=held))
 
 
 def drawn_key(own: Mapping[str, Any]) -> bytes | None:
@@ -132,7 +146,11 @@ def _sim_body(found: SimBody, held: Mapping[str, Any], at: At) -> Iterable[Quant
         return ()
     tick = _tick(found, held, at)
     if tick is None:
-        why = f"its drawing is not the one its world's stay left at tick {found.left}"
+        why = (
+            "its world holds it drawn at a row of an earlier stay"
+            if found.left is None
+            else f"its drawing is not the one its world's stay left at tick {found.left}"
+        )
         return tuple(
             Quantity(name, None, unit, unreadable=why) for name, unit in UNITS.items()
         )
@@ -140,15 +158,18 @@ def _sim_body(found: SimBody, held: Mapping[str, Any], at: At) -> Iterable[Quant
 
 
 def _tick(found: SimBody, held: Mapping[str, Any], at: At) -> int | None:
-    """The tick a body's capture shows: in its world's stay, the instant's;
-    once its world has left, the stay's last while its drawing is the one
-    the stay left. Otherwise (moved, redrawn, drawn by its submobjects, or
-    not placed at the last row) no row of the stay is what it shows: at a
-    later tick, which no bake of the stay holds, the instant's; at the stay's
-    own last, ``None``.
+    """The tick a body's capture shows: in its world's stay, the instant's,
+    or, while the world's drawing is held, the row's it is drawn at
+    (``None`` for an earlier stay's); once its world has left, the stay's
+    last while its drawing is the one the stay left. Otherwise (moved,
+    redrawn, drawn by its submobjects, or not placed at the last row) no row
+    of the stay is what it shows: at a later tick, which no bake of the stay
+    holds, the instant's; at the stay's own last, ``None``.
     """
     if found.left is None:
-        return at.tick
+        if found.held is None:
+            return at.tick
+        return None if found.held == EARLIER else found.held
     if found.drawn is not None and drawn_key(held) == found.drawn:
         return found.left
     return at.tick if at.tick > found.left else None
