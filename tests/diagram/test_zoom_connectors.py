@@ -1,0 +1,261 @@
+"""A zoom fades a connector, with its label, no later than the earliest
+fading of the blocks it joins, so no arrow shows without its ends; a
+return brings each back on the same window reversed.
+"""
+
+from __future__ import annotations
+
+from fractions import Fraction
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from arachne import LEFT, RIGHT, UP, Block, Diagram, Dot, VMobject
+from arachne.mobject.diagram import _joins
+from arachne.session import Session
+from arachne.timeline import admission
+from arachne.timeline.draw import Drawing
+
+from . import zoom_out_scenes
+
+SCENES = Path(zoom_out_scenes.__file__)
+TICKS = 60
+#: The scene's moves, by name: where each begins and how long it runs.
+MOVES = {
+    "in": (Fraction(3, 5), 2.5),
+    "back": (Fraction(41, 10), 2.5),
+    "again": (Fraction(33, 5), 2.5),
+}
+
+
+def _shows(mob) -> float:
+    return max(
+        float(np.max(opacities, initial=0.0))
+        for m in mob.get_family()
+        if len(m.points)
+        for opacities in (m.get_fill_opacities(), m.get_stroke_opacities())
+    )
+
+
+@pytest.fixture(scope="module")
+def shares():
+    """Each instant of the scene at 60 Hz, with how much of itself each
+    connector, its label and each block it joins shows then.
+    """
+    admission.DEMOTED.clear()
+    session = Session.open(
+        SCENES,
+        "IntoAHubAndBack",
+        config={"pixel_width": 480, "pixel_height": 270, "frame_rate": TICKS},
+    )
+    try:
+        record = session.record
+        joins = record._scene.joins
+        parts = [
+            mob
+            for edge, a, b in joins
+            for mob in (edge, edge.label, a, b)
+            if mob is not None
+        ]
+        full = None
+        seen = []
+        with Drawing(record) as drawing:
+            for k in range(int(record.duration * TICKS) + 1):
+                t = Fraction(k, TICKS)
+                _, capture = record.capture_at(t)
+                drawing.show(capture, capture.draw_list())
+                now = {id(m): _shows(m) for m in parts}
+                if full is None:
+                    full = now
+                seen.append((t, {key: now[key] / full[key] for key in now}))
+        yield joins, seen
+    finally:
+        session.close()
+        admission.DEMOTED.clear()
+
+
+def _during(seen, move):
+    start, run = MOVES[move]
+    return [(t, share) for t, share in seen if start <= t <= start + Fraction(run)]
+
+
+@pytest.mark.parametrize("move", MOVES)
+def test_no_connector_shows_more_than_the_blocks_it_joins(shares, move):
+    joins, seen = shares
+    for t, share in _during(seen, move):
+        for edge, a, b in joins:
+            ends = min(share[id(a)], share[id(b)])
+            for part in (edge, edge.label):
+                if part is not None:
+                    assert share[id(part)] <= ends + 1e-9, (move, float(t))
+
+
+@pytest.mark.parametrize("move", MOVES)
+def test_the_connector_to_the_target_goes_with_its_other_end(shares, move):
+    joins, seen = shares
+    (data, source, target) = joins[0]
+    assert data.label is not None
+    during = _during(seen, move)
+    # The zoom's target never fades; the block at the other end does, and
+    # the connector and its label with it, hidden once it is.
+    assert all(share[id(target)] == 1.0 for _, share in during)
+    hidden = [t for t, share in during if share[id(source)] == 0.0]
+    assert hidden
+    for t, share in during:
+        if share[id(source)] == 0.0:
+            assert share[id(data)] == 0.0, float(t)
+            assert share[id(data.label)] == 0.0, float(t)
+    # And the connector does fade: partly shown on the way.
+    assert any(0.0 < share[id(data)] < 1.0 for _, share in during)
+
+
+def test_a_return_brings_each_connector_back_on_its_window_reversed(shares):
+    joins, seen = shares
+    by_t = dict(seen)
+    (in_start, run), (back_start, _) = MOVES["in"], MOVES["back"]
+    for k in range(int(run * TICKS) + 1):
+        going = by_t[in_start + Fraction(k, TICKS)]
+        coming = by_t[back_start + Fraction(run) - Fraction(k, TICKS)]
+        for edge, a, b in joins:
+            for part in (edge, edge.label, a, b):
+                if part is not None:
+                    assert coming[id(part)] == pytest.approx(going[id(part)], abs=1e-9)
+    # Back to full by the return's end.
+    end = by_t[back_start + Fraction(run)]
+    assert all(value == pytest.approx(1.0) for value in end.values())
+
+
+def _tipped() -> tuple[Diagram, Block, Block, VMobject]:
+    """Two blocks joined by a tipped connector, whose wire stops short of
+    the far block's port, and a small dot nearer the wire's end than that
+    block.
+    """
+    near = Block("a", width=2.0, height=1.2).move_to(LEFT * 3)
+    far = Block("b", width=2.0, height=1.2).move_to(RIGHT * 1)
+    diagram = Diagram(near, far)
+    edge = diagram.connect(near, far, label="go")
+    diagram.add(Dot(radius=0.08).move_to(edge.points[-1] + UP * 0.2))
+    return diagram, near, far, edge
+
+
+def test_a_connector_s_ends_are_the_pieces_it_was_made_to_join():
+    diagram, near, far, edge = _tipped()
+    joined = _joins([diagram])
+    assert joined[id(edge)] == (near, far)
+    assert joined[id(edge.label)] == (edge, near, far)
+    # And on a copy, its own pieces.
+    copy = diagram.copy()
+    joined = _joins([copy])
+    assert joined[id(copy.edges[0])] == (copy[0], copy[1])
+
+
+def _block(name: str, x: float) -> Block:
+    return Block(name, width=1.2, height=0.8).move_to(RIGHT * x)
+
+
+def test_a_piece_joined_in_two_diagrams_keeps_its_place_in_each():
+    a, shared = _block("a", -4), _block("p", 0)
+    first = Diagram(a, shared)
+    there = first.connect(a, shared)
+    b, c = _block("b", 4), _block("c", 7)
+    second = Diagram(b, c)
+    second.connect(b, c)
+    second.add(shared)
+    second.connect(b, shared)
+    assert _joins([first])[id(there)] == (a, shared)
+
+
+def test_a_key_is_never_given_again_while_a_connector_holds_it():
+    a, gone = _block("a", -4), _block("p", 0)
+    diagram = Diagram(a, gone)
+    old = diagram.connect(a, gone)
+    diagram.remove(gone)
+    new = _block("q", 0)
+    diagram.add(new)
+    fresh = diagram.connect(a, new)
+    joined = _joins([diagram])
+    assert joined[id(fresh)] == (a, new)
+    # The old connector's far end has left; it names nothing in its place.
+    assert joined[id(old)] == (a,)
+
+
+def test_a_copy_of_a_piece_does_not_take_the_original_s_key():
+    a, piece = _block("a", -4), _block("p", 0)
+    diagram = Diagram(a, piece)
+    first = diagram.connect(a, piece)
+    double = piece.copy().shift(UP * 2)
+    diagram.add(double)
+    diagram.connect(a, piece)
+    second = diagram.connect(a, double)
+    joined = _joins([diagram])
+    assert joined[id(first)] == (a, piece)
+    assert joined[id(second)] == (a, double)
+
+
+def _keyed(mob) -> dict:
+    from arachne.timeline.record import NodeState, content_fields
+
+    return dict(content_fields(NodeState.of(mob)))
+
+
+def _sources(join_tall: bool):
+    """A short and a tall block whose right ports meet, and a block both
+    could join; the one joined, by ``join_tall``.
+    """
+    short = Block("s", width=2.0, height=0.6).move_to(LEFT * 3)
+    tall = Block("s", width=2.0, height=1.6).move_to(LEFT * 3)
+    far = Block("d", width=1.2, height=0.8).move_to(RIGHT * 2)
+    diagram = Diagram(short, tall, far)
+    source = tall if join_tall else short
+    return diagram, diagram.connect(source, far), source, far
+
+
+def test_a_connector_s_content_says_which_pieces_it_joins():
+    _, short_edge, short, _ = _sources(join_tall=False)
+    _, tall_edge, tall, _ = _sources(join_tall=True)
+    # One wire, two pieces: the content must tell them apart.
+    assert np.array_equal(short_edge.points, tall_edge.points)
+    assert _keyed(short_edge) != _keyed(tall_edge)
+    # Equal content, equal pieces.
+    again, edge, source, far = _sources(join_tall=False)
+    assert _keyed(edge) == _keyed(short_edge)
+    assert _joins([again])[id(edge)] == (source, far)
+
+
+def _twins(join_second: bool):
+    """Two blocks of one size at one place, and a far block; one of the two
+    joined, by ``join_second``, and the other stretched after.
+    """
+    first = Block("s", width=2.0, height=0.8).move_to(LEFT * 3)
+    second = Block("s", width=2.0, height=0.8).move_to(LEFT * 3)
+    far = Block("d", width=1.2, height=0.8).move_to(RIGHT * 2)
+    diagram = Diagram(first, second, far)
+    joined, other = (second, first) if join_second else (first, second)
+    edge = diagram.connect(joined, far)
+    other.stretch(2.0, 1)
+    return diagram, edge, joined, far
+
+
+def test_twins_at_one_port_key_the_one_joined():
+    _, first_edge, first, _ = _twins(join_second=False)
+    _, second_edge, second, _ = _twins(join_second=True)
+    assert np.array_equal(first_edge.points, second_edge.points)
+    assert _keyed(first_edge) != _keyed(second_edge)
+    assert (first_edge.start_piece, second_edge.start_piece) == (0, 1)
+
+
+def test_a_connector_s_piece_places_follow_the_diagram():
+    before = Block("x", width=1.0, height=0.6).move_to(UP * 3)
+    a, b = _block("a", -4), _block("b", 4)
+    diagram = Diagram(before, a, b)
+    edge = diagram.connect(a, b)
+    assert (edge.start_piece, edge.end_piece) == (1, 2)
+    diagram.remove(before)
+    assert (edge.start_piece, edge.end_piece) == (0, 1)
+    diagram.add_to_back(before)
+    assert (edge.start_piece, edge.end_piece) == (1, 2)
+    assert _joins([diagram])[id(edge)] == (a, b)
+    # A piece gone from the diagram has no place in it.
+    diagram.remove(b)
+    assert edge.end_piece == -1

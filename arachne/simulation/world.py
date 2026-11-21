@@ -73,8 +73,11 @@ from .stay import closed_world, crate_of, live_stay, open_world
 if TYPE_CHECKING:
     from fractions import Fraction
 
+    from arachne.assets.anchor import Anchor
     from arachne.scene.scene import Scene
     from arachne.timeline.bake import BakeRef
+
+    from .readout import BodyReadout
 
 #: What :meth:`World.body` takes a body's shape from by default.
 AUTO = "auto"
@@ -201,7 +204,7 @@ class World(Mobject):
     that pass through each other in a tick are reported as
     ``sim.tunnelled``. Each body's mobject declares its position, velocity,
     angular velocity and contacts (``sim.*`` in ``state_at``'s quantities,
-    :mod:`.measures`).
+    :mod:`.measures`); :meth:`readout` shows one of them at every frame.
 
     Declare bodies with :meth:`body`, then joints with :meth:`add_joint` and
     force laws with :meth:`add_force`, and add the world to the scene: it
@@ -260,7 +263,10 @@ class World(Mobject):
     )
     # The callback forces: held by the world, outside what a capture keeps
     # of it (its __dict__), and not copied with it.
-    __slots__ = ("_callbacks",)
+    # Each body's drawing as it was declared (stay.drawing_of), by body:
+    # held by the world apart from its captured state and not copied with
+    # it, so a copy vouches for none.
+    __slots__ = ("_callbacks", "_drawn_as_declared")
 
     def __init__(
         self,
@@ -289,6 +295,7 @@ class World(Mobject):
         limits = _limits(speed_limit, angular_speed_limit)
         super().__init__(**kwargs)
         self._callbacks: tuple[Any, ...] = ()
+        self._drawn_as_declared: tuple[object | None, ...] = ()
         self._declare(
             Declaration(
                 dimension,
@@ -323,6 +330,14 @@ class World(Mobject):
         self._declaration = declaration
         #: The digest of the declaration: what a content key reads of it.
         self._declared = declaration.digest()
+
+    def _declared_drawings(self) -> tuple[object | None, ...]:
+        """Each body's drawing as it was declared; for a copy, which vouches
+        for none, ``None`` for each.
+        """
+        found: tuple[object | None, ...] = getattr(self, "_drawn_as_declared", ())
+        missing = len(self._body_mobjects) - len(found)
+        return (*found, *(None,) * missing)
 
     def _callback_functions(self) -> tuple[Any, ...]:
         """The world's callback forces, in the order declared."""
@@ -491,8 +506,10 @@ class World(Mobject):
                 order=(*self._declaration.order, "body"),
             )
         )
+        drawings = self._declared_drawings()
         self._body_mobjects = (*self._body_mobjects, mobject)
         self.add(mobject)
+        self._drawn_as_declared = (*drawings, stay.drawing_of(mobject))
         return Body(self, len(self._declaration.bodies) - 1)
 
     def _shapes(
@@ -613,6 +630,31 @@ class World(Mobject):
                 " before the world whose force reads it."
             )
         return live.state(tick)
+
+    def readout(
+        self,
+        body: Body,
+        quantity: str,
+        *,
+        part: str | None = None,
+        scale: float = 1.0,
+        format: str = "{:.1f}",  # noqa: A002 (the readout's own word)
+        at: Anchor | None = None,
+        **options: Any,
+    ) -> BodyReadout:
+        """A readout of ``body``'s ``quantity`` (``"position"``,
+        ``"velocity"``, ``"angular_velocity"`` or ``"contact_count"``),
+        shown at every frame from the world's rows: its part ``part`` times
+        ``scale``, in ``format``, at ``at``; the other arguments are a
+        readout's (:class:`.BodyReadout`). Add it to the scene after the
+        world, as anything that follows a body.
+        """
+        from .readout import BodyReadout
+
+        self._index(body)
+        return BodyReadout(
+            body, quantity, part=part, scale=scale, format=format, at=at, **options
+        )
 
     # Internal
 

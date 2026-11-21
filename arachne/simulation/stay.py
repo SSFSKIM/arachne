@@ -48,7 +48,15 @@ a sealed occurrence's are (:meth:`Stay.row`).
 
 from __future__ import annotations
 
-__all__ = ["Stay", "closed_world", "live_stay", "membership", "open_world"]
+__all__ = [
+    "ClockRow",
+    "Stay",
+    "clock_row",
+    "closed_world",
+    "live_stay",
+    "membership",
+    "open_world",
+]
 
 import dataclasses
 import hashlib
@@ -56,7 +64,7 @@ import inspect
 import math
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 
@@ -203,20 +211,46 @@ def crate_of(world: World) -> Any | None:
     return None if run is None else run.crate
 
 
+class ClockRow(NamedTuple):
+    """A world's live stay and the tick of the row it shows at the scene
+    clock's tick (:func:`clock_row`).
+    """
+
+    stay: Stay
+    tick: int
+
+
+def clock_row(world: World, *, stepping: bool) -> ClockRow | None:
+    """The row ``world`` shows at the scene clock's tick, while it is in the
+    scene (``None`` outside a stay): its rows computed through the clock's
+    tick (a closed world's always, an open world's only when ``stepping``),
+    then the latest tick computed no later than the clock's.
+
+    The one place the world's own updater (which places its bodies there)
+    and a body readout's (:func:`.readout.show_quantity`, which shows a
+    body's quantity there) get that row. A play that draws a closed world
+    from its sealed bake instead of ticking it answers this function from
+    the bake's rows, for both; it admits a readout's updater only for a
+    closed world, and hands it the bake's row here.
+    """
+    stay = live_stay(world)
+    if stay is None:
+        return None
+    tick = stay.now_tick()
+    if stepping or not stay.crate.open:
+        stay.compute_through(tick)
+    return ClockRow(stay, min(tick, stay.computed_tick))
+
+
 def reach(world: World, *, stepping: bool, placing: bool) -> None:
     """Bring ``world``, while it is in the scene, to the scene clock's tick:
     its rows computed through the tick (an open world's only when
     ``stepping``), its bodies placed at the last row computed (when
-    ``placing``).
+    ``placing``), the row :func:`clock_row` answers.
     """
-    stay = live_stay(world)
-    if stay is None:
-        return
-    tick = stay.now_tick()
-    if stepping or not stay.crate.open:
-        stay.compute_through(tick)
-    if placing:
-        stay.place(min(tick, stay.computed_tick))
+    found = clock_row(world, stepping=stepping)
+    if found is not None and placing:
+        found.stay.place(found.tick)
 
 
 def membership(world: World, scene: Scene, present: bool, at: Fraction | None) -> None:
@@ -308,6 +342,11 @@ class Stay:
         self.sealed = False
         #: The solver's row the bodies were last placed at.
         self._placed = -1
+        #: Each body's own drawing as the world last vouched for it
+        #: (:func:`drawing_of`): as it was declared, then as each placement
+        #: made it. A body whose drawing is another when the stay ends was
+        #: moved or redrawn since, and is not of the stay's last row.
+        self._drawings: list[object | None] = list(world._declared_drawings())
 
     @classmethod
     def begin(
@@ -446,6 +485,7 @@ class Stay:
         ):
             if not item.fixed:
                 _place_body(mobject, item, pose[number], world.dimension)
+                self._drawings[number] = drawing_of(mobject)
 
     def leave(self, at: Fraction) -> None:
         """The world left the scene at ``at``: a closed world's stay is
@@ -459,6 +499,21 @@ class Stay:
         self.left_at = at
         self.left_tick = min(tick, self.computed_tick)
         self.left_declaration = self.crate.declaration_bytes()
+        # Each body's drawing as it is left, when it is the one its world's
+        # placement at the stay's last row made: a body shown unchanged after
+        # this reads that row (:mod:`.measures`). One its world last placed at
+        # an older row (its updating held until it left), or that the scene's
+        # code moved or redrew since its placement, is not of the last row,
+        # and reads nothing past the stay.
+        placed = self._placed == self._solver_row(self.left_tick)
+        for number, mobject in enumerate(self.world._body_mobjects):
+            kept = placed and drawing_of(mobject) is self._drawings[number]
+            measures.bind(
+                mobject,
+                self.ordinal,
+                number,
+                measures.drawn_key(mobject.__dict__) if kept else None,
+            )
 
     # The record's side
 
@@ -815,6 +870,18 @@ def placeable(member: Mobject) -> bool:
 def rest_points(mobject: Mobject) -> tuple[FrozenPoints, ...]:
     """The drawing a body moves, as declared."""
     return tuple(freeze(own_points(m), FrozenPoints) for m in drawn_members(mobject))
+
+
+def drawing_of(mobject: Mobject) -> object | None:
+    """What holds a mobject's own points: its placement, or else its points
+    array; a move or a redraw replaces it.
+    """
+    own = mobject.__dict__
+    placement = own.get("_placement")
+    points: object | None = own.get("_points")
+    if placement is not None and (points is None or points is placement.materialized):
+        return placement  # type: ignore[no-any-return]
+    return points
 
 
 def _place_body(

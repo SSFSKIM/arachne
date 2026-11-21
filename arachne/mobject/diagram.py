@@ -10,6 +10,8 @@ joins, and a camera move into one piece.
 - :class:`ZoomInto`: the camera's frame moves onto a block while the
   block's inside diagram fades in, once its labels are large enough to
   read, and what the frame's edge would cut fades out before it is cut.
+- :class:`ZoomOut`: a played zoom's move backwards, its fades reversed,
+  back to where it began.
 
 A flow declares its speed as ``diagram.flow_speed``, in scene units a
 second (:mod:`arachne.quantities`), read from what a capture holds: the
@@ -26,12 +28,12 @@ exempting two pieces of one top-level mobject, leave unasked.
 
 from __future__ import annotations
 
-__all__ = ["Diagram", "Flow", "ZoomInto"]
+__all__ = ["Diagram", "Flow", "ZoomInto", "ZoomOut"]
 
 import math
 import weakref
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -86,6 +88,18 @@ class Diagram(VGroup):
         self.cell = (float(cell[0]), float(cell[1]))
         self.origin = tuple(float(c) for c in as_point(origin))
         self.edges: tuple[VMobject, ...] = ()
+        #: Every piece a connector of this diagram has joined, in the order
+        #: first joined: a piece's key here is its place in it, from 1. It
+        #: only grows, so no key is given twice, and it is this diagram's
+        #: alone: a piece joined in two diagrams has a key in each. A
+        #: connector holds the keys of its two pieces (``start_key``,
+        #: ``end_key``) and, for the content key, their places in
+        #: :attr:`submobjects` now (``start_piece``, ``end_piece``, -1 for
+        #: one the diagram no longer holds), kept by every change the
+        #: diagram's own methods make to its children (add, insert,
+        #: add_to_back, remove, item assignment, sort, shuffle, invert).
+        #: A change made to ``submobjects`` directly is not kept.
+        self.joined: tuple[Mobject, ...] = ()
 
     def grid_point(self, col: float, row: float) -> np.ndarray:
         """The centre of the grid cell at ``col``, ``row``."""
@@ -115,6 +129,7 @@ class Diagram(VGroup):
         end_stub: float | None = None,
         color: ParsableManimColor = WHITE,
         label_color: ParsableManimColor | None = None,
+        label_side: str = "above",
         **kwargs: Any,
     ) -> VMobject:
         """Join ``start`` to ``end`` (each a piece and one of its port
@@ -124,7 +139,20 @@ class Diagram(VGroup):
         ``route`` is ``"elbow"`` (right angles, rounded corners) or
         ``"straight"``. ``label`` puts a text on a pill (a plate the
         background's colour) at the connector's middle, which the
-        connector keeps as ``label``.
+        connector keeps as ``label``: a connector's label is the one this
+        makes; attaching one by hand (assigning ``label``) is unsupported.
+
+        A :class:`Flow` put on the connector moves the label beside the
+        line, to ``label_side``: a side of the line as drawn on screen,
+        ``"above"`` (the default), ``"below"``, ``"left"`` or ``"right"``.
+        The label goes to the side of the line, at its middle, that faces
+        that way; where the line runs that way itself (an upright line
+        asked ``"above"``), to the side a quarter-turn clockwise from it
+        (``"above"`` is then right, ``"right"`` below, ``"below"`` left,
+        ``"left"`` above). Which end the connector starts from does not
+        change it. The lint :data:`~arachne.lint.rules.diagram_clear`
+        reports a label set beside its line that lands on another piece,
+        connector or label of the diagram; ``label_side`` is the fix.
 
         An elbow runs ``stub`` straight out of its start before it turns,
         and ``end_stub`` (``stub`` when ``None``) into its end, each cut to
@@ -133,6 +161,11 @@ class Diagram(VGroup):
         if route not in ("elbow", "straight"):
             raise ValueError(
                 f"a connector's route is 'elbow' or 'straight', not {route!r}"
+            )
+        if label_side not in LABEL_SIDES:
+            raise ValueError(
+                f"a connector's label_side is one of {', '.join(map(repr, LABEL_SIDES))},"
+                f" not {label_side!r}"
             )
         a, leaving = _end(start, end)
         b, arriving_from = _end(end, start)
@@ -160,6 +193,11 @@ class Diagram(VGroup):
             edge = _StraightConnector(a, b, tip=tip, color=color, **kwargs)
         self.add(edge)
         self.edges = (*self.edges, edge)
+        # What it joins, by its pieces' keys in this diagram (``joined``).
+        held: Any = edge
+        held.start_key = self._key_of(_piece(start))
+        held.end_key = self._key_of(_piece(end))
+        self._place_ends()
         if label is not None:
             text = Text(
                 label,
@@ -170,8 +208,78 @@ class Diagram(VGroup):
             path = ArcLength(edge.points)
             text.move_to(path.point(path.length / 2))
             edge.label = text
+            # The side of the line its label stands on beside a flow, and
+            # how far a flow's tokens reach from the line, in scene units
+            # (0 without one).
+            held.label_side = label_side
+            held.flow_reach = 0.0
             self.add(text)
         return edge
+
+    def _place_ends(self) -> None:
+        """Give each connector the places in :attr:`submobjects` of the
+        pieces it joins, as it holds them now: ``start_piece`` and
+        ``end_piece``, -1 for a piece the diagram no longer holds.
+        """
+        for edge in getattr(self, "edges", ()):
+            held: Any = edge
+            for key, place in (("start_key", "start_piece"), ("end_key", "end_piece")):
+                piece = self._joined_piece(getattr(edge, key, None))
+                at = -1
+                if piece is not None:
+                    at = next(i for i, m in enumerate(self.submobjects) if m is piece)
+                if getattr(edge, place, None) != at:
+                    setattr(held, place, at)
+
+    # Every change Diagram makes to its children re-places the ends.
+
+    def _insert_submobjects(self, index: int, mobjects: Sequence[Mobject]) -> Self:
+        super()._insert_submobjects(index, mobjects)
+        self._place_ends()
+        return self
+
+    def remove(self, *mobjects: Mobject) -> Self:
+        super().remove(*mobjects)
+        self._place_ends()
+        return self
+
+    def __setitem__(self, key: int, value: VMobject | Sequence[VMobject]) -> None:
+        super().__setitem__(key, value)
+        self._place_ends()
+
+    def sort(self, *args: Any, **kwargs: Any) -> Self:
+        super().sort(*args, **kwargs)
+        self._place_ends()
+        return self
+
+    def shuffle(self, recursive: bool = False) -> Self:
+        super().shuffle(recursive)
+        self._place_ends()
+        return self
+
+    def invert(self, recursive: bool = False) -> Self:
+        super().invert(recursive)
+        self._place_ends()
+        return self
+
+    def _key_of(self, piece: Mobject) -> int:
+        """``piece``'s key in this diagram (:attr:`joined`), given it the
+        first time a connector joins it.
+        """
+        for place, held in enumerate(self.joined, start=1):
+            if held is piece:
+                return place
+        self.joined = (*self.joined, piece)
+        return len(self.joined)
+
+    def _joined_piece(self, key: Any) -> Mobject | None:
+        """The piece ``key`` names in this diagram (:attr:`joined`), if it is
+        one of its pieces still; else ``None``.
+        """
+        if not isinstance(key, int) or not 1 <= key <= len(self.joined):
+            return None
+        piece = self.joined[key - 1]
+        return piece if any(piece is m for m in self.submobjects) else None
 
 
 class _StraightConnector(VMobject):
@@ -295,8 +403,17 @@ class Flow(VGroup):
     whatever animates the edge, the diagram the flow is in or the flow
     itself, until :meth:`stop`. It reads the edge's own points (a
     connector's wire, not its head) as they are. Style keywords go to the
-    tokens. A connector's label (:meth:`Diagram.connect`) is drawn above the
-    tokens, which pass under its pill.
+    tokens.
+
+    A connector's label (the one :meth:`Diagram.connect` makes) moves
+    beside the line as the flow is made, so the tokens never pass under
+    it: at the line's middle, to the connector's ``label_side``, by half
+    the pill's extent along the line's normal there, the tokens' reach
+    (``flow_reach``, in scene units: the largest of every flow on the
+    connector, whatever order they were made in) and :data:`LABEL_GAP`.
+    Its place hangs on the connector and its flows alone. Make the flow
+    before the diagram is shown, or the label moves as it is made. The
+    label is also drawn above the tokens.
     """
 
     def __init__(
@@ -324,6 +441,7 @@ class Flow(VGroup):
         self.stopped = False
         self.add(*(Dot(radius=radius, color=color) for _ in range(tokens)))
         apply_style(self.submobjects, style)
+        _carry_label(edge, self.submobjects)
         _lift_label(edge, self.submobjects)
         self.show_at(0.0)
         self.add_updater(_start_flow)
@@ -365,6 +483,75 @@ class Flow(VGroup):
         # the flow by then.
         _run_in_scene(self)
         return super().suspend_updating(recursive)
+
+
+#: The clear space, in scene units, between a flow's tokens and the label
+#: of the connector they run along, set beside it.
+LABEL_GAP = 0.06
+
+
+def _carry_label(edge: VMobject, tokens: Sequence[VMobject]) -> None:
+    """Have ``edge``'s label, if it has one, stand beside the line, clear of
+    ``tokens`` (:class:`Flow`).
+    """
+    if getattr(edge, "label", None) is None:
+        return
+    reach = max(max(t.width, t.height) / 2 for t in tokens)
+    cast(Any, edge).flow_reach = max(float(getattr(edge, "flow_reach", 0.0)), reach)
+    _place_label(edge)
+
+
+def _line_frame(edge: VMobject) -> tuple[np.ndarray, np.ndarray]:
+    """The middle of ``edge``'s line and its normal there."""
+    path = ArcLength(edge.points)
+    middle = path.length / 2
+    reach = min(middle, 1e-3)
+    tangent = path.point(middle + reach) - path.point(middle - reach)
+    normal = np.array([-tangent[1], tangent[0], 0.0]) / np.linalg.norm(tangent[:2])
+    return path.point(middle), normal
+
+
+#: The sides a label stands on beside its line, each the screen direction
+#: it faces and the one a quarter-turn clockwise, for a line running along
+#: the first.
+LABEL_SIDES = ("above", "below", "left", "right")
+_FACING = {
+    "above": (UP, RIGHT),
+    "below": (DOWN, LEFT),
+    "left": (LEFT, UP),
+    "right": (RIGHT, DOWN),
+}
+
+
+def _facing(normal: np.ndarray, side: str) -> np.ndarray:
+    """Of ``normal`` and its opposite, the one facing ``side``."""
+    for toward in _FACING[side]:
+        along = float(np.dot(normal, toward))
+        if abs(along) > 1e-9:
+            return normal if along > 0 else -normal
+    return normal
+
+
+def _beside(edge: VMobject, reach: float) -> tuple[np.ndarray, np.ndarray, float]:
+    """Where ``edge``'s label stands beside the line, for tokens reaching
+    ``reach`` from it: the line's middle, the normal there, and how far
+    from the middle along it: half the pill's extent that way, the tokens'
+    and :data:`LABEL_GAP`.
+    """
+    at, normal = _line_frame(edge)
+    label: Mobject = cast(Any, edge).label
+    across = abs(normal[0]), abs(normal[1])
+    pill = (across[0] * label.width + across[1] * label.height) / 2
+    # A token's box reaches ``reach`` along each axis.
+    return at, normal, float(pill + reach * (across[0] + across[1]) + LABEL_GAP)
+
+
+def _place_label(edge: VMobject) -> None:
+    """Put ``edge``'s label beside its line on its side."""
+    at, normal, offset = _beside(edge, float(getattr(edge, "flow_reach", 0.0)))
+    toward = _facing(normal, str(getattr(edge, "label_side", "above")))
+    label: Mobject = cast(Any, edge).label
+    label.move_to(at + toward * offset)
 
 
 def _lift_label(edge: VMobject, tokens: Sequence[VMobject]) -> None:
@@ -559,7 +746,10 @@ class ZoomInto(Animation):
     :data:`LEGIBLE_MARGIN`), or over the zoom's last :data:`FADE` if it
     never does. Each other piece of the scene the frame's edge would cut
     (a top-level mobject, or a piece of a group that holds the block)
-    fades out over the :data:`FADE` before it is cut and stays hidden.
+    fades out over the :data:`FADE` before it is cut and stays hidden. A
+    diagram's connector, with its label, fades no later than the
+    earliest-fading piece it joins (the block itself never fades), so no
+    arrow shows without its ends.
 
     The frame is the scene's camera's, which only a moving camera has (a
     :class:`~.MovingCameraScene`); a ``frame`` passed must be that one.
@@ -601,6 +791,8 @@ class ZoomInto(Animation):
 
     def begin(self) -> None:
         frame, block = self.mobject, self.block
+        #: The frame as the move begins, which a return puts back.
+        self._from_points = frame.points
         self._from = (frame.get_center(), float(frame.height))
         aspect = frame.width / frame.height
         height = max(block.height, block.width / aspect) * (1 + 2 * self.margin)
@@ -615,13 +807,22 @@ class ZoomInto(Animation):
                     " block from the inside as it is to be shown"
                 )
             self._fade_in = _window(self._legible_from(inside))
-        #: Each piece the frame's edge cuts: its family, how each member
-        #: shows now, and the share of the zoom it fades out over.
+        #: Each piece the frame's edge cuts, or a connector or label whose
+        #: ends it cuts: its family, how each member shows now, and the
+        #: share of the zoom it fades out over.
         self._fading: list[
             tuple[list[Mobject], list[Opacities], tuple[float, float]]
         ] = []
-        for piece in _pieces(self._scene_mobjects, block, frame):
-            cut = self._cut_at(piece)
+        pieces = _pieces(self._scene_mobjects, block, frame)
+        cuts = {id(piece): self._cut_at(piece) for piece in pieces}
+        joins = _joins(self._scene_mobjects)
+        for piece in pieces:
+            # A connector, and its label, fades no later than what it joins.
+            held = [
+                cuts[id(piece)],
+                *(cuts.get(id(m)) for m in joins.get(id(piece), ())),
+            ]
+            cut = min((c for c in held if c is not None), default=None)
             if cut is None:
                 continue
             family = list(piece.get_family())
@@ -689,21 +890,235 @@ class ZoomInto(Animation):
 
     def interpolate_mobject(self, alpha: float) -> None:
         # Eased once, for the frame and every fade alike.
-        alpha = self.get_sub_alpha(alpha, 0, 1)
+        share = self.get_sub_alpha(alpha, 0, 1)
+        self.show_share(share)
+        #: The share the move last showed, and the frame's points then:
+        #: where it left the frame, which a return starts from.
+        self._reached = share
+        self._left_points = self.mobject.points
+        # Only a move standing on its block holds the frame.
+        if abs(share - 1.0) <= _EASED:
+            _hold_zoom(self)
+        else:
+            _release_zoom(self)
+
+    def show_share(self, share: float) -> None:
+        """Show the move at ``share`` of its way: the frame, the inside's
+        fade and each cut piece's, as the move in and the return
+        (:class:`ZoomOut`) both draw it.
+        """
         frame = self.mobject
-        frame.scale_to_fit_height(self._height(alpha))
-        frame.move_to(self._center(alpha))
+        frame.scale_to_fit_height(self._height(share))
+        frame.move_to(self._center(share))
         inside = self.block.inside
         if inside is not None:
-            share = _ramp(alpha, self._fade_in)
+            shown_share = _ramp(share, self._fade_in)
             for member, shown in zip(
                 inside.get_family(), self.block.inside_shown, strict=True
             ):
-                set_opacities(member, scaled(shown, share))
+                set_opacities(member, scaled(shown, shown_share))
         for family, faded, window in self._fading:
-            keep = 1.0 - _ramp(alpha, window)
+            keep = 1.0 - _ramp(share, window)
             for member, opacities in zip(family, faded, strict=True):
                 set_opacities(member, scaled(opacities, keep))
+
+
+#: The zooms that hold each camera frame, by the frame's id: each entry
+#: holds its frame and its zooms weakly, innermost last, and goes with its
+#: frame. A zoom joins once its move stands on its block, and leaves when a
+#: later share of it, or its return, takes the frame off.
+_HOLDING: dict[int, tuple[weakref.ref[Mobject], list[weakref.ref[ZoomInto]]]] = {}
+
+
+def _holders(frame: Mobject) -> list[weakref.ref[ZoomInto]]:
+    """The zooms holding ``frame``, innermost last, those gone left out."""
+    key = id(frame)
+    entry = _HOLDING.get(key)
+    if entry is None or entry[0]() is not frame:
+        weakref.finalize(frame, _forget_frame, key)
+        entry = _HOLDING[key] = (weakref.ref(frame), [])
+    entry[1][:] = [held for held in entry[1] if held() is not None]
+    return entry[1]
+
+
+def _forget_frame(key: int) -> None:
+    """Drop the entry of a frame that went, if no later frame took its id."""
+    entry = _HOLDING.get(key)
+    if entry is not None and entry[0]() is None:
+        del _HOLDING[key]
+
+
+def _release_zoom(zoom: ZoomInto) -> None:
+    """Have ``zoom`` hold its frame no more."""
+    holders = _holders(zoom.mobject)
+    holders[:] = [held for held in holders if held() is not zoom]
+
+
+def _hold_zoom(zoom: ZoomInto) -> None:
+    """Have ``zoom`` hold its frame, innermost, once."""
+    holders = _holders(zoom.mobject)
+    if not holders or holders[-1]() is not zoom:
+        holders.append(weakref.ref(zoom))
+
+
+#: How far, as a share of the height the zoom left it at, the camera's frame
+#: may stand from where a zoom left it for the zoom to come back.
+RETURN_TOLERANCE = 1e-6
+#: How near an eased share must come to 0 or 1 to count as there.
+_EASED = 1e-9
+
+
+class ZoomOut(Animation):
+    """Undo a played :class:`ZoomInto`: the camera's frame takes the
+    move-in's own path backwards, from the block to where the move-in began,
+    while the block's inside fades out over its fade-in window reversed and
+    each piece the move-in faded comes back over its own window reversed, to
+    the opacities it showed before the move-in.
+
+    At eased progress ``p`` the frame takes the height and centre the
+    move-in gave it at share ``1 - p``. At the end the frame is exactly where
+    the move-in began, the inside is hidden, and every faded piece shows as
+    before. ``run_time`` and ``rate_func`` are the move-in's unless given,
+    read when the return plays, so a play's own ``run_time`` for the move-in
+    counts.
+
+    Nested zooms come back in order, the inner first. A return is refused,
+    by name, when its zoom was never played, or ended short of its block;
+    when its own easing (``rate_func``, after ``reverse_rate_function``)
+    does not take 0 to 0 and 1 to 1; when the
+    camera's frame does not stand where that zoom left it, every point
+    within :data:`RETURN_TOLERANCE` of its height (a camera moved,
+    stretched or turned since); when a zoom played after it on the same
+    frame, its move ended on its block, has not come back (the zooms
+    holding a frame are kept beside it, by identity, innermost last; one
+    that went out and came back, a ``there_and_back``, holds nothing);
+    when it has already come back; when a
+    piece the zoom faded has left the scene; and in a scene without that
+    zoom's moving camera. The move in and the return draw each share alike
+    (:meth:`ZoomInto.show_share`).
+    """
+
+    def __init__(
+        self,
+        zoom: ZoomInto,
+        run_time: float | None = None,
+        rate_func: Callable[[float], float] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if not isinstance(zoom, ZoomInto):
+            raise TypeError(
+                f"ZoomOut returns from a ZoomInto, not a {type(zoom).__name__}"
+            )
+        self.zoom = zoom
+        super().__init__(zoom.mobject, **kwargs)
+        # Unset, each is the move-in's, read when the return plays.
+        self.run_time, self.rate_func = run_time, rate_func
+        self._scene: weakref.ref[Scene] | None = None
+
+    @property
+    def run_time(self) -> float:
+        own = self._own_run_time
+        return self.zoom.run_time if own is None else own
+
+    @run_time.setter
+    def run_time(self, value: float | None) -> None:
+        if value is not None and value < 0:
+            raise ValueError(
+                f"The run_time of ZoomOut cannot be negative. The given value was"
+                f" {value}."
+            )
+        self._own_run_time = value
+
+    @property
+    def rate_func(self) -> Callable[[float], float]:
+        own = self._own_rate_func
+        return self.zoom.rate_func if own is None else own
+
+    @rate_func.setter
+    def rate_func(self, value: Callable[[float], float] | None) -> None:
+        self._own_rate_func = value
+
+    def _setup_scene(self, scene: Scene) -> None:
+        from arachne.camera.moving_camera import MovingCamera
+
+        camera = scene.camera
+        if not isinstance(camera, MovingCamera) or camera.frame is not self.mobject:
+            raise ValueError(
+                "ZoomOut moves the scene's camera's frame back, and only a moving"
+                " camera has one: make the scene a MovingCameraScene, and return"
+                " from a ZoomInto of that camera's frame"
+            )
+        self._scene = weakref.ref(scene)
+        super()._setup_scene(scene)
+
+    def begin(self) -> None:
+        zoom, frame = self.zoom, self.mobject
+        if not hasattr(zoom, "_from_points"):
+            raise ValueError(
+                "ZoomOut returns from a played ZoomInto, and this one was never"
+                " played: play the ZoomInto first"
+            )
+        if abs(zoom._reached - 1.0) > _EASED:
+            raise ValueError(
+                f"ZoomOut returns from a ZoomInto that ended on its block, and this"
+                f" one never reached its block (it ended at {zoom._reached:.4g} of"
+                " its way): give the move-in a rate_func that ends at 1"
+            )
+        # The easing as the return applies it, reverse_rate_function and all.
+        first, last = self.get_sub_alpha(0.0, 0, 1), self.get_sub_alpha(1.0, 0, 1)
+        if abs(first) > _EASED or abs(last - 1.0) > _EASED:
+            raise ValueError(
+                "a ZoomOut's easing (its rate_func, after reverse_rate_function)"
+                " must take 0 to 0 and 1 to 1, so the return starts on the block"
+                " and ends where the move-in began"
+            )
+        left = np.asarray(zoom._left_points)
+        tolerance = RETURN_TOLERANCE * zoom._height(1.0)
+        if left.shape != frame.points.shape or (
+            float(np.max(np.abs(frame.points - left), initial=0.0)) > tolerance
+        ):
+            raise ValueError(
+                "ZoomOut returns the camera's frame from where its ZoomInto left it,"
+                f" {float(zoom._height(1.0)):.4g} tall about"
+                f" {np.round(zoom._center(1.0), 4).tolist()}, but it is"
+                f" {float(frame.height):.4g} tall about"
+                f" {np.round(frame.get_center(), 4).tolist()}"
+                f" ({float(frame.width):.4g} wide): return from an inner zoom before"
+                " an outer one, and move the camera only after the return"
+            )
+        holders = _holders(frame)
+        if not any(held() is zoom for held in holders):
+            raise ValueError(
+                "this ZoomInto has already come back: play it again before"
+                " another ZoomOut of it"
+            )
+        if holders[-1]() is not zoom:
+            raise ValueError(
+                "ZoomOut returns from the innermost zoom first: a zoom played"
+                " after this one holds the frame, so return from it before this"
+                " one"
+            )
+        scene = self._scene() if self._scene is not None else None
+        if scene is not None:
+            present = {id(m) for m in scene.get_mobject_family_members()}
+            for family, _, _ in zoom._fading:
+                if id(family[0]) not in present:
+                    raise ValueError(
+                        f"a {type(family[0]).__name__} the ZoomInto faded has left"
+                        " the scene: ZoomOut brings back each piece its ZoomInto"
+                        " faded, so keep it in the scene until the return"
+                    )
+        holders.pop()
+        super().begin()
+
+    def interpolate_mobject(self, alpha: float) -> None:
+        # Eased once, for the frame and every fade alike; the move-in's share,
+        # none at the end.
+        share = 0.0 if alpha >= 1.0 else 1.0 - self.get_sub_alpha(alpha, 0, 1)
+        self.zoom.show_share(max(share, 0.0))
+        if share <= 0.0:
+            # Exactly where the move-in began.
+            self.mobject.points = self.zoom._from_points
 
 
 def _window(start: float) -> tuple[float, float]:
@@ -744,6 +1159,33 @@ def _pieces(
                 found.append(piece)
 
     walk(mobjects)
+    return found
+
+
+def _joins(mobjects: Iterable[Mobject]) -> dict[int, tuple[Mobject, ...]]:
+    """What each connector of a diagram among ``mobjects`` joins, by its
+    id: the pieces of the diagram it was made to join and still holds,
+    found by their keys there (:attr:`Diagram.joined`); and for its label,
+    the connector and those pieces.
+    """
+    found: dict[int, tuple[Mobject, ...]] = {}
+    seen: set[int] = set()
+    for mob in mobjects:
+        for diagram in mob.get_family():
+            if not isinstance(diagram, Diagram) or id(diagram) in seen:
+                continue
+            seen.add(id(diagram))
+            for edge in diagram.edges:
+                keys = (getattr(edge, name, None) for name in ("start_key", "end_key"))
+                ends = tuple(
+                    end
+                    for key in keys
+                    if (end := diagram._joined_piece(key)) is not None
+                )
+                found[id(edge)] = ends
+                label = getattr(edge, "label", None)
+                if label is not None:
+                    found[id(label)] = (edge, *ends)
     return found
 
 

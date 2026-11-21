@@ -30,8 +30,9 @@ diagnostics, credited in ``NOTICE.md``.
 
 from __future__ import annotations
 
-__all__ = ["Leaf", "Part", "Parts", "PartsCache", "Unit", "build_parts"]
+__all__ = ["Leaf", "Part", "Parts", "PartsCache", "Unit", "build_parts", "source_of"]
 
+import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from fractions import Fraction
@@ -461,7 +462,26 @@ def _read(
         record.origin(m).id for m in (extras.fixed_in_frame if extras else ())
     )
     landings = _landings(record, chains)
-    return Parts(t, index, answer, view, tuple(parts), target, fixed, landings=landings)
+    built = Parts(
+        t, index, answer, view, tuple(parts), target, fixed, landings=landings
+    )
+    _SOURCES[built] = (record, capture)
+    return built
+
+
+#: The record and the capture each :class:`Parts` was read from (a forward
+#: run's, when it answered the frame), kept beside it, not in it, so that
+#: parts read alike stay alike.
+_SOURCES: weakref.WeakKeyDictionary[Parts, tuple[Record, Capture]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def source_of(parts: Parts) -> tuple[Record, Capture] | None:
+    """The record and capture ``parts`` were read from; ``None`` for parts
+    :func:`build_parts` did not read.
+    """
+    return _SOURCES.get(parts)
 
 
 def _landings(

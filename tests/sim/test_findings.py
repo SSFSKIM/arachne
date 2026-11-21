@@ -191,6 +191,123 @@ def test_a_body_held_on_screen_after_its_world_left_reads_as_of_its_capture(open
     assert read == _read(session.state_at(Fraction(1, 2)), body)
 
 
+@pytest.mark.parametrize("scene", ["BackAfterItsWorld", "BackAfterItsWorldTicked"])
+def test_a_body_back_on_screen_after_its_world_left_reads_its_stay_s_last_row(
+    opened, scene
+):
+    """Added back unmoving after its world left at 1/2 s, a body reads the
+    row its placement shows, its stay's last (tick 30), whatever the route
+    that answers: a held wait's one capture or a ticked wait's own.
+    """
+    session = opened(scene)
+    (body,) = _bodies(session)
+    bakes = session.record.bakes
+    (occurrence,) = bakes.occurrences
+    assert occurrence.last_tick == 30
+    channels = bakes.contents[occurrence.content].channels
+    x, y = channels["pose"].values[30, 0, :2].astype(float)
+    vx, vy = channels["velocity"].values[30, 0, :2].astype(float)
+    state = session.state_at(Fraction(3, 4))
+    read = _read(state, body)
+    assert all(q.unreadable is None for q in read.values()), read
+    assert read["sim.position"].value == (x, y, 0.0)
+    assert read["sim.velocity"].value == (vx, vy, 0.0)
+    # Its placement shows that row.
+    x0, y0, x1, y1 = state.node(body).scene_box
+    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((x, y), abs=1e-6)
+    result, found = _simulation(session)
+    assert found == [], [f.message for f in found]
+
+
+@pytest.mark.parametrize(
+    "scene",
+    [
+        "GroupBackAfterItsWorld",
+        "GroupBackAfterItsWorldUnmoved",
+        "DotWithAChildBackAfterItsWorld",
+    ],
+)
+def test_a_group_body_after_its_world_left_is_unreadable(opened, scene):
+    """A body drawn by its submobjects too (a group, or a dot with a dot of
+    its own), past its stay, is unreadable: one of its dots moved, it no
+    longer shows the stay's last row; unmoved, its drawing is also its
+    members', which its own capture does not hold.
+    """
+    session = opened(scene)
+    (body,) = _bodies(session)
+    state = session.state_at(Fraction(3, 4))
+    tick = math.floor(state.as_of * 60)
+    assert tick > 30
+    quantities = state.quantities[body]
+    assert quantities
+    for quantity in quantities:
+        assert quantity.value is None
+        assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
+
+
+def test_a_body_left_drawn_at_an_older_row_than_its_stay_s_last_is_unreadable(
+    opened,
+):
+    """Its world held until it left, the point is drawn as declared, not at
+    the stay's last row (30): past the stay, it reads nothing.
+    """
+    session = opened("HeldThenBack")
+    (body,) = _bodies(session)
+    (occurrence,) = session.record.bakes.occurrences
+    assert occurrence.last_tick == 30
+    state = session.state_at(Fraction(3, 4))
+    tick = math.floor(state.as_of * 60)
+    assert tick > 30
+    # Drawn where it was declared.
+    x0, y0, x1, y1 = state.node(body).scene_box
+    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((0.0, 2.0), abs=1e-9)
+    for quantity in state.quantities[body]:
+        assert quantity.value is None
+        assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
+
+
+def test_a_body_shifted_just_before_its_world_left_is_unreadable_past_it(opened):
+    """Shifted by the scene's code after its last placement, as its world
+    leaves, the point no longer shows the stay's last row: past the stay it
+    reads nothing.
+    """
+    session = opened("ShiftedThenLeft")
+    (body,) = _bodies(session)
+    state = session.state_at(Fraction(3, 4))
+    tick = math.floor(state.as_of * 60)
+    assert tick > 30
+    for quantity in state.quantities[body]:
+        assert quantity.value is None
+        assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
+
+
+def test_a_fixed_body_left_as_declared_reads_its_pose_past_its_stay(opened):
+    session = opened("FixedBackAfterItsWorld")
+    (body,) = _bodies(session)
+    read = _read(session.state_at(Fraction(3, 4)), body)
+    assert all(q.unreadable is None for q in read.values()), read
+    assert read["sim.position"].value == pytest.approx((0.0, 2.0, 0.0), abs=1e-6)
+
+
+def test_a_fixed_body_shifted_after_its_declaration_is_unreadable_past_its_stay(
+    opened,
+):
+    """Shifted between its declaration and its world's entry, the fixed dot
+    is drawn a unit right of the pose its bake holds: past the stay, it
+    reads nothing.
+    """
+    session = opened("FixedShiftedBackAfterItsWorld")
+    (body,) = _bodies(session)
+    state = session.state_at(Fraction(3, 4))
+    tick = math.floor(state.as_of * 60)
+    assert tick > 30
+    x0, y0, x1, y1 = state.node(body).scene_box
+    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((1.0, 2.0), abs=1e-9)
+    for quantity in state.quantities[body]:
+        assert quantity.value is None
+        assert quantity.unreadable == f"no bake holds tick {tick} of this body's stay"
+
+
 def test_a_body_shown_after_its_world_left_is_unreadable(opened):
     session = opened("ShownAfterItsWorld")
     (body,) = _bodies(session)

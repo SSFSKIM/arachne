@@ -27,18 +27,25 @@ setup:
   script: .github/ci-setup.sh
   install: pipx install uv==0.12.3 && uv sync --all-extras --locked
 gates:
+  # `-n logical`: one worker per CPU the runner reports. The project's default, `-n auto`, counts
+  # physical cores when psutil is installed, and a hosted Linux runner has 4 CPUs on 2 cores, so the
+  # default leaves half of them idle. Measured on one runner, two rounds each, 6,299 tests on
+  # Python 3.14: 614 s and 594 s with 2 workers, 478 s and 452 s with 4.
+  # `--no-cov` on the two 3.12 gates: coverage is measured once, by tests-py314, where its cost is 2
+  # to 3% (3.14 traces through sys.monitoring). On 3.12 it costs 29% of the suite's time: in one job
+  # on one runner, 801 s and 796 s with coverage, 570 s and 566 s without, the same 6,299 results.
   - name: tests-py312
-    run: uv run python -m pytest --ignore=tests/test_docs_examples
+    run: uv run python -m pytest -n logical --no-cov --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.12"}
     timeout: 45
   # Ubuntu 24.04's system Python. Code positions differ between 3.12 patch releases (3.12.3
   # places a lambda's implicit return at column 0), and the timeline reads them.
   - name: tests-py3123
-    run: uv run python -m pytest --ignore=tests/test_docs_examples
+    run: uv run python -m pytest -n logical --no-cov --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.12.3"}
     timeout: 45
   - name: tests-py314
-    run: uv run python -m pytest --ignore=tests/test_docs_examples
+    run: uv run python -m pytest -n logical --ignore=tests/test_docs_examples
     env: {UV_PYTHON: "3.14"}
     timeout: 45
   # Every frame drawn from the record traced (tests/helpers/draw_reads.py): a read of what the
