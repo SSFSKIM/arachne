@@ -235,6 +235,10 @@ class DottedTrail(VMobject):
     between readings is time the trail did not watch (it was out of the
     scene): it resumes from the next reading and leaves that time without
     dots. :meth:`stop` leaves the dots as they are.
+
+    A copy of the trail made with a copy of its object (a group holding
+    both, copied) follows that copy; a copy of the trail alone follows the
+    object itself (:attr:`followed`).
     """
 
     def __init__(
@@ -261,38 +265,21 @@ class DottedTrail(VMobject):
         self.elapsed = 0.0
         #: Where each dot fell, in order.
         self.dots: tuple[tuple[float, float, float], ...] = ()
+        #: What the trail follows.
+        self._followed = _Followed(mobject)
         start = mobject.get_center()
         #: Where the centre was when the trail last read it.
         self._seen = _point(start)
         self._drop(self._seen)
+        self._keeper = _keep_time
+        self.add_updater(_keep_time)
 
-        def keep_time(trail: Mobject, dt: float) -> None:
-            assert isinstance(trail, DottedTrail)
-            before = trail.elapsed
-            here = mobject.get_center()
-            scene = running_scene()
-            if scene is None:
-                now = before + dt
-            else:
-                t = float(scene.time)
-                last, trail.read_at = trail.read_at, t
-                if last is None or t - last > max(dt, TICK_DT) + 1e-9:
-                    # Not watched since the last reading: resume from here.
-                    trail._seen = _point(here)
-                    return
-                now = before + (t - last)
-            was = np.array(trail._seen)
-            # Every dot due by now (to a rounding), where the centre was then.
-            while len(trail.dots) * trail.interval <= now + 1e-9:
-                due = len(trail.dots) * trail.interval
-                share = 1.0 if now <= before else (due - before) / (now - before)
-                share = min(max(share, 0.0), 1.0)
-                trail._drop(_point(was + (here - was) * share))
-            trail.elapsed = now
-            trail._seen = _point(here)
-
-        self._keeper = keep_time
-        self.add_updater(keep_time)
+    @property
+    def followed(self) -> Mobject:
+        """What the trail follows: in a copy of the trail made with it, its
+        copy.
+        """
+        return self._followed.get()
 
     def _drop(self, where: tuple[float, float, float]) -> None:
         self.dots = (*self.dots, where)
@@ -306,6 +293,58 @@ class DottedTrail(VMobject):
         """Stop dropping dots; those dropped stay."""
         self.remove_updater(self._keeper)
         return self
+
+
+class _Followed:
+    """The mobject a trail follows, held so that a copy of the trail follows
+    the copy of that mobject made with it (a group holding both, copied),
+    whichever of the two the copy reaches first, and the mobject itself
+    when it is not copied with the trail.
+    """
+
+    def __init__(self, mobject: Mobject, memo: dict[int, Any] | None = None) -> None:
+        self._mobject = mobject
+        # The copy's memo, read once the copy is done: by then it holds the
+        # mobject's copy, if the copy made one.
+        self._memo = memo
+
+    def get(self) -> Mobject:
+        if self._memo is not None:
+            self._mobject = self._memo.get(id(self._mobject), self._mobject)
+            self._memo = None
+        return self._mobject
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _Followed:
+        return _Followed(self.get(), memo)
+
+
+def _keep_time(trail: Mobject, dt: float) -> None:
+    """A trail's own updater: read its object's centre and drop every dot
+    due by now (:class:`DottedTrail`).
+    """
+    assert isinstance(trail, DottedTrail)
+    before = trail.elapsed
+    here = trail.followed.get_center()
+    scene = running_scene()
+    if scene is None:
+        now = before + dt
+    else:
+        t = float(scene.time)
+        last, trail.read_at = trail.read_at, t
+        if last is None or t - last > max(dt, TICK_DT) + 1e-9:
+            # Not watched since the last reading: resume from here.
+            trail._seen = _point(here)
+            return
+        now = before + (t - last)
+    was = np.array(trail._seen)
+    # Every dot due by now (to a rounding), where the centre was then.
+    while len(trail.dots) * trail.interval <= now + 1e-9:
+        due = len(trail.dots) * trail.interval
+        share = 1.0 if now <= before else (due - before) / (now - before)
+        share = min(max(share, 0.0), 1.0)
+        trail._drop(_point(was + (here - was) * share))
+    trail.elapsed = now
+    trail._seen = _point(here)
 
 
 def _point(where: np.ndarray) -> tuple[float, float, float]:
