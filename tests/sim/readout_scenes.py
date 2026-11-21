@@ -17,6 +17,7 @@ from arachne import (
     Dot,
     FadeIn,
     Group,
+    Indicate,
     Readout,
     Rectangle,
     Scene,
@@ -293,3 +294,32 @@ class CollapsingRead(Scene):
         world.add_force(Attraction(a, b, strength=0.01))
         self.add(world, world.readout(a, "velocity").to_corner(UL))
         self.wait(0.5)
+
+
+class FadedInWithItsReadout(Scene):
+    """A world at rest faded in, its readout added with it as the fade
+    begins: nothing moves, and the fade holds the world's drawing.
+    """
+
+    def construct(self):
+        world = World()
+        ball = world.body(Dot(UP), shape=None, mass=1.0)
+        reading = world.readout(ball, "position", part="y")
+        self.add(reading.to_corner(UL))
+        self.play(FadeIn(world), run_time=0.5)
+        self.wait(0.25)
+
+
+class IndicatedOverAFall(Scene):
+    """A readout added with its falling point's world, then held by an
+    animation of its own (Indicate) while the point falls.
+    """
+
+    def construct(self):
+        world = World(gravity=DOWN * 9.8)
+        ball = world.body(Dot(UP * 2), shape=None, mass=1.0)
+        reading = world.readout(ball, "velocity", part="y")
+        self.add(world, reading.to_corner(UL))
+        self.wait(0.2)
+        self.play(Indicate(reading), run_time=0.5)
+        self.wait(0.2)
