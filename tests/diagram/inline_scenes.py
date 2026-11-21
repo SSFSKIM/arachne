@@ -21,6 +21,7 @@ from arachne import (
     Node,
     Scene,
     ZoomInto,
+    config,
 )
 from arachne.mobject.diagram import ArcLength
 from arachne.mobject.marks.blocks import INSIDE_SHARE
@@ -242,3 +243,29 @@ class ZoomOntoAHiddenLine(MovingCameraScene):
         self.add(diagram)
         self.play(ZoomInto(middle), run_time=2)
         self.wait(0.5)
+
+
+class PillJustInsideTheFrame(Scene):
+    """A connector running on past the frame's right edge to a node off
+    it, its label's plate ``inside`` units inside that edge: past the plate
+    the line shows that far, and runs on off the screen.
+    """
+
+    inside = 0.02
+
+    def construct(self):
+        diagram = Diagram()
+        a = Node("alpha", radius=0.6).move_to(LEFT * 2)
+        b = Node("beta", radius=0.6).move_to(RIGHT * 12)
+        diagram.add(a, b)
+        edge = diagram.connect(a, b, label="link", route="straight")
+        plate = edge.label.background_rectangle
+        edge.label.shift(
+            RIGHT * (config.frame_width / 2 - self.inside - plate.get_right()[0])
+        )
+        self.add(diagram)
+        self.wait(0.5)
+
+
+class PillWellInsideTheFrame(PillJustInsideTheFrame):
+    inside = 0.15

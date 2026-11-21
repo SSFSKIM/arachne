@@ -645,3 +645,27 @@ def test_a_readout_s_hold_is_in_the_content_keys():
 def test_a_complex_hold_is_refused(hold):
     with pytest.raises(ValueError, match="hold is a point of a box"):
         Readout(0, format="{:.0f}", hold=hold)
+
+
+def _drawn(readout) -> np.ndarray:
+    """The points ``readout``'s text draws, about their centre."""
+    points = np.concatenate(
+        [np.asarray(m.points) for m in readout.label.family_members_with_points()]
+    )
+    return points - (points.min(axis=0) + points.max(axis=0)) / 2
+
+
+@pytest.mark.parametrize("pill", [False, True])
+@pytest.mark.parametrize("turn", [np.pi / 2, np.pi / 6])
+def test_a_turned_readout_keeps_its_turn_and_size_as_its_value_changes(pill, turn):
+    reading = Readout(4, format="{:.0f} mV", pill=pill).scale(1.5).rotate(turn)
+    held = reading.held_point(reading.label)
+    reading.set_value(9)
+    # Its new text turned and scaled as its old one was, the held point kept.
+    made = Readout(9, format="{:.0f} mV", pill=pill).scale(1.5).rotate(turn)
+    np.testing.assert_allclose(_drawn(reading), _drawn(made), atol=1e-9)
+    np.testing.assert_allclose(reading.held_point(reading.label), held, atol=1e-9)
+    # And again, from the text it now shows.
+    reading.set_value(7)
+    made = Readout(7, format="{:.0f} mV", pill=pill).scale(1.5).rotate(turn)
+    np.testing.assert_allclose(_drawn(reading), _drawn(made), atol=1e-9)

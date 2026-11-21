@@ -36,7 +36,9 @@ every instant it is asked, and reports them under the clearance codes:
   runs there. The plate hides the line only where it paints (some fill)
   and is drawn after it. The stubs run along the line as drawn (its
   corners, its ends where the head and the pieces cut it), each curve
-  sampled at 65 points, from where the plate's box covers a length of it;
+  sampled at 65 points, from where the plate's box covers a length of it,
+  counting only what the frame shows of it (a line running on off the
+  screen shows only to the frame's edge);
   each is measured in scene units and put on screen by the home frame's
   width over the frame's (a zoomed-in frame makes it longer), whatever the
   frame's height. The label is judged at the instants, and when shown, as
@@ -287,7 +289,7 @@ def _inline_findings(
         curves = drawn.outline(STUB_SAMPLES)
         if not plates or curves is None:
             continue
-        stubs = line_stubs(curves, union(plates), to_scene=to_scene)
+        stubs = line_stubs(curves, union(plates), to_scene=to_scene, frame=parts.frame)
         if stubs is None:
             continue
         before, after = stubs
@@ -328,16 +330,20 @@ def _shows_too_little(on_screen: tuple[float, float]) -> bool:
 
 
 def line_stubs(
-    curves: np.ndarray, box: Box, to_scene: tuple[float, float] = (1.0, 1.0)
+    curves: np.ndarray,
+    box: Box,
+    to_scene: tuple[float, float] = (1.0, 1.0),
+    frame: Box | None = None,
 ) -> tuple[float, float] | None:
     """How far a line runs, along its path, before ``box`` first covers a
     length of it and after ``box`` last does: ``curves`` its curves as
     polylines, ``(curves, samples, 2)``, joined as straight steps, clipped
     against ``box`` where they lie; each length a step's run between its cut
     shares, with ``to_scene`` scaling its two axes (screen to scene units).
-    A box that only touches the line covers none of it; a jump from one
-    curve to the next, where they do not meet, runs no length. ``None``
-    when the box covers none of it.
+    With ``frame``, only what lies inside it runs: a line leaving the frame
+    runs no length until it comes back. A box that only touches the line
+    covers none of it; a jump from one curve to the next, where they do not
+    meet, runs no length. ``None`` when the box covers none of it.
     """
     low, high = np.array(box[:2]), np.array(box[2:])
     axes = np.array(to_scene)
@@ -346,16 +352,30 @@ def line_stubs(
     for curve in curves:
         for start, stop in zip(curve[:-1], curve[1:], strict=True):
             length = float(np.linalg.norm((stop - start) * axes))
+            shown = (
+                (0.0, 1.0)
+                if frame is None
+                else _crossing(start, stop, np.array(frame[:2]), np.array(frame[2:]))
+            )
             inside = _crossing(start, stop, low, high)
             if inside is not None and (inside[1] - inside[0]) * length > 0:
                 enter, leave = inside
                 if first is None:
-                    first = run + float(enter) * length
-                last = run + float(leave) * length
-            run += length
+                    first = run + _shown_up_to(float(enter), shown) * length
+                last = run + _shown_up_to(float(leave), shown) * length
+            run += _shown_up_to(1.0, shown) * length
     if first is None or last is None:
         return None
     return first, run - last
+
+
+def _shown_up_to(share: float, shown: tuple[float, float] | None) -> float:
+    """How much of a step, up to its ``share``, lies in its ``shown`` shares
+    (``None`` when it lies outside the frame).
+    """
+    if shown is None:
+        return 0.0
+    return max(0.0, min(share, shown[1]) - shown[0])
 
 
 def _line_distance(box: Box, part: Part) -> float:

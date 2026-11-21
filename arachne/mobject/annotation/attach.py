@@ -21,7 +21,10 @@ annotation itself suspends its updater for the play, as CE suspends any
 mobject's, except :class:`~.readout.CountUp`, which keeps it running.
 
 An anchor that names nothing (an unknown name of a rig, which the lint
-reports) has no point: what is attached to it draws nothing. An anchor is
+reports) has no point: what is attached to it draws nothing. One that names
+something with no points when the annotation is made (a drawing its slot
+hides, a box anchor on it) has no point yet: the annotation draws nothing
+until it has one, then is placed as if made then. An anchor is
 measured by the lint only on an object the scene holds, whose state the
 record keeps; an annotation attached to an object the scene does not hold
 still follows it, unmeasured.
@@ -60,6 +63,9 @@ if TYPE_CHECKING:
 
 #: The offset an annotation sits at from its anchor by default.
 DEFAULT_OFFSET: np.ndarray = UR
+#: Where a member of an annotation not yet placed keeps the points it draws
+#: once placed.
+_UNTIL_PLACED = "_points_until_placed"
 
 
 @dataclass(frozen=True)
@@ -265,6 +271,8 @@ class Annotation(VGroup):
         self._held_from_centre: FrozenArray = freeze(np.zeros(3), FrozenArray)
         #: How the annotation is attached, or ``None`` when it is not.
         self.attached: Attached | None = None
+        #: Whether it waits for its anchor's first point, drawing nothing.
+        self._unplaced = False
         if at is None:
             return
         place = np.zeros(3)
@@ -274,19 +282,50 @@ class Annotation(VGroup):
             at, (float(place[0]), float(place[1]), float(place[2])), bool(follow)
         )
         point = at.point()
-        if point is None:
+        if point is None and not at.resolved:
             # Attached to nothing: it draws nothing.
             for member in self.get_family():
                 member.points = np.zeros((0, self.dim))
             return
-        # Placed at its anchor first, whether it follows or stays there.
-        body.move_to(point + place)
-        held = self.held_point(body)
-        self._held_from_place = freeze(held - (point + place), FrozenArray)
-        self.note_held(body, held)
-        if self.attached.follow or self.leader is not None:
+        if point is None:
+            # What it names has no points yet: it draws nothing until its
+            # anchor has a point, and is placed there then.
+            self._unplaced = True
+            self._hide_until_placed()
+            self.add_updater(keep_attached)
+            return
+        self._place_at(point)
+
+    def _place_at(self, point: np.ndarray) -> None:
+        """Put the body at the anchor's ``point`` plus the offset, the first
+        time, whether it follows or stays there.
+        """
+        attached = self.attached
+        assert attached is not None
+        place = point + np.array(attached.offset)
+        self.body.move_to(place)
+        held = self.held_point(self.body)
+        self._held_from_place = freeze(held - place, FrozenArray)
+        self.note_held(self.body, held)
+        if (attached.follow or self.leader is not None) and (
+            keep_attached not in self.get_updaters()
+        ):
             self.add_updater(keep_attached)
         self.attach()
+
+    def _hide_until_placed(self) -> None:
+        """Keep each member's points aside, so that it draws nothing."""
+        for member in self.get_family():
+            if len(member.points):
+                member.__dict__[_UNTIL_PLACED] = member.points
+                member.points = np.zeros((0, self.dim))
+
+    def _show_once_placed(self) -> None:
+        """Give each member back the points :meth:`_hide_until_placed` kept aside."""
+        for member in self.get_family():
+            kept = member.__dict__.pop(_UNTIL_PLACED, None)
+            if kept is not None:
+                member.points = kept
 
     def held_point(self, body: Mobject) -> np.ndarray:
         """Where ``body`` (this annotation's body, or one about to replace
@@ -326,6 +365,15 @@ class Annotation(VGroup):
         if attached is None:
             return
         point = attached.point()
+        if self._unplaced:
+            if point is None:
+                # Anything given points since draws nothing yet either.
+                self._hide_until_placed()
+                return
+            self._unplaced = False
+            self._show_once_placed()
+            self._place_at(point)
+            return
         if point is None:
             return
         if attached.follow:

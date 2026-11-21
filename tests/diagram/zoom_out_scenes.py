@@ -5,15 +5,21 @@ of order, and returns the engine refuses.
 
 from __future__ import annotations
 
+import numpy as np
+
 from arachne import (
     BLUE,
+    DL,
     ORIGIN,
     RIGHT,
+    UL,
     UP,
     Block,
     Diagram,
+    ImageMobject,
     MovingCameraScene,
     Node,
+    Readout,
     Scene,
     ScreenRectangle,
     Square,
@@ -216,3 +222,56 @@ class IntoAHubAndBack(MovingCameraScene):
         self.wait(1)
         self.play(ZoomOut(zoom))
         self.play(ZoomInto(target), run_time=2.5)
+
+
+class ZoomPastReadouts(MovingCameraScene):
+    """Two readouts in the corners the move-in cuts, each changed while the
+    frame is on the block: one from 4 to 9 (its glyph replaced), one from 4
+    to 10 (one glyph become two); then the return.
+    """
+
+    def construct(self):
+        diagram, middle = zoomed_diagram(36, False)
+        self.nine = Readout(4, "{:.0f}").to_corner(UL)
+        self.ten = Readout(4, "{:.0f}").to_corner(DL)
+        self.add(diagram, self.nine, self.ten)
+        self.before = (shows(self.nine), shows(self.ten))
+        (glyph,) = self.nine.label.family_members_with_points()
+        #: How the glyph replaced showed before the move-in.
+        self.glyph = opacities_of(glyph)
+        zoom = ZoomInto(middle)
+        self.play(zoom, run_time=2)
+        self.nine.set_value(9)
+        self.ten.set_value(10)
+        self.while_in = (shows(self.nine), shows(self.ten))
+        self.play(ZoomOut(zoom))
+
+
+def picture() -> ImageMobject:
+    """A small picture, its alpha a ramp, at 0.6 of its own opacity."""
+    pixels = np.zeros((16, 16, 4), dtype=np.uint8)
+    pixels[..., 0] = 200
+    pixels[..., 2] = 90
+    pixels[..., 3] = np.linspace(80, 255, 16, dtype=np.uint8)[None, :]
+    return ImageMobject(pixels).set_opacity(0.6)
+
+
+class ZoomPastAPicture(MovingCameraScene):
+    """Still for 0.5 s; into the middle block over 0.5-2.5 s, which cuts a
+    picture in the upper left corner; held to 3 s; back over 3-5 s; held to
+    5.5 s.
+    """
+
+    def construct(self):
+        diagram, middle = zoomed_diagram(36, False)
+        self.picture = picture().scale(2).to_corner(UL)
+        self.add(diagram, self.picture)
+        self.wait(0.5)
+        self.before = np.array(self.picture.pixel_array)
+        zoom = ZoomInto(middle)
+        self.play(zoom, run_time=2)
+        self.while_in = np.array(self.picture.pixel_array)
+        self.wait(0.5)
+        self.play(ZoomOut(zoom))
+        self.after = np.array(self.picture.pixel_array)
+        self.wait(0.5)
