@@ -35,6 +35,13 @@ _FLAT = {
 }
 #: 1/256 px in frame units at 854 px.
 _UNIT = 1 / (60.046875 * 256)
+#: The flat view with a frame twice as wide: a pixel spans twice the units,
+#: so the input grid changes.
+_WIDE = dict(
+    _FLAT,
+    frame_width=2 * _FLAT["frame_width"],
+    frame_height=2 * _FLAT["frame_height"],
+)
 
 
 def _stroked(shape: Shape, **fields) -> Record:
@@ -130,7 +137,7 @@ def _stream() -> list[Delta]:
     whose joins a pan moves (set again by the view pass), one revealed, a
     face group whose faces a path also draws (measured two ways), a shape a
     record begins to draw another way in a later delta, a release, and a
-    zoom that changes the grid (everything snapped again).
+    wider frame that changes the grid (everything snapped again).
     """
     sharp = Shape("path", _sharp())
     first = _square_closing(0.0)
@@ -155,11 +162,9 @@ def _stream() -> list[Delta]:
         deltas.append(Delta(seq=seq, view=view))
     seq = len(deltas)
     deltas.append(Delta(seq=seq, set=[(4, _stroked(pair))]))
-    deltas.append(Delta(seq=seq + 1, view=dict(_FLAT, zoom=2.0)))
+    deltas.append(Delta(seq=seq + 1, view=_WIDE))
     deltas.append(Delta(seq=seq + 2, remove=[3], release=[plain.key]))
-    deltas.append(
-        Delta(seq=seq + 3, view=dict(_FLAT, zoom=2.0, frame_center=(0.1, 0, 0)))
-    )
+    deltas.append(Delta(seq=seq + 3, view=dict(_WIDE, frame_center=(0.1, 0, 0))))
     return deltas
 
 
@@ -227,6 +232,16 @@ def test_the_test_session_measures():
     assert canonical.MEASURE is True
     assert Canonical(planes=False)._measuring is True
     assert Canonical(planes=False, measure=False)._measuring is False
+
+
+def test_the_stream_regrids():
+    snapper = Canonical(planes=False)
+    grids = []
+    for delta in _stream():
+        snapper(delta)
+        grids.append(snapper.grid)
+    canonical.point_equality_disagreements.clear()
+    assert len(set(grids)) > 1, grids
 
 
 def test_the_stream_sets_a_path_again_for_its_joins():
