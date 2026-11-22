@@ -14,11 +14,13 @@ import sys
 import numpy as np
 import pytest
 
+from arachne import DEGREES, RED, TAU, ParametricFunction, Surface, ThreeDScene
 from arachne.frame_ir import canonical, joins
 from arachne.frame_ir.canonical import Canonical
 from arachne.frame_ir.xf import Delta, PaintTable, Record, Shape
 
-from ..conftest import point_equality_guard
+from ..conftest import expected_disagreements, point_equality_guard
+from ..timeline.conftest import render
 
 #: A flat view of the configured frame at 854x480.
 _FLAT = {
@@ -185,13 +187,16 @@ def _same(a, b) -> bool:
     return type(a) is type(b) and a == b
 
 
-def _handed(measure: bool) -> list[Delta]:
-    snapper = Canonical(planes=False, measure=measure)
-    found = [snapper(delta) for delta in _stream()]
+def _snapped(measure: bool, stream: list[Delta] | None = None, **kw) -> list[Delta]:
+    snapper = Canonical(planes=kw.get("planes", False), measure=measure)
+    return [snapper(delta) for delta in (_stream() if stream is None else stream)]
+
+
+def _handed(measure: bool, stream: list[Delta] | None = None, **kw) -> list[Delta]:
     # The stream's pair of squares is decided otherwise by design (counted
     # when measured): not this comparison's subject.
-    canonical.point_equality_disagreements.clear()
-    return found
+    with expected_disagreements():
+        return _snapped(measure, stream, **kw)
 
 
 _PARTS = (
@@ -237,10 +242,10 @@ def test_the_test_session_measures():
 def test_the_stream_regrids():
     snapper = Canonical(planes=False)
     grids = []
-    for delta in _stream():
-        snapper(delta)
-        grids.append(snapper.grid)
-    canonical.point_equality_disagreements.clear()
+    with expected_disagreements():
+        for delta in _stream():
+            snapper(delta)
+            grids.append(snapper.grid)
     assert len(set(grids)) > 1, grids
 
 
@@ -268,10 +273,59 @@ def test_unmeasured_hands_on_the_same_deltas():
             assert _same(getattr(a, name), getattr(b, name)), (k, name)
 
 
+class _ShadedSolids(ThreeDScene):
+    """A shaded curve and a shaded surface: records the core decides planes
+    and normals for.
+    """
+
+    def construct(self):
+        spring = ParametricFunction(
+            lambda u: (1.2 * np.cos(u), 1.2 * np.sin(u), u * 0.05),
+            color=RED,
+            t_range=(-TAU, TAU, 0.05),
+        ).set_shade_in_3d(True)
+        surface = Surface(
+            lambda u, v: (u, v, 0.3 * np.sin(u) * np.cos(v)),
+            u_range=(-1, 1),
+            v_range=(-1, 1),
+            resolution=(4, 4),
+        )
+        self.add(spring, surface)
+        self.set_camera_orientation(phi=70 * DEGREES, theta=-50 * DEGREES)
+        self.wait(1 / 15)
+        self.move_camera(theta=-30 * DEGREES, run_time=2 / 15)
+
+
+def _made(scene_class: type, monkeypatch) -> list[Delta]:
+    """The deltas a core render of ``scene_class`` made, as made."""
+    call = Canonical.__call__
+    made: list[Delta] = []
+
+    def keeping(self, delta):
+        made.append(delta)
+        return call(self, delta)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Canonical, "__call__", keeping)
+        render(scene_class, 15, draw_path="core", pixel_width=192, pixel_height=108)
+    return made
+
+
 @pytest.mark.snaps_unmeasured
-def test_unmeasured_hands_the_core_the_same_bytes():
+def test_unmeasured_hands_the_core_the_same_bytes(monkeypatch):
+    """With the core's decider on, as the core painter snaps (``planes``):
+    the planes and normals it decides on the values as made are handed on
+    unchanged, field by field and on the wire.
+    """
     pytest.importorskip("arachne_core")
-    measured, unmeasured = _handed(True), _handed(False)
+    stream = _made(_ShadedSolids, monkeypatch)
+    measured = _handed(True, stream, planes=True)
+    unmeasured = _handed(False, stream, planes=True)
+    fields = {name for d in measured for _, r in d.set for name in r.fields}
+    assert {"planes", "normals"} <= fields, fields
+    for k, (a, b) in enumerate(zip(measured, unmeasured, strict=True)):
+        for name in _PARTS:
+            assert _same(getattr(a, name), getattr(b, name)), (k, name)
     sent = [
         (a.to_core().to_bytes(), b.to_core().to_bytes())
         for a, b in zip(measured, unmeasured, strict=True)
@@ -299,16 +353,17 @@ def test_measuring_measures_and_unmeasured_does_not(monkeypatch):
     found, counts = {}, {}
     for measure in (True, False):
         measuring_now[0] = measure
-        canonical.point_equality_disagreements.clear()
-        canonical.point_equality_counts.update(measured=0, unmeasured=0)
+        before = dict(canonical.point_equality_counts)
         snapper = Canonical(planes=False, measure=measure)
-        for delta in _stream():
-            snapper(delta)
-        found[measure] = list(canonical.point_equality_disagreements)
-        counts[measure] = dict(canonical.point_equality_counts)
+        with expected_disagreements() as made:
+            for delta in _stream():
+                snapper(delta)
+        found[measure] = made
+        counts[measure] = {
+            k: canonical.point_equality_counts[k] - before[k] for k in before
+        }
         if not measure:
             assert snapper._measured == {}
-    canonical.point_equality_disagreements.clear()
     assert calls[True] > 0
     assert found[True]
     assert counts[True]["measured"] > 0
@@ -344,7 +399,65 @@ def test_the_guard_fails_a_session_that_does_not_measure(monkeypatch):
 
 def test_the_guard_fails_a_disagreement():
     with (
+        expected_disagreements(),
         pytest.raises(AssertionError, match="decided otherwise"),
         point_equality_guard(),
     ):
         canonical.point_equality_disagreements.append((8, 2, 1))
+
+
+def test_an_empty_inner_guard_leaves_the_outer_its_evidence():
+    """A path snapped before an inner guard opens is still the outer's to
+    find, the inner guard empty.
+    """
+    with (
+        expected_disagreements() as made,
+        pytest.raises(AssertionError, match="decided otherwise"),
+        point_equality_guard(),
+    ):
+        _then_an_empty_guard(_snapped, True)
+    assert made
+
+
+def _then_an_empty_guard(snap, *args, **kw) -> None:
+    snap(*args)
+    with point_equality_guard(**kw):
+        pass
+
+
+def test_an_inner_guard_that_fails_leaves_the_outer_its_evidence():
+    with (
+        expected_disagreements(),
+        pytest.raises(AssertionError, match="decided otherwise"),
+        point_equality_guard(),
+        pytest.raises(AssertionError, match="decided otherwise"),
+        point_equality_guard(),
+    ):
+        _snapped(True)
+
+
+@pytest.mark.snaps_unmeasured
+def test_an_inner_guard_that_allows_unmeasured_leaves_the_outer_its_count():
+    with (
+        pytest.raises(AssertionError, match="without the point-equality measure"),
+        point_equality_guard(),
+    ):
+        _then_an_empty_guard(_snapped, False, unmeasured=True)
+
+
+def test_expected_disagreements_takes_only_its_own():
+    inner: list = []
+    with (
+        expected_disagreements(),
+        pytest.raises(AssertionError, match=r"decided otherwise: \[\(8, 2, 1\)\]"),
+        point_equality_guard(),
+    ):
+        _one_kept_one_taken(inner)
+    assert inner == [(4, 3, 1)]
+
+
+def _one_kept_one_taken(taken: list) -> None:
+    canonical.point_equality_disagreements.append((8, 2, 1))
+    with expected_disagreements() as inner:
+        canonical.point_equality_disagreements.append((4, 3, 1))
+    taken.extend(inner)

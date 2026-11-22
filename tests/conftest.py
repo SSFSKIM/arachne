@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import importlib
 import logging
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import cairo
 import pytest
@@ -34,6 +37,67 @@ def _cpu() -> str:
     return f"{model} ({'avx512f' if ' avx512f' in flags else 'no avx512f'})"
 
 
+#: The module whose evidence the guard reads, always through ``sys.modules``:
+#: a reload re-executes it in place and replaces what it holds.
+_CANONICAL = "arachne.frame_ir.canonical"
+
+
+def _canonical() -> Any:
+    importlib.import_module(_CANONICAL)
+    return sys.modules[_CANONICAL]
+
+
+@dataclasses.dataclass(frozen=True)
+class _Mark:
+    """Where the snap's evidence stood: its own list and counters, how many
+    disagreements the list held and the shapes counted. The evidence is
+    never cleared by a guard, so marks nest.
+    """
+
+    state: tuple[list, dict]
+    found: int
+    measured: int
+    unmeasured: int
+
+
+def _mark() -> _Mark:
+    module = _canonical()
+    found, counts = module.point_equality_disagreements, module.point_equality_counts
+    return _Mark((found, counts), len(found), counts["measured"], counts["unmeasured"])
+
+
+def _since(mark: _Mark, *, unmeasured: bool) -> list[str]:
+    """What fails since ``mark``: a reload, evidence cleared, a disagreement,
+    or (unless ``unmeasured``) a shape snapped without the measure.
+    """
+    module = _canonical()
+    found, counts = module.point_equality_disagreements, module.point_equality_counts
+    if found is not mark.state[0] or counts is not mark.state[1]:
+        return [
+            f"{_CANONICAL} was reloaded: the point-equality evidence and "
+            "canonical.MEASURE it held were replaced"
+        ]
+    if (
+        len(found) < mark.found
+        or counts["measured"] < mark.measured
+        or counts["unmeasured"] < mark.unmeasured
+    ):
+        return [
+            "the point-equality evidence was cleared or reset: consume a "
+            "disagreement made on purpose with expected_disagreements()"
+        ]
+    problems = []
+    made = found[mark.found :]
+    if made:
+        problems.append(f"(points, coordinates, boundaries) decided otherwise: {made}")
+    missed = counts["unmeasured"] - mark.unmeasured
+    if missed and not unmeasured:
+        problems.append(
+            f"{missed} path shapes were snapped without the point-equality measure"
+        )
+    return problems
+
+
 @contextlib.contextmanager
 def point_equality_guard(*, unmeasured: bool = False) -> Iterator[None]:
     """No path snapped inside it has a join or a closed end that CE's
@@ -41,37 +105,118 @@ def point_equality_guard(*, unmeasured: bool = False) -> Iterator[None]:
     (``frame_ir.canonical``), and every path shape snapped inside it was
     measured, so it never passes on nothing: production does not measure
     (``canonical.MEASURE``), and the test session turns measuring on
-    (:func:`pytest_configure`). ``unmeasured``: a test that snaps unmeasured
-    on purpose (``@pytest.mark.snaps_unmeasured``).
+    (:func:`pytest_configure`). ``unmeasured``: snapping unmeasured is
+    expected. It reads the evidence and clears none of it, so a guard
+    inside it leaves it every observation; the session checks every test's
+    phases the same way (:func:`pytest_runtest_makereport`).
     """
-    from arachne.frame_ir import canonical
-
-    assert canonical.MEASURE, (
+    assert _canonical().MEASURE, (
         "the test session measures point equality: canonical.MEASURE is off"
     )
-    canonical.point_equality_disagreements.clear()
-    counts = canonical.point_equality_counts
-    counts.update(measured=0, unmeasured=0)
-    try:
-        yield
-    finally:
-        found = list(canonical.point_equality_disagreements)
-        missed = counts["unmeasured"]
-        canonical.point_equality_disagreements.clear()
-        counts.update(measured=0, unmeasured=0)
-    assert not found, f"(points, coordinates, boundaries) decided otherwise: {found}"
-    assert unmeasured or not missed, (
-        f"{missed} path shapes were snapped without the point-equality measure"
+    mark = _mark()
+    yield
+    problems = _since(mark, unmeasured=unmeasured)
+    if not problems and not _canonical().MEASURE:
+        problems.append("canonical.MEASURE was turned off inside the guard")
+    assert not problems, "; ".join(problems)
+
+
+@contextlib.contextmanager
+def expected_disagreements() -> Iterator[list[tuple[int, int, int]]]:
+    """The disagreements recorded inside it, made on purpose: handed to the
+    test in the list it yields and taken off the evidence, so no guard
+    counts them. Every other observation stays.
+    """
+    module = _canonical()
+    found = module.point_equality_disagreements
+    start = len(found)
+    taken: list[tuple[int, int, int]] = []
+    yield taken
+    assert _canonical().point_equality_disagreements is found, (
+        f"{_CANONICAL} was reloaded inside expected_disagreements()"
     )
+    assert len(found) >= start, "the point-equality evidence was cleared"
+    taken.extend(found[start:])
+    del found[start:]
 
 
-@pytest.fixture(autouse=True)
-def _snapping_keeps_ces_point_equality(request):
-    """Every test runs inside :func:`point_equality_guard`."""
-    with point_equality_guard(
-        unmeasured=request.node.get_closest_marker("snaps_unmeasured") is not None
-    ):
-        yield
+#: Where the session's evidence was last checked: every phase of every test
+#: (its setup with the higher-scoped fixtures it sets up, its call, its
+#: teardown with those it tears down) is checked from there, and what was
+#: snapped outside any test (collection, between tests) fails the next one.
+#: Zero: the module's counters start at its import.
+_checked: _Mark | None = None
+#: What the session found outside any test, by test, before its setup.
+_outside: dict[str, list[str]] = {}
+
+
+def _check(*, unmeasured: bool) -> list[str]:
+    global _checked
+    mark = _checked
+    if mark is None:
+        module = _canonical()
+        state = (module.point_equality_disagreements, module.point_equality_counts)
+        mark = _Mark(state, 0, 0, 0)
+    problems = _since(mark, unmeasured=unmeasured)
+    _checked = _mark()
+    if any("reloaded" in p for p in problems):
+        # The reload is this test's failure, not every later one's.
+        _canonical().MEASURE = True
+    return problems
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    _outside[item.nodeid] = [
+        f"outside any test (collection or between tests): {p}"
+        for p in _check(unmeasured=False)
+    ]
+    yield
+    _outside.pop(item.nodeid, None)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """A phase fails on what it snapped: a disagreement, a reload, evidence
+    cleared, or a shape snapped unmeasured in a test not marked
+    ``snaps_unmeasured``; its setup also on what was snapped outside any
+    test before it, and on a session that does not measure.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    problems = _check(
+        unmeasured=item.get_closest_marker("snaps_unmeasured") is not None
+    )
+    if call.when == "setup":
+        problems = _outside.pop(item.nodeid, []) + problems
+        if not _canonical().MEASURE:
+            problems.append(
+                "the test session measures point equality: canonical.MEASURE is off"
+            )
+    if not problems:
+        return
+    text = f"point equality, {call.when}: " + "; ".join(problems)
+    if report.failed:
+        report.sections.append(("point equality", text))
+        return
+    report.outcome = "failed"
+    report.longrepr = text
+    if hasattr(report, "wasxfail"):
+        del report.wasxfail
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """What was snapped after the last test's teardown, or in a session that
+    ran none, fails the session.
+    """
+    problems = _check(unmeasured=False)
+    if problems:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line(
+                "point equality, outside any test: " + "; ".join(problems), red=True
+            )
 
 
 def pytest_report_header(config):
@@ -111,12 +256,22 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "skip_end_to_end: mark test as end_to_end test")
     config.addinivalue_line(
         "markers",
-        "snaps_unmeasured: the test snaps without the point-equality measure on purpose",
+        "snaps_unmeasured(reason): the test snaps without the point-equality measure "
+        "on purpose",
     )
     # Production snaps without the point-equality measure; every test measures.
-    from arachne.frame_ir import canonical
+    global _measure_before
+    module = _canonical()
+    _measure_before = module.MEASURE
+    module.MEASURE = True
 
-    canonical.MEASURE = True
+
+#: ``canonical.MEASURE`` before the session turned it on.
+_measure_before = False
+
+
+def pytest_unconfigure(config):
+    _canonical().MEASURE = _measure_before
 
 
 def pytest_collection_modifyitems(config, items):
