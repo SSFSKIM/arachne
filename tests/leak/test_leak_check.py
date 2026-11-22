@@ -192,21 +192,18 @@ def test_merge_commit_content_is_checked(repo: Repo):
     repo.commit({"side.txt": "side work\n"})
     repo.git("switch", "-q", "main")
     repo.commit({"main.txt": "main work\n"})
-    repo.git(
-        "merge",
-        "-q",
-        "--no-commit",
-        "side",
-        env={"GIT_AUTHOR_NAME": "x", "GIT_COMMITTER_NAME": "x"},
-    )
-    (repo.path / "resolved.txt").write_text("zorblaxian\n")
-    repo.git("add", "resolved.txt")
+    # The merge itself asks git for a committer too, before anything is
+    # committed: with a name and no email git derives the email from the
+    # machine's hostname, and fails on a machine whose hostname has no domain.
     who = {
         "GIT_AUTHOR_NAME": "Someone",
         "GIT_AUTHOR_EMAIL": CLEAN_EMAIL,
         "GIT_COMMITTER_NAME": "Someone",
         "GIT_COMMITTER_EMAIL": CLEAN_EMAIL,
     }
+    repo.git("merge", "-q", "--no-commit", "side", env=who)
+    (repo.path / "resolved.txt").write_text("zorblaxian\n")
+    repo.git("add", "resolved.txt")
     repo.git("commit", "-q", "-m", "Merge side", env=who)
     result = run_check(repo)
     assert result.returncode == 1
