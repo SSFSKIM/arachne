@@ -434,7 +434,10 @@ fn shaded_text_is_lit_flat_as_its_plane_turned_to_the_eye() {
 }
 
 /// A face group CE's light would refuse no longer is: the soft light draws it, and a sphere's
-/// faces run smoothly into one another, no face standing apart from its neighbours.
+/// faces run smoothly into one another, no face standing apart from its neighbours. Its faces are
+/// stroked in their own colour, the stroke lit as its face is, so the frame shows the light alone:
+/// unstroked, the pixels a seam between two faces crosses composite both faces by their areas
+/// over what lies behind, as Cairo's do.
 #[test]
 fn a_soft_lit_sphere_is_smooth_across_its_faces() {
     let (nu, nv) = (32, 16);
@@ -445,7 +448,10 @@ fn a_soft_lit_sphere_is_smooth_across_its_faces() {
     r.geometry.shape_a = Some(shape.key());
     r.depth.space = Space::World;
     r.depth.shade_in_3d = true;
-    r.body = Body::FaceGroup(faces(uv, [nu as u32, nv as u32], fills.key()));
+    r.paint.stroke_width = 15.0;
+    let mut group = faces(uv, [nu as u32, nv as u32], fills.key());
+    group.stroke = Some(fills.key());
+    r.body = Body::FaceGroup(group);
     let mut d = Delta::new(Time { num: 0, den: 1 }, 0);
     d.view = Some(soft_view());
     d.upload = vec![shape];
