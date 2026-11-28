@@ -8,12 +8,12 @@ meaning and the binary form (`src/xf/wire.rs`), which fixtures and dumped stream
 
 ## Versions and refusal
 
-The version is (major, minor). This build is **XF 1.5**. From here the layout is append-only:
+The version is (major, minor). This build is **XF 1.6**. From here the layout is append-only:
 a new field or kind bumps the minor, and nothing removes or retypes a field. A writer emits the
 lowest supported version that carries a delta's content: **1.0 without a pre-projected tail, 1.1
 with one, 1.2 with an input grid (on the view or a sub-frame's view) or a record's planes or normals,
 1.3 with a face group's face ends or face widths, 1.4 with a record's joins, 1.5 with a record's
-source or facing group, or a held record's new one**. A file's version is the highest version its deltas need (1.0 for an empty file).
+source or facing group, or a held record's new one, 1.6 with a face group's corner normals**. A file's version is the highest version its deltas need (1.0 for an empty file).
 Explicit foreign or newer version declarations are retained, since this writer cannot determine
 what their content requires. `XF_VERSION` names the build's supported version, not every delta's.
 
@@ -78,6 +78,36 @@ lights that corner by the face's Newell normal over the points it is handed (whe
 too, CE's normal from them). Without `normals` the drawer
 finds them from its points, as before XF 1.2. `Stream.normals(slots, grid)` gives them for records
 a stream holds. An XF 1.1 reader skips these fields under its newer-minor rule.
+
+The first corner of a closed outline whose last cubic returns to its first point with no length (a
+glyph of `Text`: each of its subpaths closes so) is lit by no turn of the outline: the point three
+back from it is the corner itself, CE's normal there is its fixed fallback (`UP`), and a flat glyph
+lit by it takes a gradient its neighbours, closed otherwise, do not. Under CE's light model the
+writer carries that normal and the drawer lights it as CE does. Under soft diffuse light the light
+reads no corner's turn on a flat path: the writer carries, for a path whose points lie in one plane,
+that plane's normal at both corners (`Stream.normals` decides them so under that view), and the
+drawer lights the path once by it, turned toward the eye, so every glyph of a flat label takes one
+colour, whatever its winding. A path on no one plane keeps its two corners' normals, decided as
+above.
+
+XF 1.6 carries a face group's `corner_normals`, the normals the soft light lights each face by at
+its four corners, four per face in face order (corner `k` at the face's point `4k`). They are smooth
+across the surface's uv grid: each grid vertex's normal is the sum of the area vectors of the faces
+meeting there, normalized. Which corners are one vertex the points decide, as the uv indices cannot
+(an open sheet and a sphere share one index grid): the grid's first and last columns (rows) weld
+where every pair of their corners lies within 1e-9 of the face group's extent (a closed seam); a
+grid line whose corners all lie that close is one vertex (a sphere's pole, a cone's apex, lit as one
+point of colour); a corner apart from its vertex keeps its face's own normal, as does a face outside
+the grid's layout. Like the normals above they are decided from nearby points, so the writer
+decides them on the values as made and carries them snapped (`Stream.corner_normals(slots)`);
+without them the drawer decides them from the points it holds. A writer carries them under soft
+diffuse light for a face group the camera shades, in place of its `normals`; under CE's model a face
+group is lit as before by its `normals`. `apply` refuses them on a record of another kind, or other
+than four finite ones per face (`Invalid`). They are carried in a section after XF 1.5's source
+section, keyed by slot (the source section written, empty, when only they are carried), so an XF 1.5
+reader reads the delta as it was. A reader refuses the delta (invalid XF) at the first row that
+offends, with `slot_named_twice` (a slot an earlier row named), `slot_not_set` (a slot the delta
+does not set) or `row_empty` (a row of no normals).
 
 So does a stroke's miter join (XF 1.4). Cairo decides each join from slopes between CE's points
 rounded to its 24.8 fixed point (`_cairo_spline_init`'s slopes, `outer_join`'s
@@ -148,13 +178,13 @@ A newer minor that appends after the section writes it, empty, when no record ca
 
 This build draws the background (a colour, or an image cropped to the frame as CE crops it); `mesh`
 records filled with one colour; `path` records, their paints one colour or a linear gradient between
-the record's ends (coloured as Cairo and pixman colour it), lit as CE lights a `shade_in_3d` path
-under a camera that shades, and drawn through a reveal, a blend and a paint blend as CE's
+the record's ends (coloured as Cairo and pixman colour it), lit by the view's light model where a
+camera shades a `shade_in_3d` path (see Light, under Drawing), and drawn through a reveal, a blend and a paint blend as CE's
 interpolation makes them; `face_group` records, each face as the path of that face; `points`
 records; and `instances` records of a path or a mesh. It refuses a clip on any of them; a blend,
 reveal or paint blend on any kind but a path, a blend of shapes of different lengths and a paint
 blend of row counts that do not broadcast; a path with a gradient paint and no ends, or an instance's gradient; a dash it
-cannot read; CE's lighting under another light model; a mesh with a stroke, a gradient fill or a
+cannot read; a mesh with a stroke, a gradient fill or a
 dash; and the reserved kinds. `image` records, records fixed in frame and background-image fills
 are drawn by Cairo over the core's frame, in CE's order (the overlay). How records are drawn is
 described under "Drawing" below.
@@ -295,7 +325,10 @@ shape's and table's key against its content, except for shape kinds it does not 
   applies), `mapping_centre`, CE's `cairo_line_width_multiple`, `use_z_index`, and the light model:
   CE's (code 0, no parameters) or soft diffuse (code 1, parameters `[ambient, wrap]`: the share of light a surface
   facing away from the light keeps, in 0..=1, and how far the light wraps past the terminator, at
-  least 0; a placeholder whose parameters are set with the 3D look). A delta whose view gives soft
+  least 0: a surface whose normal, turned toward the eye, makes `cos` with the direction to the
+  light keeps the share `ambient + (1 − ambient) · max(0, (cos + wrap) / (1 + wrap))` of its linear
+  colour, never more than all of it; the core's default, `SOFT_DIFFUSE`, is `[0.5, 1]`, which
+  Arachne writes unless told otherwise; `set_view` without a `light_model` gives CE's). A delta whose view gives soft
   diffuse light parameters outside those ranges is refused. `mapping_centre` is the centre CE's
   cached Cairo context froze into its frame-to-pixel matrix for the pixel array this view draws
   into. `Camera.get_cairo_context` bakes `frame_center` into that matrix the first time it sees a
@@ -415,7 +448,15 @@ shape's and table's key against its content, except for shape kinds it does not 
   (each corner clamped as Cairo clamps a gradient stop); soft diffuse lights the linear colour, the
   normal turned toward the eye. Corner colours interpolate across the triangle on screen and are
   evaluated at the centroid of the sub-samples each pixel's fragment covers; lit linear colour is
-  encoded there. Alpha is the fill's times the group opacity.
+  encoded there. Alpha is the fill's times the group opacity. A shaded `path` or face group is lit
+  by the view's light model too. Under CE's, as CE lights it: its paint's two stops at its corners,
+  each lit by its normal, a linear gradient between them. Under soft diffuse light, in linear light,
+  each normal turned toward the eye: a face group's face in CE's layout by its four corner normals
+  (`corner_normals`), turned together by the sign of their sum against the eye, the share of light
+  at each corner interpolated over the face's triangles (corners 0, 1, 2 and 0, 2, 3) on the pixel
+  plane and each pixel's colour lit from its linear colour by its share and encoded; any other path
+  at its centroid, by the normals its writer decided for its two corners (one colour for a flat
+  path), CE's two stops each lit, a linear gradient between them as under CE's model.
 - **Compositing.** Each pixel holds fragments: a depth plane, a premultiplied colour, a coverage (a
   mask over 16 sub-samples for meshes; an exact area for paths) and the draw order. The 16
   sub-samples are a fixed stratified pattern (`SAMPLE_OFFSETS`): one in each cell of the pixel's
@@ -460,8 +501,10 @@ delta     u16 major  u16 minor  i64 t_num  i64 t_den (> 0)  u64 seq
           count u32*                   (removed slots)
           [count (u8 layer  u32 slot  u32 part)*]?     (the order; layer 0 static, 1 moving, 2 overlay)
           source                       (XF 1.5, when a record the delta sets carries a source or a
-                                        facing group, or a held record is given a new one; anything
-                                        after it belongs to a newer minor)
+                                        facing group, or a held record is given a new one, or when
+                                        corner normals follow: then, carrying neither, empty)
+          corner normals               (XF 1.6, when a face group the delta sets carries them;
+                                        anything after it belongs to a newer minor)
 source    count str*                   (class names: each once, in the order the rows first use them)
           count row*                   (one per record carrying either, in the order set; of a slot
                                         set more than once, its last record's alone; then one per
@@ -470,6 +513,9 @@ source    count str*                   (class names: each once, in the order the
 row       u32 slot  u32 facing_group (0: none)  count path*
 path      count (u32 token  u32 class)*   (the record's owner first, then the objects containing it;
                                         class indexes the section's class names)
+corner normals  count (u32 slot  count (f64 x3)*)*   (one row per face group carrying them, in the
+                                        order set, of a slot set more than once its last record's;
+                                        four normals per face)
 shape     u8 kind  key  body
           path: count (f64 x3)*
           mesh: count (f64 x3)*  count (u32 x3)*  bool has_normals  [(f64 x3) per vertex]
@@ -561,6 +607,12 @@ returns, for each slot holding a record that draws paths, the list of codes the 
 the points the stream holds; `Stream.normals(slots, grid)`, for each slot holding a record the
 camera shades, its normals decided for points snapped to `grid`.
 
+XF 1.6: `set_record("face_group", ..., corner_normals=[(x, y, z), ...])` carries a face group's
+corner normals, four per face (omitted or empty: not carried). `Stream.corner_normals(slots)`
+returns, for each slot holding a face group the camera shades under soft diffuse light, the normals
+the drawer decides from the points the stream holds. The package exports `SOFT_DIFFUSE`, the soft
+light's default `(ambient, wrap)`.
+
 XF 1.3: `set_record("face_group", ..., face_ends=[...], face_widths=[...])` carries each face's end
 in the points and its stroke width (omitted: not written, the faces equal runs at the record's
 width). `apply` refuses face ends not one per face, not rising, or not ending at the points' count,
@@ -594,7 +646,7 @@ form).
   `set_record`'s keyword names, including the body's arguments. `features` always contains the
   full bitset; when `fill_image` is present its bit is already set, and `set_record` accepts it
   unchanged. Absent optional fields are omitted (`planes`, when present, is a tuple of codes, `normals` a
-  tuple of `(x, y, z)` tuples, `source` a tuple of paths, each a tuple of `(token, class)` tuples,
+  tuple of `(x, y, z)` tuples, as is a face group's `corner_normals`, `source` a tuple of paths, each a tuple of `(token, class)` tuples,
   and `facing_group` an int, on every kind); paints are `None`, float64 `(1, 4)` or `(2, 4)`
   arrays, or table key bytes. `paint_b`, when present, is a dictionary of its paint and width
   arguments. `joint`, `cap` and `space` are names. `place` and clip/blend placements are float64

@@ -17,10 +17,13 @@
 //! - Colour: one colour, or, for a paint of two or more, a linear gradient between the record's
 //!   ends placed for display, coloured as Cairo's pattern and pixman's fetch colour it
 //!   ([`crate::gradient`]), each pixel from the start of the composite run Cairo would paint it in
-//!   ([`composite_runs`]). A path CE's lighting shades (`shade_in_3d` under a camera that shades)
-//!   is lit into two stops at its start and end corners (`shade::ce_face_stops`), its gradient
-//!   between the record's ends (CE's: its corners, unless its mobject gives others), or its
-//!   corners when it has none.
+//!   ([`composite_runs`]). A path a camera shades (`shade_in_3d` under a camera that shades) is lit
+//!   by the view's light model. Under CE's it is lit into two stops at its start and end corners
+//!   (`shade::ce_face_stops`), its gradient between the record's ends (CE's: its corners, unless
+//!   its mobject gives others), or its corners when it has none. Under the soft light a face of a
+//!   surface's grid is lit per pixel, its share of light interpolated from its four corner
+//!   normals over its two triangles (`shade::FaceShares`), and any other path at its centroid by
+//!   its two corners' normals (`shade::soft_face_stops`), one colour where it lies in one plane.
 //! - Depth: a path in world space under a 3D camera fills at the depth of its plane when it has one
 //!   the camera keys finitely (`depth::WorldPlane`, made canonical, so text and axes on one plane,
 //!   and a mesh on it, tie exactly), however nearly edge-on; it strokes, and a path without such a

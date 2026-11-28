@@ -6,7 +6,10 @@
 //!   others). It adds light to the encoded colour, unclamped (Cairo clamps each stop), and ignores
 //!   the camera's `shading_factor`, as CE does.
 //! - Soft diffuse light, in linear light: diffuse light that wraps past the terminator, over an
-//!   ambient floor, lit on the side the eye sees. Its parameters are the view's.
+//!   ambient floor, lit on the side the eye sees. Its parameters are the view's ([`SOFT_DIFFUSE`]
+//!   by default). A surface's face is lit by its four corner normals, smooth across its grid
+//!   ([`crate::normals`]), its share of light interpolated over the face ([`FaceShares`]); any
+//!   other path at its centroid ([`soft_face_stops`]), one colour where it lies in one plane.
 //! - A lit mesh triangle ([`Light::triangle`]): each corner lit by the view's model, then the
 //!   corners' colours interpolated in screen space (Gouraud), read at the centroid of the
 //!   sub-samples a fragment covers ([`TriangleColour`]). A GPU path mirrors this module.
