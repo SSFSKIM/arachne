@@ -1927,7 +1927,11 @@ impl<'v> Lowering<'v> {
             .record
             .corner_normals
             .as_deref()
-            .or_else(|| self.corner_normals.get(&draw.record.slot).map(Vec::as_slice))
+            .or_else(|| {
+                self.corner_normals
+                    .get(&draw.record.slot)
+                    .map(Vec::as_slice)
+            })
             .and_then(|n| n.get(at..at + 4));
         let normals: [[f64; 3]; 4] = match carried {
             Some(n) => [n[0], n[1], n[2], n[3]],

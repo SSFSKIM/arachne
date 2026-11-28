@@ -261,7 +261,10 @@ impl SoftDiffuse {
     /// A linear colour at `point` facing `normal` (a unit vector), lit from a light at `light`
     /// and seen from `eye`; the normal is turned toward the eye first.
     pub fn lit(&self, linear: V3, point: V3, normal: V3, light: V3, eye: V3) -> V3 {
-        scale(linear, self.share_at(point, toward(normal, sub(eye, point)), light))
+        scale(
+            linear,
+            self.share_at(point, toward(normal, sub(eye, point)), light),
+        )
     }
 }
 
@@ -413,7 +416,8 @@ impl FaceShares {
     pub fn new(px: [[f64; 2]; 4], shares: [f64; 4]) -> FaceShares {
         let at = |k: usize| [px[k][0], px[k][1], shares[k]];
         let along = [px[2][0] - px[0][0], px[2][1] - px[0][1]];
-        let side_of = |k: usize| along[0] * (px[k][1] - px[0][1]) - along[1] * (px[k][0] - px[0][0]);
+        let side_of =
+            |k: usize| along[0] * (px[k][1] - px[0][1]) - along[1] * (px[k][0] - px[0][0]);
         let (one, three) = (side_of(1), side_of(3));
         let side = if one == 0.0 {
             0.0
@@ -423,7 +427,10 @@ impl FaceShares {
             one
         };
         FaceShares {
-            planes: [Plane::through([at(0), at(1), at(2)]), Plane::through([at(0), at(2), at(3)])],
+            planes: [
+                Plane::through([at(0), at(1), at(2)]),
+                Plane::through([at(0), at(2), at(3)]),
+            ],
             origin: px[0],
             along,
             side,
@@ -432,7 +439,10 @@ impl FaceShares {
 
     /// The one share of a face whose corners all have it.
     pub fn constant(shares: [f64; 4]) -> Option<f64> {
-        shares[1..].iter().all(|s| *s == shares[0]).then_some(shares[0])
+        shares[1..]
+            .iter()
+            .all(|s| *s == shares[0])
+            .then_some(shares[0])
     }
 
     /// The share at `(x, y)` on the pixel plane, in `0..=1`: read on the triangle the point lies
@@ -440,7 +450,11 @@ impl FaceShares {
     pub fn at(&self, x: f64, y: f64) -> f64 {
         let s = self.along[0] * (y - self.origin[1]) - self.along[1] * (x - self.origin[0]);
         let first = self.side != 0.0 && (self.side.is_infinite() || s * self.side >= 0.0);
-        let plane = if first { &self.planes[0] } else { &self.planes[1] };
+        let plane = if first {
+            &self.planes[0]
+        } else {
+            &self.planes[1]
+        };
         plane.at(x, y).clamp(0.0, 1.0)
     }
 }
@@ -455,15 +469,19 @@ pub fn face_corner_shares(
     light: V3,
     eye: V3,
 ) -> [f64; 4] {
-    let facing = normals.iter().fold([0.0; 3], |s, n| {
-        [s[0] + n[0], s[1] + n[1], s[2] + n[2]]
-    });
+    let facing = normals
+        .iter()
+        .fold([0.0; 3], |s, n| [s[0] + n[0], s[1] + n[1], s[2] + n[2]]);
     let centre = std::array::from_fn(|k| {
         (corners[0][k] + corners[1][k] + corners[2][k] + corners[3][k]) / 4.0
     });
     let flip = dot(facing, sub(eye, centre)) < 0.0;
     std::array::from_fn(|k| {
-        let n = if flip { scale(normals[k], -1.0) } else { normals[k] };
+        let n = if flip {
+            scale(normals[k], -1.0)
+        } else {
+            normals[k]
+        };
         model.share_at(corners[k], n, light)
     })
 }

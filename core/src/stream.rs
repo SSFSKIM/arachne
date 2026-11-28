@@ -1060,9 +1060,12 @@ impl Stream {
             }));
         }
         let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
-        if let Some(refused) = self.order.iter().filter(|e| drawn(e)).find_map(|e| {
-            refusal(&self.records[&e.slot], &self.shapes, &self.paints, shading)
-        }) {
+        if let Some(refused) = self
+            .order
+            .iter()
+            .filter(|e| drawn(e))
+            .find_map(|e| refusal(&self.records[&e.slot], &self.shapes, &self.paints, shading))
+        {
             return Err(DrawError::Unsupported(refused));
         }
         let frame = match &view.background {

@@ -182,7 +182,8 @@ pub fn corner_normals(world: &[V3], faces: &FaceGroup) -> Vec<V3> {
     }
     // A grid line whose corners present all lie within the tolerance of one another is a pole.
     let pole = |sets: &mut Sets, line: Vec<usize>| {
-        let present: Vec<(usize, V3)> = line.into_iter().filter_map(|v| Some((v, at[v]?))).collect();
+        let present: Vec<(usize, V3)> =
+            line.into_iter().filter_map(|v| Some((v, at[v]?))).collect();
         if present.len() < 2 {
             return;
         }
