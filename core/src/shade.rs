@@ -234,13 +234,13 @@ pub struct SoftDiffuse {
 
 /// The soft light a 3D scene is drawn in by default (Arachne's `core_light=soft`), and the one
 /// place its parameters are set: a stylized look, soft and even. A surface facing the light shows
-/// its own colour, never lighter; one facing away keeps the ambient share, so its colour stays
-/// legible; the wrap carries the light well past the terminator, so a curved surface's shading
-/// runs long and gentle. Nothing glows. A render may set others (`core_light_ambient`,
-/// `core_light_wrap`).
+/// its own colour, never lighter; one facing away keeps half its light, so its colour stays
+/// legible; the wrap of 1 (half Lambert) carries the light all the way round, so only a surface
+/// facing straight away falls to the ambient share and a curved surface's shading runs long and
+/// gentle. Nothing glows. A render may set others (`core_light_ambient`, `core_light_wrap`).
 pub const SOFT_DIFFUSE: SoftDiffuse = SoftDiffuse {
-    ambient: 0.35,
-    wrap: 0.5,
+    ambient: 0.5,
+    wrap: 1.0,
 };
 
 impl SoftDiffuse {
