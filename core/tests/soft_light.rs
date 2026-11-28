@@ -470,6 +470,13 @@ fn a_soft_lit_sphere_is_smooth_across_its_faces() {
     s.apply(&d).expect("a valid scene");
     let (w, h) = (192, 108);
     let px = pixels(&s, w, h);
+    if let Ok(path) = std::env::var("SOFT_DUMP") {
+        let mut out = format!("P6 {w} {h} 255\n").into_bytes();
+        for p in &px {
+            out.extend(&p[..3]);
+        }
+        std::fs::write(path, out).unwrap();
+    }
     let opaque = |x: u32, y: u32| px[(y * w + x) as usize][3] == 255;
     let (mut pairs, mut worst) = (0, 0);
     for y in 1..h - 1 {
