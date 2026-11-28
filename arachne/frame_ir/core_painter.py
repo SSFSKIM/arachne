@@ -33,7 +33,6 @@ from .extract import FrameStream, Term, Unable
 from .replay import Replays
 from .xf import Delta, StreamState
 
-
 #: The view's code for soft diffuse light (XF's light model 1).
 SOFT_DIFFUSE_CODE = 1
 
@@ -294,9 +293,7 @@ class CorePainter:
             # Under the soft light a face group is lit by its corner normals
             # (XF 1.6), every other shaded path by its normals.
             needed = (
-                "corner_normals"
-                if record.kind == "face_group" and soft
-                else "normals"
+                "corner_normals" if record.kind == "face_group" and soft else "normals"
             )
             if (
                 shading

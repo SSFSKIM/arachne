@@ -41,7 +41,9 @@ def _record(name: str, entry: dict) -> None:
         handle.write(json.dumps(dict(sorted(digests.items())), indent=1) + "\n")
 
 
-@pytest.mark.parametrize("example", docs.CORE_EXAMPLES, ids=lambda example: example.name)
+@pytest.mark.parametrize(
+    "example", docs.CORE_EXAMPLES, ids=lambda example: example.name
+)
 def test_a_3d_example_lit_by_ce_is_handed_and_draws_what_it_did(
     example: DocsExample, request, tmp_path: Path, monkeypatch
 ) -> None:

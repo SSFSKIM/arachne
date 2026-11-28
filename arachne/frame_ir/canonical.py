@@ -538,9 +538,7 @@ class Canonical:
         found.set = [
             (
                 slot,
-                self._record(
-                    slot, record, found, normals.get(slot), corners.get(slot)
-                ),
+                self._record(slot, record, found, normals.get(slot), corners.get(slot)),
             )
             for slot, record in setting.items()
         ]
@@ -609,8 +607,15 @@ class Canonical:
         under the soft light, decided by the core on the values as made,
         snapped to :data:`RATIO_GRID`; by slot. None under CE's light.
         """
-        slots = [slot for slot, record in setting.items() if record.kind == "face_group"]
-        if self._decider is None or not slots or self._view is None or self.light is None:
+        slots = [
+            slot for slot, record in setting.items() if record.kind == "face_group"
+        ]
+        if (
+            self._decider is None
+            or not slots
+            or self._view is None
+            or self.light is None
+        ):
             return {}
         found = {}
         for slot, normals in self._decider.corner_normals(slots).items():
