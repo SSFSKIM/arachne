@@ -121,6 +121,9 @@ pub struct PathDraw<'a> {
     /// The stroke widths drawn, in CE's units: the record's, or a paint blend's mix of them.
     pub stroke_width: f64,
     pub background_stroke_width: f64,
+    /// The joint and cap its strokes are drawn with: its record's, or an instances record's part's.
+    pub joint: Joint,
+    pub cap: Cap,
     pub order: u32,
     /// The first of the three sub-orders the path's layers take (background stroke, fill, stroke).
     pub sub: u32,
@@ -214,7 +217,7 @@ fn strokes_as_dot(draw: &PathDraw<'_>, shown: &[[f64; 3]]) -> bool {
         Some(d) => dash_starts_on(&d),
     };
     draw.surface
-        && rec.paint.cap == Cap::Round
+        && draw.cap == Cap::Round
         && on_at_start
         && shown.iter().all(|p| p[..2] == shown[0][..2])
 }
@@ -1663,8 +1666,8 @@ impl<'v> Lowering<'v> {
             } else {
                 let w = width * self.view.cairo_line_width_multiple;
                 let style = kurbo::Stroke::new(w)
-                    .with_join(kurbo_join(rec.paint.joint))
-                    .with_caps(kurbo_cap(rec.paint.cap))
+                    .with_join(kurbo_join(draw.joint))
+                    .with_caps(kurbo_cap(draw.cap))
                     .with_miter_limit(MITER_LIMIT);
                 // Dashes are laid on the whole outline, then culled, so culling never moves them.
                 let dashes = drawn_dash(rec).map(|d| {
@@ -2861,6 +2864,8 @@ mod tests {
                 pivot: None,
                 stroke_width: 0.0,
                 background_stroke_width: 0.0,
+                joint: Joint::Auto,
+                cap: Cap::Auto,
                 order,
                 sub: 0,
                 which: 0,
@@ -2985,6 +2990,8 @@ mod tests {
                 pivot: None,
                 stroke_width: 0.0,
                 background_stroke_width: 0.0,
+                joint: Joint::Auto,
+                cap: Cap::Auto,
                 order,
                 sub: 0,
                 which: 0,

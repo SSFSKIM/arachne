@@ -1556,6 +1556,8 @@ fn an_instances_record_draws_what_its_members_draw_as_records() {
             fill: fills.key(),
             stroke: strokes.key(),
             objects: vec![201, 202, 203],
+            parts: Vec::new(),
+            widths: Vec::new(),
         });
         let batched = stream(
             view.clone(),

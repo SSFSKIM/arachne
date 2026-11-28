@@ -306,6 +306,8 @@ fn apply_s_checks_of_what_the_reader_never_hands_it_are_made_by_apply() {
         fill: one_row.key(),
         stroke: one_row.key(),
         objects: Vec::new(),
+        parts: Vec::new(),
+        widths: Vec::new(),
     });
     for (rec, what) in [
         (unfilled, "bit and fill_image field disagree"),

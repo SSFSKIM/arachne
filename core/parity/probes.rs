@@ -1049,6 +1049,8 @@ pub fn paint_kinds() -> Probe {
         fill: fills.key(),
         stroke: strokes.key(),
         objects: vec![401, 402, 403],
+        parts: Vec::new(),
+        widths: Vec::new(),
     });
     // Twelve points along a line, every fourth below the sheet, neighbours' blocks overlapping.
     let cloud_points: Vec<[f64; 3]> = (0..12)

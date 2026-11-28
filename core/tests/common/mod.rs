@@ -256,6 +256,8 @@ pub fn sample_deltas() -> Vec<Delta> {
         fill: per_point.key(),
         stroke: instance_strokes.key(),
         objects: vec![201, 202, 203],
+        parts: Vec::new(),
+        widths: Vec::new(),
     });
 
     let mut mesh = Record::new(RecordKind::Mesh, 7, 107);

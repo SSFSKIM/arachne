@@ -32,7 +32,7 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
 
 
 def test_the_version_is_xf_1():
-    assert ac.XF_VERSION == (1, 5)
+    assert ac.XF_VERSION == (1, 6)
 
 
 GLYPH_SOURCE = (
@@ -122,7 +122,7 @@ def test_background_image_fill_sets_its_feature_and_is_cairo_only():
     shape = delta.upload_path(square())
     image = delta.upload_image(np.ones((4, 4, 4), dtype=np.uint8))
     delta.set_record("path", 3, 33, shape=shape, fill=(1, 0, 0, 1), fill_image=image)
-    assert ac.FEATURES == {"background_image": 1, "pre_projected": 2}
+    assert ac.FEATURES == {"background_image": 1, "pre_projected": 2, "members": 4}
     stream = ac.Stream()
     stream.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
     assert stream.draw(4, 4).shape == (4, 4, 4)  # Not in the order yet.
@@ -579,6 +579,51 @@ def test_instances_take_placements_of_shape_n_3_4_and_one_object_each():
             delta.set_record("instances", 1, 1, placements=bad, objects=[1, 2], **keys)
     delta.set_record("instances", 1, 1, placements=two, objects=[1, 2], **keys)
     assert ac.FrameDelta.from_bytes(delta.to_bytes()).to_bytes() == delta.to_bytes()
+
+
+def test_instances_parts_and_widths_are_xf_1_6_and_read_back():
+    delta = ac.FrameDelta()
+    shaft = delta.upload_path(square())
+    tip = delta.upload_path(square(0.5))
+    table = delta.upload_paint(np.ones((4, 4)))
+    keys = {"shape": shaft, "instance_fill": table, "instance_stroke": table}
+    four = np.stack([np.eye(3, 4)] * 4)
+    part = {"shape": tip, "stroke_width": 3.0, "joint": "bevel", "cap": "round"}
+    delta.set_record(
+        "instances",
+        1,
+        1,
+        placements=four,
+        objects=[1, 2, 3, 4],
+        parts=[part],
+        instance_widths=[4.0, 3.0, 2.5, 3.0],
+        stroke_width=4.0,
+        **keys,
+    )
+    assert delta.version == (1, 6)
+    data = delta.to_bytes()
+    read = ac.FrameDelta.from_bytes(data)
+    assert (read.version, read.to_bytes()) == ((1, 6), data)
+    ((_, _, _, fields),) = read.contents()["set"]
+    ((found,),) = [fields["parts"]]
+    assert (found["shape"], found["stroke_width"]) == (tip, 3.0)
+    assert (found["joint"], found["cap"]) == ("bevel", "round")
+    assert list(fields["instance_widths"]) == [4.0, 3.0, 2.5, 3.0]
+    ac.Stream().apply(read)
+    three = delta.upload_paint(np.ones((3, 4)))
+    delta.set_record(
+        "instances",
+        2,
+        2,
+        shape=shaft,
+        placements=four[:3],
+        objects=[1, 2, 3],
+        parts=[part],
+        instance_fill=three,
+        instance_stroke=three,
+    )
+    with pytest.raises(ac.XfError, match="whole groups"):
+        ac.Stream().apply(delta)
 
 
 def test_ces_light_model_written_as_code_0_is_ces():

@@ -8,7 +8,8 @@
 //! - A `points` record draws its points as CE's blocks (`points.rs`), in the same instance path:
 //!   point `i` takes colour row `i`.
 //!
-//! Members are drawn one by one: correct, not yet fast.
+//! - With parts (XF 1.6), member `i` draws prototype `i % period`: a run of leaves repeating a
+//!   group of leaves (an arrow's shaft and tip) keeps CE's order, member by member.
 
 use std::borrow::Cow;
 
@@ -75,6 +76,8 @@ pub fn path_record<'a>(
         pivot: None,
         stroke_width: paint.stroke_width,
         background_stroke_width: paint.background_stroke_width,
+        joint: record.paint.joint,
+        cap: record.paint.cap,
         order,
         sub: 0,
         which: 0,
@@ -107,27 +110,42 @@ pub fn produced_path<'a, 't>(
         pivot: produced_pivot(record, own, placed),
         stroke_width: p.stroke_width,
         background_stroke_width: p.background_stroke_width,
+        joint: record.paint.joint,
+        cap: record.paint.cap,
         order,
         sub: 0,
         which: 0,
     }
 }
 
-/// An `instances` record's members whose prototype is a path.
+/// An `instances` record's members whose prototypes are paths: member `i` is prototype
+/// `i % prototypes.len()` (`prototypes[0]` the record's shape, then each part's, `parts` order),
+/// painted by that prototype's paint block (the record's, then each part's), its fill and stroke
+/// row `i` of the record's tables where its prototype fills or strokes, its stroke at width `i` of
+/// the record's widths where it carries them.
+#[allow(clippy::too_many_arguments)]
 pub fn path_members<'a>(
     record: &'a Record,
-    points: &'a [[f64; 3]],
+    prototypes: &[&'a [[f64; 3]]],
     body: &'a Instances,
     fill: &'a Stops,
     stroke: &'a Stops,
     order: u32,
     out: &mut Vec<PathDraw<'a>>,
 ) {
-    let p = &record.paint;
+    let period = body.period();
+    debug_assert_eq!(prototypes.len(), period, "one prototype's points per part");
+    out.reserve(body.placements.len());
     for (i, placement) in body.placements.iter().enumerate() {
+        let j = i % period;
+        let p = if j == 0 {
+            &record.paint
+        } else {
+            &body.parts[j - 1].paint
+        };
         out.push(PathDraw {
             record,
-            points: Cow::Borrowed(points),
+            points: Cow::Borrowed(prototypes[j]),
             place: compose(placement, &record.geometry.place_a),
             places: [*placement, record.geometry.place_a],
             fill: one(&p.fill).map(|_| vec![fill.rows()[i]]),
@@ -137,13 +155,31 @@ pub fn path_members<'a>(
             surface: false,
             pre_projected: false,
             pivot: None,
-            stroke_width: p.stroke_width,
+            stroke_width: body.widths.get(i).copied().unwrap_or(p.stroke_width),
             background_stroke_width: p.background_stroke_width,
+            joint: p.joint,
+            cap: p.cap,
             order,
             sub: 3 * i as u32,
             which: i,
         });
     }
+}
+
+/// The points of each prototype an `instances` record of path prototypes draws: its shape's,
+/// then each part's (`None` where one is not a path shape `shape` finds).
+pub fn prototypes<'a>(
+    record: &Record,
+    body: &Instances,
+    shape: impl Fn(&Key) -> Option<&'a ShapeData>,
+) -> Option<Vec<&'a [[f64; 3]]>> {
+    std::iter::once(record.geometry.shape_a.as_ref()?)
+        .chain(body.parts.iter().map(|p| &p.shape))
+        .map(|key| match shape(key)? {
+            ShapeData::Path { points } => Some(points.as_slice()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Face `part` of a `face_group` record, as CE draws each face of a surface: the record's points
@@ -175,6 +211,8 @@ pub fn face<'a, 't>(
         pivot: None,
         stroke_width: faces.width(p.stroke_width, i),
         background_stroke_width: p.background_stroke_width,
+        joint: record.paint.joint,
+        cap: record.paint.cap,
         order,
         sub: 0,
         which: i,

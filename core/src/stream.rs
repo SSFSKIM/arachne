@@ -465,6 +465,45 @@ impl After<'_> {
                 }
                 self.needs_table(rec, &i.fill, n)?;
                 self.needs_table(rec, &i.stroke, n)?;
+                if (rec.features & FEATURE_MEMBERS != 0) != i.carries_member_styles() {
+                    return Err(StreamError::Invalid(
+                        "members feature bit and an instances record's member styles disagree"
+                            .into(),
+                    ));
+                }
+                if !i.widths.is_empty() {
+                    if i.widths.len() != n {
+                        return Err(StreamError::Invalid(format!(
+                            "slot {}: {n} placements and {} widths",
+                            rec.slot,
+                            i.widths.len()
+                        )));
+                    }
+                    if !i.widths.iter().all(|w| w.is_finite() && *w >= 0.0) {
+                        return Err(StreamError::Invalid(format!(
+                            "slot {}: an instance's stroke width is not finite and at least 0",
+                            rec.slot
+                        )));
+                    }
+                }
+                if !i.parts.is_empty() {
+                    if !matches!(a, Some(ShapeData::Path { .. })) {
+                        return Err(StreamError::Invalid(format!(
+                            "slot {}: an instances record with parts has path prototypes only",
+                            rec.slot
+                        )));
+                    }
+                    for part in &i.parts {
+                        self.needs_shape(rec, Some(&part.shape), &["path"])?;
+                    }
+                    if n % i.period() != 0 {
+                        return Err(StreamError::Invalid(format!(
+                            "slot {}: {n} placements are not whole groups of {} parts",
+                            rec.slot,
+                            i.period()
+                        )));
+                    }
+                }
             }
             Body::None | Body::Image(_) | Body::Opaque(_) => {}
         }
@@ -1143,9 +1182,12 @@ impl Stream {
                     ));
                 }
                 (RecordKind::Instances, Some(shape), Body::Instances(body)) => match shape {
-                    ShapeData::Path { points } => instance::path_members(
+                    ShapeData::Path { .. } => instance::path_members(
                         record,
-                        points,
+                        &instance::prototypes(record, body, |k| {
+                            self.shapes.get(k).map(|s| s.data())
+                        })
+                        .expect("apply checked the instances record's shapes"),
                         body,
                         table(&body.fill),
                         table(&body.stroke),
@@ -1341,19 +1383,20 @@ impl Stream {
                         paths.push(instance::path_record(record, points, place, paint, 0));
                     }
                 }
-                (
-                    RecordKind::Instances,
-                    Some(ShapeData::Path { points }),
-                    Body::Instances(body),
-                ) => instance::path_members(
-                    record,
-                    points,
-                    body,
-                    table(&body.fill),
-                    table(&body.stroke),
-                    0,
-                    &mut paths,
-                ),
+                (RecordKind::Instances, Some(ShapeData::Path { .. }), Body::Instances(body)) => {
+                    instance::path_members(
+                        record,
+                        &instance::prototypes(record, body, |k| {
+                            self.shapes.get(k).map(|s| s.data())
+                        })
+                        .expect("apply checked the instances record's shapes"),
+                        body,
+                        table(&body.fill),
+                        table(&body.stroke),
+                        0,
+                        &mut paths,
+                    )
+                }
                 _ => continue,
             }
             if let Some(answer) = answer(&lowering, &paths) {
@@ -1638,6 +1681,30 @@ fn field_refusal(
     }
 }
 
+/// Why this build refuses an `instances` record's parts (XF 1.6), if it does: each part's paint
+/// block judged as the record's own is ([`field_refusal`]), with the record's other fields.
+fn part_refusal(
+    rec: &Record,
+    paints: &HashMap<Key, Stops>,
+    shading: bool,
+    ce_light: bool,
+) -> Option<String> {
+    let Body::Instances(body) = &rec.body else {
+        return None;
+    };
+    body.parts.iter().find_map(|part| {
+        let mut probe = Record::new(rec.kind, rec.slot, rec.object);
+        probe.geometry.shape_a = Some(part.shape);
+        probe.geometry.place_a = rec.geometry.place_a;
+        probe.paint = part.paint.clone();
+        probe.dash = rec.dash;
+        probe.depth = rec.depth.clone();
+        probe.clip = rec.clip;
+        probe.opacity = rec.opacity;
+        field_refusal(&probe, paints, false, shading, ce_light)
+    })
+}
+
 /// Whether a 3D scene's frame leaves `rec` to Cairo's overlay, drawn over the core's frame in CE's
 /// order: a record fixed in frame, an image (a display's included), or a path filled through a
 /// background image.
@@ -1713,6 +1780,8 @@ fn refusal(
     ) {
         let mesh = matches!(prototype, Some(ShapeData::Mesh { .. }));
         if let Some(reason) = field_refusal(rec, paints, mesh, shading, ce_light) {
+            reason
+        } else if let Some(reason) = part_refusal(rec, paints, shading, ce_light) {
             reason
         } else if rec.kind == RecordKind::Path && drawn_points(rec, shapes).is_none() {
             "a path's blend of two shapes of different lengths".into()

@@ -8,12 +8,13 @@ meaning and the binary form (`src/xf/wire.rs`), which fixtures and dumped stream
 
 ## Versions and refusal
 
-The version is (major, minor). This build is **XF 1.5**. From here the layout is append-only:
+The version is (major, minor). This build is **XF 1.6**. From here the layout is append-only:
 a new field or kind bumps the minor, and nothing removes or retypes a field. A writer emits the
 lowest supported version that carries a delta's content: **1.0 without a pre-projected tail, 1.1
 with one, 1.2 with an input grid (on the view or a sub-frame's view) or a record's planes or normals,
 1.3 with a face group's face ends or face widths, 1.4 with a record's joins, 1.5 with a record's
-source or facing group, or a held record's new one**. A file's version is the highest version its deltas need (1.0 for an empty file).
+source or facing group, or a held record's new one, 1.6 with an instances record's parts or
+instance widths**. A file's version is the highest version its deltas need (1.0 for an empty file).
 Explicit foreign or newer version declarations are retained, since this writer cannot determine
 what their content requires. `XF_VERSION` names the build's supported version, not every delta's.
 
@@ -47,6 +48,18 @@ overlay's, as every image is. An XF 1.0 reader skips the tail under its newer-mi
 still reads the feature bit in the fixed header; its drawer refuses the unknown bit rather than
 projecting or shading those points again. Bytes after the tail remain newer-minor fields and
 are skipped. Geometry flags are unchanged: bits outside `0b111` remain invalid.
+
+XF 1.6 defines feature bit 2 (value 4), `members`: an `instances` record whose members do not all
+draw its own prototype at its own stroke width. Its *parts* make the members repeat a group of
+`k = 1 + len(parts)` prototypes: member `i` draws prototype `i mod k`, prototype 0 being the
+record's shape and paint block and prototype `j` part `j`'s (a path shape and a paint block of its
+own), so a run of leaves that alternate shapes (an arrow's shaft and tip) is one record. Its
+*widths* give each member its own stroke width (one per placement, finite and at least 0) in place
+of its prototype's. The bit is set exactly when the record carries parts or widths; a decoder
+refuses a disagreement (`XfError`), parts on a mesh prototype, a part that is not a path, and
+placements that are not whole groups of `k`. An XF 1.5 drawer skips the fields under its
+newer-minor rule but reads the bit, and refuses the record rather than drawing every member as the
+first prototype.
 
 XF 1.2 carries snapped geometry. A writer may snap a delta's geometry to a grid (so that a scene's
 arithmetic, which differs between machines in its last bits, reaches the drawer as the same bytes
@@ -408,7 +421,9 @@ shape's and table's key against its content, except for shape kinds it does not 
   `instances` record's member `i` is its prototype placed by
   `placements[i]` after the record's own placement, its fill and stroke row `i` of the record's
   tables where the prototype fills or strokes; members tie in order, each above the one before, and
-  draw the bytes the same members drawn as consecutive records draw.
+  draw the bytes the same members drawn as consecutive records draw. With parts (XF 1.6) member
+  `i` is prototype `i mod k`, painted by that prototype's block (its widths, joint and cap), its
+  stroke width `widths[i]` where the record carries widths.
 - **Light.** A `shade_in_3d` record under a 3D camera that applies shading is lit at each triangle
   corner by the view's light model, at the corner's placed position and normal (the mesh's normals
   through the placement, else the triangle's own): CE's model adds CE's light to the encoded colour
@@ -512,6 +527,13 @@ record    u8 kind  u64 features  u32 slot  u32 object
           joins (XF 1.4), after the planes and normals and a face group's face lists (written,
           empty, when the record carries none of them), when the record carries them:
             count u8*   (one per cubic of the record's points: bit 0 joined, bit 1 mitred)
+          parts and widths (XF 1.6, instances only, bit 2 set), after the joins (written, empty
+          when the record carries none, as the earlier lists are):
+            count (key shape  paint fill  paint stroke  paint background  f64 stroke_width
+              f64 background_width  bool gradient [f64 x6]  u8 joint  u8 cap
+              bool paint_b [paint fill  paint stroke  paint background  f64 stroke_width
+              f64 background_width]  f64 mix)*   (a part: its shape and paint block)
+            count f64*   (per placement, its stroke width; an empty list: not carried)
           (anything after the known fields belongs to a newer minor and is skipped)
 paint     u8 0 (none) | u8 1  f64 x4 | u8 2  f64 x8 | u8 3  key
 view      u32 pixel_width  u32 pixel_height  f64 frame_width  f64 frame_height
@@ -552,7 +574,7 @@ preserving the other feature bits. `gradient` accepts `None`, six floats or two 
 paint names mean none, and each paint takes the fixed paints' forms (RGBA, one or two inline
 stops, or a table key). `points` is required. Passing bit 1 without `pre_projected` raises
 `XfError`, as does using the field on a disallowed kind. The package exports
-`FEATURES = {"background_image": 1, "pre_projected": 2}`.
+`FEATURES = {"background_image": 1, "pre_projected": 2, "members": 4}`.
 
 XF 1.2: `set_view(..., input_grid=g)` states the grid the geometry was snapped to (omitted or 0:
 not snapped, and the field is not written); `set_record(..., planes=[codes])` carries the record's
@@ -571,6 +593,11 @@ record's source paths, each `(token, class)` pairs owner first, and its facing g
 empty or 0: not carried). A path of no objects raises `XfError`; tokens and the group are u32.
 `set_source(slot, source=..., facing_group=g)` gives the record held in `slot` a new source and
 facing group, its drawing unchanged; a row carrying neither raises `XfError`.
+
+XF 1.6: `set_record("instances", ..., parts=[{"shape": key, "stroke_width": w, "joint": ...,
+"cap": ...}, ...], instance_widths=[w, ...])` carries the record's parts (each a path shape and
+the paint block fields `set_record` takes) and its members' stroke widths, setting bit 2;
+`contents()` reads them back under the same names.
 
 ## Python read-back
 
