@@ -35,6 +35,7 @@ from arachne.frame_ir.canonical import Canonical
 from arachne.frame_ir.core_painter import CorePainter
 from arachne.frame_ir.xf import Delta, PaintTable, Record, Shape, StreamState
 
+from ..conftest import expected_disagreements
 from ..timeline.conftest import render
 from . import core_scenes
 
@@ -423,11 +424,9 @@ def test_a_closing_gap_in_the_band_is_counted(gap, decided_otherwise):
     records it: the band is a gap within a grid step of CE's tolerance.
     """
     made = _square_closing(gap)
-    canonical.point_equality_disagreements.clear()
-    canonical._count_disagreements(made, canonical.snap(made, 2.0**-14))
-    found = bool(canonical.point_equality_disagreements)
-    canonical.point_equality_disagreements.clear()
-    assert found == decided_otherwise
+    with expected_disagreements() as found:
+        canonical._count_disagreements(made, canonical.snap(made, 2.0**-14))
+    assert bool(found) == decided_otherwise
 
 
 def _two_faces(shape: Shape) -> tuple[Record, list[PaintTable]]:
@@ -483,12 +482,10 @@ def test_a_face_group_s_shape_is_measured_by_each_use(drawn):
         delta.set.append((1, path))
     elif drawn != "faces":
         deltas.append(Delta(seq=1, set=[(1, path)]))
-    canonical.point_equality_disagreements.clear()
     snapper = Canonical(planes=False)
-    for each in deltas:
-        snapper(each)
-    found = list(canonical.point_equality_disagreements)
-    canonical.point_equality_disagreements.clear()
+    with expected_disagreements() as found:
+        for each in deltas:
+            snapper(each)
     assert bool(found) == (drawn != "faces"), found
 
 

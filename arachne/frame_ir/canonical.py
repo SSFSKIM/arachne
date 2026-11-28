@@ -57,7 +57,9 @@ otherwise (near the origin, where the tolerance is under ``g``, a gap of up
 to about ``g`` that CE leaves open can be closed). Content keeps far from it
 (joins are copies of one point, closed ends a float's noise apart, breaks
 pixels apart), and :data:`point_equality_disagreements` records every
-boundary decided otherwise, so the test suite finds any that does not.
+boundary decided otherwise, so the test suite finds any that does not. Only
+the tests read it: a snap measures (:data:`MEASURE`) when the test session
+turns measuring on, and production does not.
 
 Only the core's inputs are snapped (:class:`~.core_painter.CorePainter`'s
 records as the core reads them). What Cairo draws stays what it draws from
@@ -375,10 +377,13 @@ class Canonical:
 
     With ``planes`` (the core's input), a stream of the deltas as made, held
     by the core (``arachne_core.Stream``), decides how each path a record
-    draws lies, and the snapped record carries it.
+    draws lies, and the snapped record carries it. ``measure``: whether the
+    snap measures point equality (:func:`_measure`); :data:`MEASURE` unless
+    given. Measured or not, the deltas it hands on are the same.
     """
 
-    def __init__(self, *, planes: bool = True) -> None:
+    def __init__(self, *, planes: bool = True, measure: bool | None = None) -> None:
+        self._measuring = MEASURE if measure is None else bool(measure)
         #: Each path shape of the stream held, by its own key, as the scene
         #: made it.
         self._shapes: dict[bytes, Shape] = {}
@@ -448,7 +453,7 @@ class Canonical:
         # How each held record draws a stream shape's points: a face group as
         # its faces, each its own run; anything else as the points whole.
         uses: dict[bytes, set[Way]] = {}
-        for record in self._records.values():
+        for record in self._records.values() if self._measuring else ():
             key = record.fields.get("shape")
             if isinstance(key, bytes):
                 uses.setdefault(key, set()).add(_way(record))
@@ -458,15 +463,17 @@ class Canonical:
                 found.upload.append(shape)
             elif shape.kind == "path":
                 self._shapes[shape.key] = shape
-                self._measured[shape.key] = set(uses.get(shape.key, {1}))
-                self._hold(shape.key, shape.data, found, self._measured[shape.key])
+                if self._measuring:
+                    self._measured[shape.key] = set(uses.get(shape.key, {1}))
+                self._hold(shape.key, shape.data, found, self._measured.get(shape.key))
                 uploaded.add(shape.key)
             else:
                 raise ValueError(f"canonical: a {shape.kind} shape is not classified")
         if regrid:
             for key, shape in self._shapes.items():
-                self._measured[key] = set(uses.get(key, {1}))
-                self._hold(key, shape.data, found, self._measured[key])
+                if self._measuring:
+                    self._measured[key] = set(uses.get(key, {1}))
+                self._hold(key, shape.data, found, self._measured.get(key))
         else:
             # A shape held from an earlier delta that a record begins to draw
             # another way: measured that way now.
@@ -567,16 +574,25 @@ class Canonical:
         }
 
     def _hold(
-        self, holder: Any, points: Any, found: Delta, uses: Set[Way] = frozenset({1})
+        self,
+        holder: Any,
+        points: Any,
+        found: Delta,
+        uses: Set[Way] | None = frozenset({1}),
     ) -> bytes:
         """``points`` snapped, held by ``holder`` (instead of what it held);
         their key. Whether the delta uploads them is decided once it is built
         (:meth:`_settle_shapes`). ``uses``: each way the points are drawn
-        (:data:`Way`: a face group's faces; 1, whole).
+        (:data:`Way`: a face group's faces; 1, whole), measured if the snap
+        measures.
         """
         assert self.grid is not None
         shape = Shape("path", _position(points, self.grid))
-        _measure(points, shape.data, uses)
+        if self._measuring:
+            _measure(points, shape.data, uses or frozenset({1}))
+            point_equality_counts["measured"] += 1
+        else:
+            point_equality_counts["unmeasured"] += 1
         if self._snapped.get(holder) == shape.key:
             return shape.key
         holders = self._holders.setdefault(shape.key, set())
@@ -765,6 +781,15 @@ _POINT_RTOL = 1e-5
 #: boundaries differ. Measured, never acted on; the tests assert it stays
 #: empty.
 point_equality_disagreements: list[tuple[int, int, int]] = []
+
+#: Whether a snap measures point equality unless told (:class:`Canonical`'s
+#: ``measure``). Only the tests read what it finds, so production does not;
+#: the test session turns it on.
+MEASURE: bool = False
+
+#: The path shapes snapped, measured and not, since the tests last cleared
+#: it: their guard that every shape a test snaps was measured.
+point_equality_counts: dict[str, int] = {"measured": 0, "unmeasured": 0}
 
 
 def _equal(a: np.ndarray, b: np.ndarray, dims: int) -> np.ndarray:
