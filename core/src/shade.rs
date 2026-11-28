@@ -398,23 +398,69 @@ fn centroid(points: &[V3]) -> V3 {
 
 /// The soft light across one face of a surface's grid, on the pixel plane: the share of light at
 /// each of its four corners, interpolated over its two triangles, corners (0, 1, 2) and
-/// (0, 2, 3), each a plane through its corners' shares (Gouraud shading of the share; a layer
-/// colours a pixel by its own colour lit by the share there, [`soft_colour`]). A face's corners
-/// share their shares with the faces meeting there, so the light runs on across its edges.
+/// (0, 2, 3) (Gouraud shading of the share; a layer colours a pixel by its own colour lit by the
+/// share there, [`soft_colour`]). A face's corners share their shares with the faces meeting
+/// there, so the light runs on across its edges. A point beyond the face (the centre of a pixel
+/// its edge crosses) reads the share at the point of its triangle its barycentric weights, the
+/// negative ones dropped, name: never beyond the corners' shares, however thin the triangle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FaceShares {
-    planes: [Plane; 2],
+    triangles: [Triangle; 2],
     /// The diagonal from corner 0 to corner 2 on the pixel plane, and which side of it corner 1
-    /// lies on (`0.0` where a triangle has no area: the other is read everywhere).
+    /// lies on (`0.0` where that triangle has no area, so the other is read everywhere; infinite
+    /// where the other has none).
     origin: [f64; 2],
     along: [f64; 2],
     side: f64,
 }
 
+/// A triangle of a face on the pixel plane: its first corner, its edges from it, the inverse of
+/// their cross product (`0.0` for none), and its corners' shares.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Triangle {
+    a: [f64; 2],
+    e1: [f64; 2],
+    e2: [f64; 2],
+    inverse: f64,
+    shares: [f64; 3],
+}
+
+impl Triangle {
+    fn new(px: [[f64; 2]; 3], shares: [f64; 3]) -> Triangle {
+        let e1 = [px[1][0] - px[0][0], px[1][1] - px[0][1]];
+        let e2 = [px[2][0] - px[0][0], px[2][1] - px[0][1]];
+        let det = e1[0] * e2[1] - e1[1] * e2[0];
+        let inverse = if det != 0.0 && det.is_finite() {
+            1.0 / det
+        } else {
+            0.0
+        };
+        Triangle {
+            a: px[0],
+            e1,
+            e2,
+            inverse,
+            shares,
+        }
+    }
+
+    fn at(&self, x: f64, y: f64) -> f64 {
+        let [s0, s1, s2] = self.shares;
+        if self.inverse == 0.0 {
+            return (s0 + s1 + s2) / 3.0;
+        }
+        let d = [x - self.a[0], y - self.a[1]];
+        let b = (d[0] * self.e2[1] - d[1] * self.e2[0]) * self.inverse;
+        let c = (self.e1[0] * d[1] - self.e1[1] * d[0]) * self.inverse;
+        let weights = [1.0 - b - c, b, c].map(|w: f64| w.max(0.0));
+        let sum = weights[0] + weights[1] + weights[2];
+        (weights[0] * s0 + weights[1] * s1 + weights[2] * s2) / sum
+    }
+}
+
 impl FaceShares {
     /// The face whose corners lie at `px` on the pixel plane with shares `shares`.
     pub fn new(px: [[f64; 2]; 4], shares: [f64; 4]) -> FaceShares {
-        let at = |k: usize| [px[k][0], px[k][1], shares[k]];
         let along = [px[2][0] - px[0][0], px[2][1] - px[0][1]];
         let side_of =
             |k: usize| along[0] * (px[k][1] - px[0][1]) - along[1] * (px[k][0] - px[0][0]);
@@ -427,9 +473,9 @@ impl FaceShares {
             one
         };
         FaceShares {
-            planes: [
-                Plane::through([at(0), at(1), at(2)]),
-                Plane::through([at(0), at(2), at(3)]),
+            triangles: [
+                Triangle::new([px[0], px[1], px[2]], [shares[0], shares[1], shares[2]]),
+                Triangle::new([px[0], px[2], px[3]], [shares[0], shares[2], shares[3]]),
             ],
             origin: px[0],
             along,
@@ -439,23 +485,15 @@ impl FaceShares {
 
     /// The one share of a face whose corners all have it.
     pub fn constant(shares: [f64; 4]) -> Option<f64> {
-        shares[1..]
-            .iter()
-            .all(|s| *s == shares[0])
-            .then_some(shares[0])
+        shares[1..].iter().all(|s| *s == shares[0]).then_some(shares[0])
     }
 
-    /// The share at `(x, y)` on the pixel plane, in `0..=1`: read on the triangle the point lies
-    /// on the side of the diagonal of (beyond the face, the nearer triangle's plane carried on).
+    /// The share at `(x, y)` on the pixel plane: read on the triangle the point lies on the side
+    /// of the diagonal of.
     pub fn at(&self, x: f64, y: f64) -> f64 {
         let s = self.along[0] * (y - self.origin[1]) - self.along[1] * (x - self.origin[0]);
         let first = self.side != 0.0 && (self.side.is_infinite() || s * self.side >= 0.0);
-        let plane = if first {
-            &self.planes[0]
-        } else {
-            &self.planes[1]
-        };
-        plane.at(x, y).clamp(0.0, 1.0)
+        self.triangles[usize::from(!first)].at(x, y)
     }
 }
 
