@@ -488,7 +488,10 @@ impl FaceShares {
 
     /// The one share of a face whose corners all have it.
     pub fn constant(shares: [f64; 4]) -> Option<f64> {
-        shares[1..].iter().all(|s| *s == shares[0]).then_some(shares[0])
+        shares[1..]
+            .iter()
+            .all(|s| *s == shares[0])
+            .then_some(shares[0])
     }
 
     /// The share at `(x, y)` on the pixel plane: read on the triangle the point lies on the side

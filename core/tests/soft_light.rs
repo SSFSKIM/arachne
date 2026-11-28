@@ -272,9 +272,7 @@ fn a_cones_apex_is_one_vertex() {
 #[test]
 fn a_corner_moved_off_its_vertex_keeps_its_faces_own_normal() {
     let (nu, nv) = (4, 4);
-    let (mut points, uv) = uv_surface(nu, nv, (0.0, 1.0), (0.0, 1.0), |u, v| {
-        [u, v, 0.3 * u * u]
-    });
+    let (mut points, uv) = uv_surface(nu, nv, (0.0, 1.0), (0.0, 1.0), |u, v| [u, v, 0.3 * u * u]);
     // Lift one face clear of its neighbours.
     let lifted = face(2, 2, nv);
     for p in &mut points[16 * lifted..16 * lifted + 16] {
@@ -419,7 +417,14 @@ fn shaded_text_is_lit_flat_as_its_plane_turned_to_the_eye() {
         };
         let light = c.light_source;
         let eye = [0.0, 0.0, 30.0];
-        let stops = soft_face_stops(&a, &[[0.9, 0.3, 0.2, 1.0]], &SOFT_DIFFUSE, light, eye, [n0, n1]);
+        let stops = soft_face_stops(
+            &a,
+            &[[0.9, 0.3, 0.2, 1.0]],
+            &SOFT_DIFFUSE,
+            light,
+            eye,
+            [n0, n1],
+        );
         assert_eq!(stops[0], stops[1], "{name}");
         // Drawn, every pixel of the glyph's interior is one colour, and the glyph wound the
         // other way draws the same frame.
@@ -474,9 +479,8 @@ fn a_soft_lit_sphere_is_smooth_across_its_faces() {
     // Pixels well inside the sphere: its silhouette, where a face turned from the eye shows at
     // the rim, is not the light's to judge.
     const IN: u32 = 5;
-    let inside = |x: u32, y: u32| {
-        (x - IN..=x + IN).all(|i| (y - IN..=y + IN).all(|j| opaque(i, j)))
-    };
+    let inside =
+        |x: u32, y: u32| (x - IN..=x + IN).all(|i| (y - IN..=y + IN).all(|j| opaque(i, j)));
     let (mut pairs, mut worst) = (0, 0);
     for y in IN..h - IN {
         for x in IN..w - IN - 1 {
@@ -493,7 +497,10 @@ fn a_soft_lit_sphere_is_smooth_across_its_faces() {
         }
     }
     assert!(pairs > 2000, "{pairs} pairs, the worst a step of {worst}");
-    assert!(worst <= 3, "a step of {worst} levels between neighbouring pixels");
+    assert!(
+        worst <= 3,
+        "a step of {worst} levels between neighbouring pixels"
+    );
     // The carried normals draw the frame the stream found itself.
     let found = s.corner_normals(&[1]).unwrap()[&1].clone();
     let mut carried = d.clone();
