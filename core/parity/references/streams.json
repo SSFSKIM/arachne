@@ -1,12 +1,12 @@
 {
-  "curve_behind_surface": "a9b4db2d78f8ef11c055bb7089566ba9bd74062cf9d11644ffbcc978de8bec2f",
-  "depth_rule_both_ways": "5168cb5c987dcca6f19f6f53a1bb5be936e242a84fb13363d550b09b5c3d0045",
-  "edge_on_surface": "18985b8ace8dc6f9695192b2d9266857943c1addc56c20f6b6d625bfff49e60c",
-  "fixed_label_over_surface": "c074322dcea6b2f75e9d5741c1d0d08f0a31151fdc791e39ef9e6ac566253558",
-  "intersecting_surfaces": "7faa3f14af58dee93dc130117285371a09b7be29dc1fcb176f3a7fc843d72747",
-  "orbit": "800234cf463a30f8d977829ec46766ac1d4379aa30576f57d130b668fe35a1e2",
-  "paint_kinds": "6e777de3d855acd5809e1709cc873b6c7ebf1352d69c45e8f9c1f6b4417de1a5",
-  "seam": "f818cf396cf0fb7a662b918b330c1edb40891e36712fd81b5fe1da4fdb895b63",
-  "stroke_crossing_surface": "aa5c55a86997777f50c61b288cc27c50ab70540629670b2a1e6ad86c2c473521",
-  "translucent_over_opaque": "dbccccfbc50ecfb5a3502e892bacc287ff6f8c360c365e38651fe55d1f3b9e42"
+  "curve_behind_surface": "226efb852d8ac31ac50ddecf542822e1fb06d0f553b507801a6ad2f67468e550",
+  "depth_rule_both_ways": "f27a00c3476e3e6cb4bf673a41d6007b2f6e17f6e0ceda904735113a9318e6b1",
+  "edge_on_surface": "f651001b1441d5a00027e70caee62e2a4805b9810c43f7413bfa62befe5893b7",
+  "fixed_label_over_surface": "cb13c85e8923c43a76ec6fba6c9691d12a2812c66db66aad5b913f23c9d135fe",
+  "intersecting_surfaces": "6752b4e0f081897df86d5c99d2c2544cebbb3584ad81005a98dea0b07a870856",
+  "orbit": "78ab061fcd756b1edc281ab8a3fd094380037270c4dd0a89d0015ee2d95a8e3f",
+  "paint_kinds": "eadd97992f9c5f551e092be38eb6d5ef2a176092d74950783f21bfed501c57e5",
+  "seam": "6e5c5f098ad5125970c89d17f451a7b0fd2b00b3d556fb6cfe3efb490e382f88",
+  "stroke_crossing_surface": "050f2f946b798e500a66f6fb21b5a8cdc39ff839eb440cb7d3feb0a2af8b3011",
+  "translucent_over_opaque": "800ee0e4d89064dcd65646897f0011b15df7ee0907afae76a1db76b4eb89e856"
 }
