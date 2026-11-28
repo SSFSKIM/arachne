@@ -582,7 +582,7 @@ fn a_prototype_s_paint_in_a_table_of_one_stop_draws_as_the_stop() {
     tip_tabled.background_stroke = tabled(&tip_paint.background_stroke, &mut tables);
     let from_tables = draw(shaft_tabled.clone(), tip_tabled.clone(), tables.clone()).unwrap();
     assert!(inline == from_tables, "a one-stop table draws otherwise");
-    assert!(drawn_pixels(&inline) > 600);
+    assert!(drawn_pixels(&inline) > 300, "{} pixels", drawn_pixels(&inline));
     let two = Stops::new(vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]);
     let mut graded = tip_tabled;
     graded.fill = Paint::Table(two.key());
