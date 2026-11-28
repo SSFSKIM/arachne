@@ -359,11 +359,11 @@ fn a_display_can_capture_itself() {
 }
 
 #[test]
-fn a_shaded_path_is_lit_as_ce_lights_it_and_refused_under_another_light() {
+fn a_shaded_path_is_lit_by_the_views_light_model() {
     // CE lights a `shade_in_3d` path under a 3D camera that shades: each paint becomes two stops,
     // lit at the path's start and end corners, drawn as a linear gradient between them. Under CE's
     // light model a path, or an instances record of one, is drawn so; without shading, or without
-    // `shade_in_3d`, it is drawn unlit. Under another light model a path has no look yet: refused.
+    // `shade_in_3d`, it is drawn unlit. Under the soft light it is drawn lit as well.
     let shape = square();
     let colours = Stops::new(vec![[1.0, 0.0, 0.0, 1.0]]);
     for instanced in [false, true] {
@@ -405,12 +405,9 @@ fn a_shaded_path_is_lit_as_ce_lights_it_and_refused_under_another_light() {
             ambient: 0.2,
             wrap: 0.5,
         };
-        let Err(DrawError::Unsupported(u)) = draw(true, true, soft) else {
-            panic!("{what}: drawn under soft diffuse light")
-        };
-        let kind = if instanced { "instances" } else { "path" };
-        assert_eq!((u.kind.as_str(), u.slot), (kind, Some(1)), "{what}");
-        assert!(u.reason.contains("light model"), "{what}: {}", u.reason);
+        let soft = draw(true, true, soft).unwrap();
+        assert_ne!(soft, lit, "{what}: drawn in CE's light");
+        assert_ne!(soft, unlit, "{what}: drawn unlit");
     }
 }
 
