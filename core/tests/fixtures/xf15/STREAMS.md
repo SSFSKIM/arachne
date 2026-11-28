@@ -101,9 +101,11 @@ A path is written owner first, e.g. `[11 P, 10 M, 3 G]`: object 11, a P, inside 
 5. **`05-section-mid-stream.arxf`**: deltas 0 and 1 carry no section; delta 0 sets slot 1
    (facing) and delta 1 sets it again. Delta 2 sets slot 2, facing, group 3, `[12 P, 10 M]`: the
    first section. Delta 3 holds a row `(1, group 4, [11 P, 10 M])`.
-6. **`06-newer-minor.arxf`**: delta 0 states minor 6. It sets slot 1, facing, group 3, `[11 P]`,
-   and eight bytes follow its section (`a5 5a 00 ff 01 02 03 04`), which belong to that newer
-   minor. Delta 1 is empty. The header states minor 6.
+6. **`06-newer-minor.arxf`**: delta 0 states minor 7. It sets slot 1, facing, group 3, `[11 P]`;
+   its section is followed by XF 1.6's, empty (`00 00 00 00`), and then by eight bytes
+   (`a5 5a 00 ff 01 02 03 04`), which belong to that newer minor. Delta 1 is empty. The header
+   states minor 7. (Until XF 1.6 was defined the delta stated minor 6 with the eight bytes right
+   after its section.)
 7. **`07-refused-before-the-section.arxf`**: delta 0 sets slot 1, facing, group 3, `[11 P]`. Delta
    1 sets slot 2, facing, group 3, `[12 P]`, and orders slots 1 and 2, but the layer code of its
    order's second entry is 9, which no build knows. Delta 2 holds a row `(1, group 0,
@@ -146,7 +148,7 @@ sha256 of the committed `<name>.hex` text.
 | `03-slot-set-twice.arxf` | `3c390ec4db0d32ffae212fc5c9f8e6c32874f3ff5304e20b266f0c600cb97b72` | `f36ae5d5cd8cc978c69a77abdbd37901ff46c780e26584cb68c273385957f4e1` |
 | `04-held-rows.arxf` | `e152278bfa4d8409f6847544878501267c2c0f381fab07d5bd5f0f6a9fe395b5` | `a0f9fc96d368b8bea70f47e5d0370d69bde067878abf3d19ab1c56b2fcfb2ca8` |
 | `05-section-mid-stream.arxf` | `a0787e04d966d9d0f605f4c75c3c6ec438ab31806ea08c8b3133873c597c0806` | `34fba5e5a8e925cc740abd769878818832d75401b434c3454ec179c7f33c3f66` |
-| `06-newer-minor.arxf` | `6b9e71aa1d1f29259990e87ed58271a4b13cc2172a01695efc073151a795274f` | `da3b4215ca2cf29472d1481f97b9004abe841994930e98b0e9cda438da0c864e` |
+| `06-newer-minor.arxf` | `6dbc488d95b64032fe8a0629ff34caf27b2fd6210571e65177b91f0c5cc748ea` | `157824616562525c8ee971cd1ab618aba0995b0240c458c442c4af8e59c25c8a` |
 | `07-refused-before-the-section.arxf` | `0fbfae68d4d5f09cdae8ebf9d5c99c08d01b5f5940331617a9bfb5c12deebc7b` | `cbb85c1e7207f13de609db2480caad3ec30c70437d773af3f242ed707b1e3c16` |
 | `08-class-named-twice.arxf` | `8b72af1551013a6c44f7750ec8a398ebe7333184a268ae62bd5f695a99490b60` | `04d5c95f87b5b7e9a97e8f5a66c7afec543dc23d31c900c550ce722f88ed9cf3` |
 | `09-slot-named-twice.arxf` | `a1fc5f52bf3d333a5bf24c929ed4893197a1854c005cbc7661355ac96bcac17a` | `23c91d0610be8f91bdf0a5c39bb7a1c2e6589bc229e7127641342b092b9db9c6` |
