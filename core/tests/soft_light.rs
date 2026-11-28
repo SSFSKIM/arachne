@@ -147,8 +147,8 @@ fn the_soft_lights_terms_are_an_ambient_floor_a_wrap_and_linear_light() {
         assert!((encode(v) - srgb_encode(v)).abs() < 2e-5, "at {v}");
     }
     // The default light is a soft one: a floor that keeps colour legible, a wide wrap.
-    assert!(SOFT_DIFFUSE.ambient > 0.0 && SOFT_DIFFUSE.ambient < 1.0);
-    assert!(SOFT_DIFFUSE.wrap > 0.0);
+    const { assert!(SOFT_DIFFUSE.ambient > 0.0 && SOFT_DIFFUSE.ambient < 1.0) };
+    const { assert!(SOFT_DIFFUSE.wrap > 0.0) };
 }
 
 #[test]
