@@ -365,6 +365,9 @@ class ManimConfig(MutableMapping):
         "show_in_file_browser",
         "static_layer",
         "draw_path",
+        "core_light",
+        "core_light_ambient",
+        "core_light_wrap",
         "tex_dir",
         "tex_template",
         "tex_template_file",
@@ -674,6 +677,9 @@ class ManimConfig(MutableMapping):
             setattr(self, key, parser["CLI"].getboolean(key, fallback=False))
         self.static_layer = parser["CLI"].getboolean("static_layer", fallback=True)
         self.draw_path = parser["CLI"].get("draw_path", fallback="cairo")
+        self.core_light = parser["CLI"].get("core_light", fallback="soft")
+        self.core_light_ambient = parser["CLI"].get("core_light_ambient", fallback="")
+        self.core_light_wrap = parser["CLI"].get("core_light_wrap", fallback="")
 
         # int keys
         for key in [
@@ -1401,6 +1407,59 @@ class ManimConfig(MutableMapping):
     @draw_path.setter
     def draw_path(self, value: str) -> None:
         self._set_from_list("draw_path", value, ["cairo", "ir_cairo", "core", "auto"])
+
+    @property
+    def core_light(self) -> str:
+        """The light the core draws a 3D scene's shaded surfaces and paths in
+        (``draw_path`` ``core``): ``soft``, the default, soft diffuse light in
+        linear light, smooth across a surface and flat across a solid's faces;
+        or ``ce``, CE's own per-face model, a diagnostic that draws the core's
+        frames as they were before the soft light, not a look the core
+        promises. Cairo draws CE's light whatever this is.
+        """
+        return self._d["core_light"]
+
+    @core_light.setter
+    def core_light(self, value: str) -> None:
+        self._set_from_list("core_light", value, ["soft", "ce"])
+
+    @property
+    def core_light_ambient(self) -> float | None:
+        """The soft light's ambient share, the light a surface facing away
+        from the light keeps (0 to 1); ``None``, the default, is the core's
+        own (``arachne_core.SOFT_DIFFUSE``). The core refuses a value outside
+        its range when it is handed the view.
+        """
+        return self._d["core_light_ambient"]
+
+    @core_light_ambient.setter
+    def core_light_ambient(self, value: float | str | None) -> None:
+        self._set_optional_float("core_light_ambient", value)
+
+    @property
+    def core_light_wrap(self) -> float | None:
+        """How far the soft light wraps past the terminator (0 or more, 0
+        being Lambert's cosine); ``None``, the default, is the core's own
+        (``arachne_core.SOFT_DIFFUSE``). The core refuses a value outside its
+        range when it is handed the view.
+        """
+        return self._d["core_light_wrap"]
+
+    @core_light_wrap.setter
+    def core_light_wrap(self, value: float | str | None) -> None:
+        self._set_optional_float("core_light_wrap", value)
+
+    def _set_optional_float(self, key: str, value: float | str | None) -> None:
+        """Set ``key`` to ``value`` as a float, or to ``None`` for ``None``
+        or an empty string (a config file's line left empty).
+        """
+        if value is None or (isinstance(value, str) and not value.strip()):
+            self._d[key] = None
+            return
+        try:
+            self._d[key] = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be a number, not {value!r}") from None
 
     @property
     def renderer(self) -> NoReturn:

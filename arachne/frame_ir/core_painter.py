@@ -17,7 +17,7 @@ overlay rounds where CE's rounds.
 
 from __future__ import annotations
 
-__all__ = ["CorePainter"]
+__all__ = ["CorePainter", "light_model"]
 
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
@@ -32,6 +32,32 @@ from .contributors import Box, LiveFrame, Outline, PixelContributors
 from .extract import FrameStream, Term, Unable
 from .replay import Replays
 from .xf import Delta, StreamState
+
+
+#: The view's code for soft diffuse light (XF's light model 1).
+SOFT_DIFFUSE_CODE = 1
+
+
+def light_model() -> tuple[int, tuple[float, float]] | None:
+    """The light model the core is handed for a 3D view, as ``core_light``
+    names it: ``None`` for CE's (a view that states none is drawn in it), else
+    soft diffuse light with its ambient share and wrap, the core's own
+    defaults (``arachne_core.SOFT_DIFFUSE``) where ``core_light_ambient`` and
+    ``core_light_wrap`` leave them unset. A value the core does not take is
+    refused when it is handed the view.
+    """
+    from arachne import config
+
+    if config.core_light == "ce":
+        return None
+    import arachne_core
+
+    ambient, wrap = arachne_core.SOFT_DIFFUSE
+    if config.core_light_ambient is not None:
+        ambient = config.core_light_ambient
+    if config.core_light_wrap is not None:
+        wrap = config.core_light_wrap
+    return (SOFT_DIFFUSE_CODE, (float(ambient), float(wrap)))
 
 
 class CorePainter:
@@ -88,8 +114,9 @@ class CorePainter:
         self.threads = threads
         self.keep = self.keep_all if keep is None else keep
         #: The deltas as the core received them, their geometry snapped
-        #: (:mod:`.canonical`).
-        self.canonical = Canonical()
+        #: (:mod:`.canonical`), a 3D view stated in the light ``core_light``
+        #: names.
+        self.canonical = Canonical(light=light_model())
         self.deltas: list[Delta] = []
         self.last: Delta | None = None
         #: Frames this painter drew.
@@ -228,7 +255,8 @@ class CorePainter:
         """Refuses (``render.unable``) a frame the core would draw without
         what the writer decides before the snap (:mod:`.canonical`): a view
         without its input grid, a record drawing paths without its planes, a
-        shaded one without its normals. The core would decide them from
+        shaded one without its normals (under the soft light, a face group
+        without its corner normals). The core would decide them from
         snapped points, which is the writer's bug, never a frame to draw on
         another path. Only what the core draws is read: the records of its
         order it does not leave to Cairo's ``overlay``, which draws them from
@@ -241,6 +269,7 @@ class CorePainter:
                 "render.unable: the frame reaches the core without an input grid"
             )
         shading = shades(view)
+        soft = tuple(view.get("light_model", (0, ())))[0] == SOFT_DIFFUSE_CODE
         cairo = {slot for _, slot, _ in overlay}
         for _, slot, _ in self.state.order:
             if slot in cairo:
@@ -262,14 +291,22 @@ class CorePainter:
                 raise Unable(
                     f"render.unable: slot {slot} reaches the core without its planes"
                 )
+            # Under the soft light a face group is lit by its corner normals
+            # (XF 1.6), every other shaded path by its normals.
+            needed = (
+                "corner_normals"
+                if record.kind == "face_group" and soft
+                else "normals"
+            )
             if (
                 shading
                 and fields.get("shade_in_3d")
                 and fields.get("pre_projected") is None
-                and "normals" not in fields
+                and needed not in fields
             ):
                 raise Unable(
-                    f"render.unable: shaded slot {slot} reaches the core without its normals"
+                    f"render.unable: shaded slot {slot} reaches the core without"
+                    f" its {needed.replace('_', ' ')}"
                 )
 
     def settle(self) -> None:

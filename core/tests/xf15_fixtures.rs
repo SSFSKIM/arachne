@@ -260,12 +260,14 @@ fn fixtures() -> Vec<(&'static str, Vec<u8>)> {
         file(&[e(&d0), e(&d1), e(&d2), e(&d3)]),
     ));
 
-    // A newer minor's delta: what follows its section is that minor's, and skipped.
+    // A newer minor's delta: what follows its section is a newer minor's, and skipped by a
+    // reader of XF 1.5 (XF 1.6's section, empty, then a minor's after it).
     let mut d0 = first();
     d0.set = vec![sourced(facing(1), 3, &[&[(11, P)]])];
     d0.order = Some(entries(&[1]));
     let mut newer = e(&d0);
-    newer[2..4].copy_from_slice(&6u16.to_le_bytes());
+    newer[2..4].copy_from_slice(&7u16.to_le_bytes());
+    newer.extend([0x00, 0x00, 0x00, 0x00]);
     newer.extend([0xa5, 0x5a, 0x00, 0xff, 0x01, 0x02, 0x03, 0x04]);
     out.push(("06-newer-minor.arxf", file(&[newer, e(&at(1))])));
 

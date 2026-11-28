@@ -544,12 +544,12 @@
   },
   {
    "name": "06-newer-minor.arxf",
-   "sha256": "6b9e71aa1d1f29259990e87ed58271a4b13cc2172a01695efc073151a795274f",
-   "file_minor": 6,
+   "sha256": "6dbc488d95b64032fe8a0629ff34caf27b2fd6210571e65177b91f0c5cc748ea",
+   "file_minor": 7,
    "deltas": [
     {
      "seq": 0,
-     "minor": 6,
+     "minor": 7,
      "read_under": "1.5",
      "records": [
       {

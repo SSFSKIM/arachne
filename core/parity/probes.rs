@@ -81,7 +81,8 @@ pub fn all() -> Vec<Probe> {
 // Building scenes.
 
 /// A 3D view of `width x height` pixels (CE's frame width; the height fitted to the aspect ratio),
-/// with CE's focal distance and light, looking from polar angle `phi` and azimuth `theta`.
+/// with CE's focal distance and light source, in the core's default soft light, looking from polar
+/// angle `phi` and azimuth `theta`.
 pub fn view(width: u32, height: u32, phi: f64, theta: f64) -> View {
     let frame_width = 14.222222222222221;
     View {
@@ -105,7 +106,10 @@ pub fn view(width: u32, height: u32, phi: f64, theta: f64) -> View {
         }),
         cairo_line_width_multiple: 0.01,
         use_z_index: true,
-        light: LightModel::Ce,
+        light: LightModel::SoftDiffuse {
+            ambient: crate::shade::SOFT_DIFFUSE.ambient,
+            wrap: crate::shade::SOFT_DIFFUSE.wrap,
+        },
         input_grid: 0.0,
     }
 }
