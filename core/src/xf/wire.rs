@@ -1184,9 +1184,9 @@ pub fn decode_delta_as(bytes: &[u8], minor: u16) -> Result<Delta> {
         if r.at < r.b.len() {
             read_members(&mut r, &mut d)?;
         }
-        if let Some(rec) = d.set.iter().find(|rec| {
-            (rec.features & FEATURE_MEMBERS != 0)
-                != matches!(&rec.body, Body::Instances(i) if i.carries_member_styles())
+        if let Some(rec) = d.set.iter().find(|rec| match &rec.body {
+            Body::Instances(i) => (rec.features & FEATURE_MEMBERS != 0) != i.carries_member_styles(),
+            _ => false,
         }) {
             return Err(XfError::Invalid(format!(
                 "slot {}: members feature bit and an instances record's member styles disagree",
