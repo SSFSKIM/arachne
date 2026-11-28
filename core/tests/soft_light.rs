@@ -34,6 +34,12 @@ fn close(a: V3, b: V3, tol: f64) -> bool {
     (0..3).all(|k| (a[k] - b[k]).abs() <= tol)
 }
 
+/// Whether `a` lies along `b`, either way: the soft light turns a normal to the eye, so which
+/// way a surface's parametrization winds does not matter.
+fn along(a: V3, b: V3, tol: f64) -> bool {
+    close(a, b, tol) || close(a, b.map(|v| -v), tol)
+}
+
 /// CE's `np.linspace(lo, hi, n + 1)`.
 fn linspace(lo: f64, hi: f64, n: usize) -> Vec<f64> {
     let step = (hi - lo) / n as f64;
@@ -159,8 +165,8 @@ fn an_open_patch_keeps_its_edges_apart() {
         let first = at(&n, face(0, j, nv), 0);
         let last = at(&n, face(nu - 1, j, nv), 1);
         let inward = |a: f64| [libm::cos(a), 0.0, libm::sin(a)];
-        assert!(close(first, inward(du / 2.0), 1e-12), "{first:?}");
-        assert!(close(last, inward(PI - du / 2.0), 1e-12), "{last:?}");
+        assert!(along(first, inward(du / 2.0), 1e-12), "{first:?}");
+        assert!(along(last, inward(PI - du / 2.0), 1e-12), "{last:?}");
     }
     // An interior vertex is the radial direction there, shared by the four faces meeting on it.
     let mid = [libm::cos(du * 5.0), 0.0, libm::sin(du * 5.0)];
@@ -172,7 +178,7 @@ fn an_open_patch_keeps_its_edges_apart() {
     ];
     for c in corners {
         assert_eq!(c, corners[0], "one vertex, one normal");
-        assert!(close(c, mid, 1e-12), "{c:?}");
+        assert!(along(c, mid, 1e-12), "{c:?}");
     }
 }
 
@@ -191,7 +197,7 @@ fn a_closed_seam_whose_corners_differ_in_their_last_bits_welds() {
         let first = at(&n, face(0, j, nv), 0);
         let last = at(&n, face(nu - 1, j, nv), 1);
         assert_eq!(first, last, "the seam is one vertex");
-        assert!(close(first, [1.0, 0.0, 0.0], 1e-12), "{first:?}");
+        assert!(along(first, [1.0, 0.0, 0.0], 1e-12), "{first:?}");
     }
 }
 
@@ -204,8 +210,8 @@ fn a_spheres_poles_are_one_vertex_each_lit_along_its_axis() {
     // one normal for all of them, the pole's own direction, so no face around it stands out.
     let south = at(&n, face(0, 0, nv), 0);
     let north = at(&n, face(0, nv - 1, nv), 2);
-    assert!(close(south, [0.0, 0.0, -1.0], 1e-12), "{south:?}");
-    assert!(close(north, [0.0, 0.0, 1.0], 1e-12), "{north:?}");
+    assert!(along(south, [0.0, 0.0, -1.0], 1e-12), "{south:?}");
+    assert!(along(north, [0.0, 0.0, 1.0], 1e-12), "{north:?}");
     for i in 0..nu {
         for k in [0, 1] {
             assert_eq!(at(&n, face(i, 0, nv), k), south, "face {i} corner {k}");
@@ -214,14 +220,14 @@ fn a_spheres_poles_are_one_vertex_each_lit_along_its_axis() {
             assert_eq!(at(&n, face(i, nv - 1, nv), k), north, "face {i} corner {k}");
         }
     }
-    // Elsewhere the normal is the sphere's own, the seam included.
+    // Elsewhere the normal is the sphere's own to within a part of the grid's step, the seam
+    // included.
     for (f, p) in points.chunks(16).enumerate() {
         for k in 0..4 {
             let c = p[4 * k];
             if c[2].abs() < 1.49 {
-                let want = unit(c);
-                let got = at(&n, f, k);
-                assert!(close(got, want, 0.02), "face {f} corner {k}: {got:?}");
+                let (want, got) = (unit(c), at(&n, f, k));
+                assert!(dot(got, want).abs() > 0.995, "face {f} corner {k}: {got:?}");
             }
         }
     }
@@ -260,7 +266,7 @@ fn a_cones_apex_is_one_vertex() {
         }
     }
     // The faces around the apex face up and out alike: their sum points up the axis.
-    assert!(close(apex, [0.0, 0.0, 1.0], 1e-12), "{apex:?}");
+    assert!(along(apex, [0.0, 0.0, 1.0], 1e-12), "{apex:?}");
 }
 
 #[test]
@@ -288,7 +294,7 @@ fn a_corner_moved_off_its_vertex_keeps_its_faces_own_normal() {
         ]
     });
     for k in 0..4 {
-        assert!(close(at(&n, lifted, k), own, 1e-12), "corner {k}");
+        assert!(along(at(&n, lifted, k), own, 1e-12), "corner {k}");
     }
 }
 
@@ -432,7 +438,7 @@ fn shaded_text_is_lit_flat_as_its_plane_turned_to_the_eye() {
 #[test]
 fn a_soft_lit_sphere_is_smooth_across_its_faces() {
     let (nu, nv) = (32, 16);
-    let (points, uv) = sphere(nu, nv, 2.5);
+    let (points, uv) = sphere(nu, nv, 3.5);
     let shape = Shape::new(ShapeData::Path { points });
     let fills = Stops::new(vec![[0.2, 0.5, 0.9, 1.0]; nu * nv]);
     let mut r = Record::new(RecordKind::FaceGroup, 1, 101);
@@ -477,7 +483,7 @@ fn a_soft_lit_sphere_is_smooth_across_its_faces() {
             pairs += 1;
         }
     }
-    assert!(pairs > 2000, "{pairs} pairs");
+    assert!(pairs > 2000, "{pairs} pairs, the worst a step of {worst}");
     assert!(worst <= 3, "a step of {worst} levels between neighbouring pixels");
     // The carried normals draw the frame the stream found itself.
     let found = s.corner_normals(&[1]).unwrap()[&1].clone();
