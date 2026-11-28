@@ -450,7 +450,7 @@ def test_a_lit_face_is_ce_s_colours_inside_it():
     rounds a colour across a half level CE's does not, at under one in a
     hundred.
     """
-    size = {"pixel_width": 480, "pixel_height": 270}
+    size = {"pixel_width": 480, "pixel_height": 270, "core_light": "ce"}
     _, ce = render(core_scenes.ShadedSolids, FPS, **size)
     _, core = render(core_scenes.ShadedSolids, FPS, draw_path="core", **size)
     assert len(ce) == len(core) > 0

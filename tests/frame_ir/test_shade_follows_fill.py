@@ -31,9 +31,10 @@ class FillTurning(ThreeDScene):
 
 
 def test_a_face_whose_fill_turns_while_its_points_hold_is_drawn_in_each_frames_colour():
+    # Lit by CE's light model, as Cairo lights it.
     _, cairo = render(FillTurning, FPS, draw_path="cairo")
     drawn = CorePainter.drawn_total
-    _, core = render(FillTurning, FPS, draw_path="core")
+    _, core = render(FillTurning, FPS, draw_path="core", core_light="ce")
     assert len(core) == len(cairo) >= 5
     assert CorePainter.drawn_total - drawn >= len(core), (
         "the frames were not the core's"

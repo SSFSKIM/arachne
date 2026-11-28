@@ -45,7 +45,8 @@ from .core_scenes import BackgroundFilledOverlay
 pytest.importorskip("arachne_core")
 
 FPS = 15
-FULL = {"pixel_width": 854, "pixel_height": 480}
+#: Lit by CE's light model, the one these normals are decided for.
+FULL = {"pixel_width": 854, "pixel_height": 480, "core_light": "ce"}
 
 
 def spring() -> ParametricFunction:
