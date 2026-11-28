@@ -470,21 +470,17 @@ fn a_soft_lit_sphere_is_smooth_across_its_faces() {
     s.apply(&d).expect("a valid scene");
     let (w, h) = (192, 108);
     let px = pixels(&s, w, h);
-    if let Ok(path) = std::env::var("SOFT_DUMP") {
-        let mut out = format!("P6 {w} {h} 255\n").into_bytes();
-        for p in &px {
-            out.extend(&p[..3]);
-        }
-        std::fs::write(path, out).unwrap();
-    }
     let opaque = |x: u32, y: u32| px[(y * w + x) as usize][3] == 255;
+    // Pixels well inside the sphere: its silhouette, where a face turned from the eye shows at
+    // the rim, is not the light's to judge.
+    const IN: u32 = 5;
+    let inside = |x: u32, y: u32| {
+        (x - IN..=x + IN).all(|i| (y - IN..=y + IN).all(|j| opaque(i, j)))
+    };
     let (mut pairs, mut worst) = (0, 0);
-    for y in 1..h - 1 {
-        for x in 1..w - 2 {
-            // Inside the sphere, away from its silhouette.
-            if !(opaque(x - 1, y) && opaque(x, y) && opaque(x + 1, y) && opaque(x + 2, y))
-                || !(opaque(x, y - 1) && opaque(x, y + 1))
-            {
+    for y in IN..h - IN {
+        for x in IN..w - IN - 1 {
+            if !(inside(x, y) && inside(x + 1, y)) {
                 continue;
             }
             let (a, b) = (px[(y * w + x) as usize], px[(y * w + x + 1) as usize]);
