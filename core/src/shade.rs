@@ -232,20 +232,240 @@ pub struct SoftDiffuse {
     pub wrap: f64,
 }
 
+/// The soft light a 3D scene is drawn in by default (Arachne's `core_light=soft`), and the one
+/// place its parameters are set: a stylized look, soft and even. A surface facing the light shows
+/// its own colour, never lighter; one facing away keeps the ambient share, so its colour stays
+/// legible; the wrap carries the light well past the terminator, so a curved surface's shading
+/// runs long and gentle. Nothing glows. A render may set others (`core_light_ambient`,
+/// `core_light_wrap`).
+pub const SOFT_DIFFUSE: SoftDiffuse = SoftDiffuse {
+    ambient: 0.35,
+    wrap: 0.5,
+};
+
 impl SoftDiffuse {
+    /// The share of light kept by a surface whose unit normal makes cosine `cos` with the
+    /// direction to the light: the ambient floor, and above it the diffuse light wrapped past the
+    /// terminator, `(cos + wrap) / (1 + wrap)`, none beyond `cos = -wrap`. Facing the light it is
+    /// 1.
+    pub fn share(&self, cos: f64) -> f64 {
+        let diffuse = ((cos + self.wrap) / (1.0 + self.wrap)).max(0.0);
+        self.ambient + (1.0 - self.ambient) * diffuse
+    }
+
+    /// The share of light at `point` facing `normal` (a unit vector), lit from a light at `light`.
+    pub fn share_at(&self, point: V3, normal: V3, light: V3) -> f64 {
+        self.share(dot(normal, normalize(sub(light, point))))
+    }
+
     /// A linear colour at `point` facing `normal` (a unit vector), lit from a light at `light`
     /// and seen from `eye`; the normal is turned toward the eye first.
     pub fn lit(&self, linear: V3, point: V3, normal: V3, light: V3, eye: V3) -> V3 {
-        let n = if dot(normal, sub(eye, point)) < 0.0 {
-            scale(normal, -1.0)
-        } else {
-            normal
-        };
-        let to_light = normalize(sub(light, point));
-        let diffuse = ((dot(n, to_light) + self.wrap) / (1.0 + self.wrap)).max(0.0);
-        let share = self.ambient + (1.0 - self.ambient) * diffuse;
-        scale(linear, share)
+        scale(linear, self.share_at(point, toward(normal, sub(eye, point)), light))
     }
+}
+
+/// `normal` turned to face `view` (the direction from the surface to the eye): lit on the side the
+/// eye sees, whatever way the surface winds.
+fn toward(normal: V3, view: V3) -> V3 {
+    if dot(normal, view) < 0.0 {
+        scale(normal, -1.0)
+    } else {
+        normal
+    }
+}
+
+/// An encoded straight colour `rgba` lit by the share of light `share`, in linear light: decoded,
+/// scaled, encoded again ([`encode`]); alpha as it is.
+pub fn soft_colour(rgba: [f64; 4], share: f64) -> [f64; 4] {
+    let lit = |c: f64| encode(srgb_decode(c.clamp(0.0, 1.0)) * share);
+    [lit(rgba[0]), lit(rgba[1]), lit(rgba[2]), rgba[3]]
+}
+
+/// The steps of [`encode`]'s table over linear `0..=1`.
+const ENCODE_STEPS: usize = 4096;
+
+/// sRGB's encoding of a linear value clamped to `0..=1`, read from a table of [`srgb_encode`] at
+/// [`ENCODE_STEPS`] steps, linearly between them: within 2e-5 of it (far under one level of 255),
+/// and cheap enough to colour every pixel of a lit surface. The table is the same on every
+/// machine, made by `libm`.
+pub fn encode(linear: f64) -> f64 {
+    static TABLE: std::sync::OnceLock<Vec<f64>> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        (0..=ENCODE_STEPS)
+            .map(|i| srgb_encode(i as f64 / ENCODE_STEPS as f64))
+            .collect()
+    });
+    let v = if linear.is_nan() {
+        0.0
+    } else {
+        linear.clamp(0.0, 1.0)
+    };
+    let at = v * ENCODE_STEPS as f64;
+    let i = (at as usize).min(ENCODE_STEPS - 1);
+    let frac = at - i as f64;
+    table[i] + (table[i + 1] - table[i]) * frac
+}
+
+/// The normal of the plane `points` lie on, made unit ([`WorldPlane::of_points`]: Newell's, the
+/// widest triangle's where an outline crossing itself cancels that, or an axis), or `None` for
+/// points on no one plane.
+pub fn flat_normal(points: &[V3]) -> Option<V3> {
+    let plane = crate::depth::WorldPlane::of_points(points)?;
+    let n = normalize(plane.normal);
+    (n != [0.0; 3]).then_some(n)
+}
+
+/// The normals the soft light lights a path outside a surface's grid by, at its two lit corners
+/// (XF 1.2 `normals`), as a writer that snaps its points to `grid` carries them, decided on the
+/// points as made: a flat path's plane normal at both, so it takes one colour whatever the turn
+/// at its corners (shaded `Text`, whose glyphs each close with a line of no length, included);
+/// for a path on no one plane, CE's corner normals as [`decided_normals`] decides them.
+pub fn soft_decided_normals(points: &[V3], grid: f64) -> [V3; 2] {
+    match flat_normal(points) {
+        Some(n) => [n, n],
+        None => decided_normals(points, grid),
+    }
+}
+
+/// The soft light's two stops for a path outside a surface's grid: CE's two stops of its paint
+/// (its first two rows, one repeated), each lit in linear light ([`soft_colour`]) at the centroid
+/// of `points` by the normal its writer decided for that corner (`decided`, from
+/// [`soft_decided_normals`]), turned toward `eye`; at a degenerate corner (the zero vector) by the
+/// path's Newell normal, or where that cancels too, CE's own normal there. A flat path's two
+/// stops are one colour.
+pub fn soft_face_stops(
+    points: &[V3],
+    rgbas: &[[f64; 4]],
+    model: &SoftDiffuse,
+    light: V3,
+    eye: V3,
+    decided: [V3; 2],
+) -> [[f64; 4]; 2] {
+    let mut stops = match rgbas {
+        [one] => [*one, *one],
+        [a, b, ..] => [*a, *b],
+        [] => panic!("a face has at least one colour"),
+    };
+    let Some(&first) = points.first() else {
+        return stops;
+    };
+    let centroid = centroid(points);
+    for (k, (stop, corner)) in stops.iter_mut().zip(lit_corners(points.len())).enumerate() {
+        let normal = if decided[k] != [0.0; 3] {
+            decided[k]
+        } else {
+            let newell = crate::depth::newell(points, first);
+            if dot(newell, newell) > 0.0 {
+                normalize(newell)
+            } else {
+                face_unit_normal(points, corner)
+            }
+        };
+        let n = toward(normal, sub(eye, centroid));
+        *stop = soft_colour(*stop, model.share_at(centroid, n, light));
+    }
+    stops
+}
+
+/// The one share of light the soft light gives a path lit as one piece: at the centroid of
+/// `points` facing `normal` turned toward `eye`.
+pub fn flat_share(model: &SoftDiffuse, points: &[V3], normal: V3, light: V3, eye: V3) -> f64 {
+    let centroid = centroid(points);
+    model.share_at(centroid, toward(normal, sub(eye, centroid)), light)
+}
+
+/// The centroid of `points`, summed about the first so it does not depend on where they are; the
+/// origin for none.
+fn centroid(points: &[V3]) -> V3 {
+    let Some(&first) = points.first() else {
+        return [0.0; 3];
+    };
+    let mut sum = [0.0; 3];
+    for p in points {
+        sum = [
+            sum[0] + (p[0] - first[0]),
+            sum[1] + (p[1] - first[1]),
+            sum[2] + (p[2] - first[2]),
+        ];
+    }
+    let count = points.len() as f64;
+    std::array::from_fn(|k| first[k] + sum[k] / count)
+}
+
+/// The soft light across one face of a surface's grid, on the pixel plane: the share of light at
+/// each of its four corners, interpolated over its two triangles, corners (0, 1, 2) and
+/// (0, 2, 3), each a plane through its corners' shares (Gouraud shading of the share; a layer
+/// colours a pixel by its own colour lit by the share there, [`soft_colour`]). A face's corners
+/// share their shares with the faces meeting there, so the light runs on across its edges.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceShares {
+    planes: [Plane; 2],
+    /// The diagonal from corner 0 to corner 2 on the pixel plane, and which side of it corner 1
+    /// lies on (`0.0` where a triangle has no area: the other is read everywhere).
+    origin: [f64; 2],
+    along: [f64; 2],
+    side: f64,
+}
+
+impl FaceShares {
+    /// The face whose corners lie at `px` on the pixel plane with shares `shares`.
+    pub fn new(px: [[f64; 2]; 4], shares: [f64; 4]) -> FaceShares {
+        let at = |k: usize| [px[k][0], px[k][1], shares[k]];
+        let along = [px[2][0] - px[0][0], px[2][1] - px[0][1]];
+        let side_of = |k: usize| along[0] * (px[k][1] - px[0][1]) - along[1] * (px[k][0] - px[0][0]);
+        let (one, three) = (side_of(1), side_of(3));
+        let side = if one == 0.0 {
+            0.0
+        } else if three == 0.0 {
+            f64::INFINITY.copysign(one)
+        } else {
+            one
+        };
+        FaceShares {
+            planes: [Plane::through([at(0), at(1), at(2)]), Plane::through([at(0), at(2), at(3)])],
+            origin: px[0],
+            along,
+            side,
+        }
+    }
+
+    /// The one share of a face whose corners all have it.
+    pub fn constant(shares: [f64; 4]) -> Option<f64> {
+        shares[1..].iter().all(|s| *s == shares[0]).then_some(shares[0])
+    }
+
+    /// The share at `(x, y)` on the pixel plane, in `0..=1`: read on the triangle the point lies
+    /// on the side of the diagonal of (beyond the face, the nearer triangle's plane carried on).
+    pub fn at(&self, x: f64, y: f64) -> f64 {
+        let s = self.along[0] * (y - self.origin[1]) - self.along[1] * (x - self.origin[0]);
+        let first = self.side != 0.0 && (self.side.is_infinite() || s * self.side >= 0.0);
+        let plane = if first { &self.planes[0] } else { &self.planes[1] };
+        plane.at(x, y).clamp(0.0, 1.0)
+    }
+}
+
+/// The share of light at each of a face's four corners under the soft light: corner `k` at
+/// `corners[k]` (in the world) facing `normals[k]`, the face's normals turned together toward
+/// `eye` by their sum (so a face is lit on the side the eye sees as one piece).
+pub fn face_corner_shares(
+    model: &SoftDiffuse,
+    corners: [V3; 4],
+    normals: [V3; 4],
+    light: V3,
+    eye: V3,
+) -> [f64; 4] {
+    let facing = normals.iter().fold([0.0; 3], |s, n| {
+        [s[0] + n[0], s[1] + n[1], s[2] + n[2]]
+    });
+    let centre = std::array::from_fn(|k| {
+        (corners[0][k] + corners[1][k] + corners[2][k] + corners[3][k]) / 4.0
+    });
+    let flip = dot(facing, sub(eye, centre)) < 0.0;
+    std::array::from_fn(|k| {
+        let n = if flip { scale(normals[k], -1.0) } else { normals[k] };
+        model.share_at(corners[k], n, light)
+    })
 }
 
 /// A view's light model resolved against its 3D camera: what lights a shaded mesh's corners.

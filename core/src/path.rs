@@ -48,7 +48,7 @@
 
 use crate::composite::{
     Coverage, FlatRecord, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, TransparentPass,
-    clear, premultiply, sample_cell, sample_point,
+    clear, premultiply, sample_cell, sample_point, srgb_decode,
 };
 use crate::depth::{Boundary, Centreline, Flat, Planarity, Registry, WorldPlane};
 use crate::gradient::{self, Linear};
@@ -235,6 +235,32 @@ enum LayerPaint {
     /// A linear gradient, and per row of the layer's box from its top, Cairo's composite runs
     /// (`x0..x1`, sorted): a pixel's colour is fetched from the start of its run.
     Linear(Box<Linear>, Vec<Vec<(u32, u32)>>),
+    /// A colour lit by the soft light across a surface's face ([`Lit`]).
+    Lit(Box<Lit>),
+}
+
+/// A layer's colour lit by the soft light across a face of a surface's grid: its colour in linear
+/// light and its alpha (group opacity applied), lit at each pixel's centre by the face's share of
+/// light there ([`crate::shade::FaceShares`]).
+struct Lit {
+    linear: [f64; 3],
+    alpha: f64,
+    shares: crate::shade::FaceShares,
+}
+
+impl Lit {
+    fn colour(&self, x: u32, y: u32) -> [u8; 4] {
+        let share = self.shares.at(x as f64 + 0.5, y as f64 + 0.5);
+        let c = self.linear.map(|v| crate::shade::encode(v * share));
+        premultiply([c[0], c[1], c[2], self.alpha])
+    }
+}
+
+/// How the soft light lights a face of a surface: one share of light over it, or a share at each
+/// corner across it.
+enum FaceLight {
+    One(f64),
+    Across(crate::shade::FaceShares),
 }
 
 /// A layer's paint before its pixels are known: the gradient is fixed to the drawing's extents.
@@ -242,17 +268,21 @@ enum PaintSpec {
     Solid([u8; 4]),
     /// Stops (straight RGBA, group opacity applied) between two ends in the frame's units.
     Gradient(Vec<[f64; 4]>, [f64; 2], [f64; 2]),
+    /// A colour (straight RGBA, group opacity applied) lit across a face by these shares.
+    Lit([f64; 4], crate::shade::FaceShares),
 }
 
 impl PaintSpec {
     /// Whether Cairo paints nothing of it ([`clear`]): a solid colour's, or the one colour a
-    /// gradient collapses to ([`gradient::collapsed`]: clear, or meeting ends' average).
+    /// gradient collapses to ([`gradient::collapsed`]: clear, or meeting ends' average); a lit
+    /// colour's alpha.
     fn clear(&self) -> bool {
         match self {
             PaintSpec::Solid(colour) => clear(*colour),
             PaintSpec::Gradient(stops, p1, p2) => {
                 gradient::collapsed(*p1, *p2, stops).is_some_and(clear)
             }
+            PaintSpec::Lit(colour, _) => clear(premultiply([0.0, 0.0, 0.0, colour[3]])),
         }
     }
 }
@@ -406,6 +436,7 @@ impl Layer {
                 let start = if i == 0 { x } else { runs[i - 1].0 };
                 gradient.at(x as i64, y as i64, start as i64)
             }
+            LayerPaint::Lit(lit) => lit.colour(x, y),
         }
     }
 
@@ -1257,6 +1288,9 @@ pub struct Lowering<'v> {
     width: u32,
     height: u32,
     paths: Paths,
+    /// The soft light's corner normals of face groups whose writer did not decide them, by slot,
+    /// found by the stream from the points it holds ([`Lowering::set_corner_normals`]).
+    corner_normals: HashMap<u32, Vec<[f64; 3]>>,
 }
 
 impl<'v> Lowering<'v> {
@@ -1282,7 +1316,14 @@ impl<'v> Lowering<'v> {
                 width,
                 records: None,
             },
+            corner_normals: HashMap::new(),
         }
+    }
+
+    /// The face group in `slot` is lit at its faces' corners by `normals` (four per face,
+    /// [`crate::normals::corner_normals`]) where its record carries none.
+    pub fn set_corner_normals(&mut self, slot: u32, normals: Vec<[f64; 3]>) {
+        self.corner_normals.insert(slot, normals);
     }
 
     /// How `draw`'s points lie, decided from the points as given ([`WorldPlane::decide`]): the
@@ -1314,6 +1355,14 @@ impl<'v> Lowering<'v> {
             return None;
         }
         let world: Vec<[f64; 3]> = draw.points.iter().map(|p| place(&draw.place, *p)).collect();
+        if let LightModel::SoftDiffuse { .. } = self.view.light {
+            // The soft light lights a surface's faces by their corner normals (XF 1.6), and every
+            // other path by its own: flat where it lies on a plane.
+            if draw.surface {
+                return None;
+            }
+            return Some(crate::shade::soft_decided_normals(&world, grid));
+        }
         Some(crate::shade::decided_normals(&world, grid))
     }
 
@@ -1323,7 +1372,11 @@ impl<'v> Lowering<'v> {
     /// not shade; both `false` for one whose record carries no normals.
     pub fn newell_corners(&self, draw: &PathDraw<'_>) -> Option<[bool; 2]> {
         let shades = matches!(&self.view.camera, Camera::ThreeD(c) if c.should_apply_shading);
-        if draw.pre_projected || !shades || !draw.record.depth.shade_in_3d {
+        if draw.pre_projected
+            || !shades
+            || !draw.record.depth.shade_in_3d
+            || self.view.light != LightModel::Ce
+        {
             return None;
         }
         let Some(decided) = draw.decided_normals() else {
@@ -1504,16 +1557,25 @@ impl<'v> Lowering<'v> {
     ) -> ([Option<(PaintSpec, f64)>; 3], bool) {
         let corners = [0, (world.len() - 1) / 6 * 3];
         let lit = self.light(draw);
-        let ends = match (draw.ends, lit) {
+        let soft = self.soft(draw);
+        if let Some(soft) = soft
+            && draw.surface
+        {
+            return self.lit_face_layers(draw, world, shown, soft);
+        }
+        let ends = match (draw.ends, lit.is_some() || soft.is_some()) {
             (Some(ends), _) if draw.pre_projected => Some(ends),
             (Some(ends), _) => {
                 let shown_ends = pre_display(&ends, self.projection.as_ref(), placement);
                 Some([shown_ends[0], shown_ends[1]])
             }
-            (None, Some(_)) => Some(corners.map(|i| shown[i])),
-            (None, None) => None,
+            (None, true) => Some(corners.map(|i| shown[i])),
+            (None, false) => None,
         };
-        let [background_rows, fill_rows, stroke_rows] = self.layer_rows(draw, world, lit);
+        let [background_rows, fill_rows, stroke_rows] = match soft {
+            Some(soft) => self.soft_rows(draw, world, soft),
+            None => self.layer_rows(draw, world, lit),
+        };
         let fill_drawn = fill_rows.is_some();
         let multiple = self.view.cairo_line_width_multiple;
         let layer = |k: usize, rows: Option<Vec<[f64; 4]>>, width: f64| {
@@ -1542,6 +1604,46 @@ impl<'v> Lowering<'v> {
                 layer(2, stroke_rows, draw.stroke_width),
             ],
             fill_drawn,
+        )
+    }
+
+    /// [`Lowering::layers`] for a face of a surface lit by the soft light: each layer its paint's
+    /// first row, the record's group opacity applied, lit across the face ([`Lowering::face_light`]).
+    fn lit_face_layers(
+        &self,
+        draw: &PathDraw<'_>,
+        world: &[[f64; 3]],
+        shown: &[[f64; 3]],
+        soft: (crate::shade::SoftDiffuse, [f64; 3], [f64; 3]),
+    ) -> ([Option<(PaintSpec, f64)>; 3], bool) {
+        let light = self.face_light(draw, world, shown, soft);
+        let opacity = draw.record.opacity;
+        let multiple = self.view.cairo_line_width_multiple;
+        let layer = |k: usize, rows: &Option<Vec<[f64; 4]>>, width: f64| {
+            let c = *rows.as_ref()?.first()?;
+            let colour = [c[0], c[1], c[2], c[3] * opacity];
+            let spec = match &light {
+                FaceLight::One(share) => {
+                    PaintSpec::Solid(premultiply(crate::shade::soft_colour(colour, *share)))
+                }
+                FaceLight::Across(shares) => PaintSpec::Lit(colour, *shares),
+            };
+            if spec.clear() {
+                return None;
+            }
+            let w = width * multiple;
+            if k != 1 && (w.is_nan() || w <= 0.0) {
+                return None;
+            }
+            Some((spec, width))
+        };
+        (
+            [
+                layer(0, &draw.background_stroke, draw.background_stroke_width),
+                layer(1, &draw.fill, 0.0),
+                layer(2, &draw.stroke, draw.stroke_width),
+            ],
+            draw.fill.is_some(),
         )
     }
 
@@ -1741,13 +1843,114 @@ impl<'v> Lowering<'v> {
     }
 
     /// The light CE's lighting (`ThreeDCamera.modified_rgbas`) shades `draw` from: its 3D
-    /// camera's light source, when the path is `shade_in_3d` and the camera shades; `None` for
-    /// any other path, and for a pre-projected one, whose camera lit its paints already.
+    /// camera's light source, when the path is `shade_in_3d`, the camera shades and the view's
+    /// light model is CE's; `None` for any other path, and for a pre-projected one, whose camera
+    /// lit its paints already.
     fn light(&self, draw: &PathDraw<'_>) -> Option<[f64; 3]> {
         match (&self.view.camera, draw.record.depth.shade_in_3d) {
-            _ if draw.pre_projected => None,
+            _ if draw.pre_projected || self.view.light != LightModel::Ce => None,
             (Camera::ThreeD(c), true) if c.should_apply_shading => Some(c.light_source),
             _ => None,
+        }
+    }
+
+    /// The soft light `draw` is lit by: the view's soft diffuse light from its 3D camera's light
+    /// source, seen from its eye ([`crate::shade::Light::new`]), when the path is `shade_in_3d`
+    /// and the camera shades; `None` for any other path, a pre-projected one included, and under
+    /// CE's light.
+    fn soft(&self, draw: &PathDraw<'_>) -> Option<(crate::shade::SoftDiffuse, [f64; 3], [f64; 3])> {
+        let Camera::ThreeD(c) = &self.view.camera else {
+            return None;
+        };
+        if draw.pre_projected || !draw.record.depth.shade_in_3d || !c.should_apply_shading {
+            return None;
+        }
+        if !matches!(self.view.light, LightModel::SoftDiffuse { .. }) {
+            return None;
+        }
+        let rotation = self.projection.as_ref()?.rotation();
+        match crate::shade::Light::new(&self.view.light, c, self.view.frame_center, rotation) {
+            crate::shade::Light::Soft { model, source, eye } => Some((model, source, eye)),
+            crate::shade::Light::Ce { .. } => None,
+        }
+    }
+
+    /// The rows each layer of `draw` (background stroke, fill, stroke) is painted with under the
+    /// soft light `soft` ([`Lowering::soft`]), as [`Lowering::layer_rows`] gives them under CE's:
+    /// CE's two stops of each paint lit ([`crate::shade::soft_face_stops`]) by the normals its
+    /// writer decided when it carries them, else by those the writer would
+    /// ([`crate::shade::soft_decided_normals`]), one row where the two are one colour; the
+    /// record's group opacity applied.
+    fn soft_rows(
+        &self,
+        draw: &PathDraw<'_>,
+        world: &[[f64; 3]],
+        soft: (crate::shade::SoftDiffuse, [f64; 3], [f64; 3]),
+    ) -> [Option<Vec<[f64; 4]>>; 3] {
+        let (model, source, eye) = soft;
+        let opacity = draw.record.opacity;
+        let decided = draw.decided_normals().unwrap_or_else(|| {
+            crate::shade::soft_decided_normals(world, crate::depth::input_grid(self.view))
+        });
+        [&draw.background_stroke, &draw.fill, &draw.stroke].map(|paint| {
+            let rows = paint.as_ref()?;
+            let stops = crate::shade::soft_face_stops(world, rows, &model, source, eye, decided);
+            let stops = if stops[0] == stops[1] {
+                vec![stops[0]]
+            } else {
+                stops.to_vec()
+            };
+            Some(
+                stops
+                    .into_iter()
+                    .map(|c| [c[0], c[1], c[2], c[3] * opacity])
+                    .collect(),
+            )
+        })
+    }
+
+    /// How the soft light `soft` lights `draw`, a face of a surface, whose points are `world` in
+    /// the world and `shown` as placed for display: at its corners by its corner normals (its
+    /// record's, the stream's where it carries none, else its own normal), a share of light per
+    /// corner across the face, or one share for a face lit as one piece (one outside the grid's
+    /// layout, at its points' centroid).
+    fn face_light(
+        &self,
+        draw: &PathDraw<'_>,
+        world: &[[f64; 3]],
+        shown: &[[f64; 3]],
+        soft: (crate::shade::SoftDiffuse, [f64; 3], [f64; 3]),
+    ) -> FaceLight {
+        let (model, source, eye) = soft;
+        let at = 4 * draw.which;
+        let carried = draw
+            .record
+            .corner_normals
+            .as_deref()
+            .or_else(|| self.corner_normals.get(&draw.record.slot).map(Vec::as_slice))
+            .and_then(|n| n.get(at..at + 4));
+        let normals: [[f64; 3]; 4] = match carried {
+            Some(n) => [n[0], n[1], n[2], n[3]],
+            None => [crate::shade::flat_normal(world).unwrap_or([0.0; 3]); 4],
+        };
+        match (
+            crate::normals::face_corners(world),
+            crate::normals::face_corners(shown),
+        ) {
+            (Some(corners), Some(placed)) => {
+                let shares =
+                    crate::shade::face_corner_shares(&model, corners, normals, source, eye);
+                match crate::shade::FaceShares::constant(shares) {
+                    Some(share) => FaceLight::One(share),
+                    None => {
+                        let px = placed.map(|p| self.map.apply(p));
+                        FaceLight::Across(crate::shade::FaceShares::new(px, shares))
+                    }
+                }
+            }
+            _ => FaceLight::One(crate::shade::flat_share(
+                &model, world, normals[0], source, eye,
+            )),
         }
     }
 
@@ -2099,6 +2302,18 @@ impl<'v> Lowering<'v> {
                             ..solid([0; 4])
                         }
                     }
+                }
+            }
+            PaintSpec::Lit(colour, shares) => {
+                let alpha = colour[3];
+                Layer {
+                    paint: LayerPaint::Lit(Box::new(Lit {
+                        linear: [0, 1, 2].map(|k| srgb_decode(colour[k].clamp(0.0, 1.0))),
+                        alpha,
+                        shares,
+                    })),
+                    opaque: premultiply([0.0, 0.0, 0.0, alpha])[3] == 255,
+                    ..solid([0; 4])
                 }
             }
         };

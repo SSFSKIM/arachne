@@ -5,6 +5,8 @@
 //!   `draw` turns it into pixels.
 //! - [`project`]: CE's camera maths (the 3D projection and the frame-to-pixel mappings).
 //! - [`shade`]: the one place lighting lives (CE's per-face model, soft diffuse light).
+//! - [`normals`]: smooth normals across a surface's uv grid, welded at seams and poles, for the
+//!   soft light.
 //! - [`composite`]: the one place blending lives: fragments, the opaque and transparent passes,
 //!   the two resolves, emission, and the frame buffer.
 //! - [`order`]: the order fragments composite in at a pixel: depth where two cover one
@@ -65,6 +67,7 @@ pub mod join_mask;
 pub mod label_class;
 pub mod label_plan;
 pub mod mesh;
+pub mod normals;
 pub mod order;
 pub mod path;
 pub mod points;

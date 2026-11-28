@@ -468,6 +468,25 @@ impl After<'_> {
             }
             Body::None | Body::Image(_) | Body::Opaque(_) => {}
         }
+        if let Some(normals) = &rec.corner_normals {
+            let faces = match &rec.body {
+                Body::FaceGroup(f) => f.uv.len(),
+                _ => {
+                    return Err(StreamError::Invalid(format!(
+                        "slot {}: corner normals on a {} record",
+                        rec.slot,
+                        rec.kind.name()
+                    )));
+                }
+            };
+            if normals.len() != 4 * faces || normals.iter().flatten().any(|v| !v.is_finite()) {
+                return Err(StreamError::Invalid(format!(
+                    "slot {}: {} corner normals for {faces} faces, four finite ones each needed",
+                    rec.slot,
+                    normals.len()
+                )));
+            }
+        }
         if let Some(joins) = &rec.joins {
             // A pre-projected path draws its tail's points as they are.
             let drawn = match &rec.pre_projected {
@@ -1041,15 +1060,8 @@ impl Stream {
             }));
         }
         let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
-        let ce_light = view.light == LightModel::Ce;
         if let Some(refused) = self.order.iter().filter(|e| drawn(e)).find_map(|e| {
-            refusal(
-                &self.records[&e.slot],
-                &self.shapes,
-                &self.paints,
-                shading,
-                ce_light,
-            )
+            refusal(&self.records[&e.slot], &self.shapes, &self.paints, shading)
         }) {
             return Err(DrawError::Unsupported(refused));
         }
@@ -1176,6 +1188,20 @@ impl Stream {
         let mut registry = crate::depth::Registry::new(view);
         let mut meshes = mesh::lower(view, width, height, &meshes, &mut registry);
         let mut lowering = path::Lowering::new(view, width, height);
+        // The soft light's corner normals of a face group whose writer did not decide them, found
+        // from the points the stream holds.
+        if shading && matches!(view.light, LightModel::SoftDiffuse { .. }) {
+            let mut found = HashSet::new();
+            for e in self.order.iter().filter(|e| drawn(e)) {
+                let record = &self.records[&e.slot];
+                if record.corner_normals.is_none()
+                    && found.insert(e.slot)
+                    && let Some(normals) = self.found_corner_normals(record)
+                {
+                    lowering.set_corner_normals(record.slot, normals);
+                }
+            }
+        }
         let planes = lowering.coplanar(&paths, &mut registry);
         // Settled, it holds the flat records the producers' fragments carry.
         let registry = std::sync::Arc::new(registry);
@@ -1225,6 +1251,49 @@ impl Stream {
             }
             Some(found)
         })
+    }
+
+    /// Per slot of `slots` holding a face group the camera shades under the soft light, the normals
+    /// its faces are lit by at their corners ([`crate::normals::corner_normals`]), decided from
+    /// the points the stream holds: four per face, in face order, what a writer that snaps the
+    /// record's geometry afterwards carries with it (XF 1.6). Other slots have no entry, and under
+    /// CE's light none has. Nothing is drawn.
+    pub fn corner_normals(&self, slots: &[u32]) -> Result<BTreeMap<u32, Vec<[f64; 3]>>, DrawError> {
+        let view = self.view.as_ref().ok_or(DrawError::NoView)?;
+        let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
+        let mut found = BTreeMap::new();
+        if !shading || !matches!(view.light, LightModel::SoftDiffuse { .. }) {
+            return Ok(found);
+        }
+        for slot in slots {
+            let Some(record) = self.records.get(slot) else {
+                continue;
+            };
+            if refusal(record, &self.shapes, &self.paints, shading).is_some() {
+                continue;
+            }
+            if let Some(normals) = self.found_corner_normals(record) {
+                found.insert(*slot, normals);
+            }
+        }
+        Ok(found)
+    }
+
+    /// A shaded face group's corner normals, found from the points the stream holds, placed in
+    /// the world; `None` for any other record.
+    fn found_corner_normals(&self, record: &Record) -> Option<Vec<[f64; 3]>> {
+        let (RecordKind::FaceGroup, Body::FaceGroup(faces)) = (record.kind, &record.body) else {
+            return None;
+        };
+        if !record.depth.shade_in_3d {
+            return None;
+        }
+        let points = path_shape(&self.shapes, record.geometry.shape_a.as_ref()?)?;
+        let world: Vec<[f64; 3]> = points
+            .iter()
+            .map(|p| crate::xf::place(&record.geometry.place_a, *p))
+            .collect();
+        Some(crate::normals::corner_normals(&world, faces))
     }
 
     /// Per slot of `slots` holding a record the camera shades, which of the two lit corners of each
@@ -1304,13 +1373,12 @@ impl Stream {
         let view = self.view.as_ref().ok_or(DrawError::NoView)?;
         let lowering = path::Lowering::new(view, view.pixel_width, view.pixel_height);
         let shading = matches!(&view.camera, Camera::ThreeD(c) if c.should_apply_shading);
-        let ce_light = view.light == LightModel::Ce;
         let mut found = BTreeMap::new();
         for slot in slots {
             let Some(record) = self.records.get(slot) else {
                 continue;
             };
-            if refusal(record, &self.shapes, &self.paints, shading, ce_light).is_some() {
+            if refusal(record, &self.shapes, &self.paints, shading).is_some() {
                 continue;
             }
             let shape = record
@@ -1532,16 +1600,15 @@ fn check_shape(shape: &Shape) -> Result<(), StreamError> {
 /// What of a drawn record's fixed fields this build does not draw yet, if anything, its paint
 /// tables in `paints`: blends, reveals and paint blends of any kind but a path, a paint blend of
 /// row counts numpy does not broadcast (`geometry::drawn_paint`), clips for every kind; for meshes (and instances of a mesh) strokes, gradient fills and dashes; for paths (and
-/// instances of a path) CE's lighting under a camera that shades (`shading`) with a light model
-/// other than CE's (`ce_light`), a gradient paint without its ends or on an instance, and dashes
-/// it cannot read. A pre-projected record is judged by its tail's paints and ends (lit already, so
-/// never refused for shading), and refused with a blend, reveal or paint blend.
+/// instances of a path) a gradient paint without its ends (but where a camera that shades,
+/// `shading`, lights it between its corners) or on an instance, and dashes it cannot read. A
+/// pre-projected record is judged by its tail's paints and ends, and refused with a blend, reveal
+/// or paint blend.
 fn field_refusal(
     rec: &Record,
     paints: &HashMap<Key, Stops>,
     mesh: bool,
     shading: bool,
-    ce_light: bool,
 ) -> Option<String> {
     let kind = rec.kind.name();
     // A pre-projected record's paints are the colours its camera painted with, lit already, and
@@ -1604,16 +1671,6 @@ fn field_refusal(
         } else {
             None
         }
-    } else if shaded
-        && !ce_light
-        && (rec.kind == RecordKind::FaceGroup
-            || drawn(&p.fill, None)
-            || strokes.iter().any(|(paint, w)| drawn(paint, Some(*w))))
-    {
-        // CE lights each paint into two stops, at the path's start and end corners
-        // (`ThreeDCamera.modified_rgbas`), drawn as a linear gradient; another light model has no
-        // look for a path yet.
-        not_yet("shading under a light model other than CE's")
     } else if (gradient(&p.fill)
         || strokes
             .iter()
@@ -1677,15 +1734,14 @@ fn drawn_points<'a>(
 }
 
 /// Why this build refuses to draw a record, if it does, under a camera that shades or not
-/// (`shading`) and CE's light model or another (`ce_light`), its paint tables in `paints`. It draws
-/// `mesh`, `path`, `face_group`, `points` and `instances` records, pre-projected ones included;
-/// `image` records are Cairo's overlay's.
+/// (`shading`), its paint tables in `paints`. It draws `mesh`, `path`, `face_group`, `points` and
+/// `instances` records, pre-projected ones included, lit by either light model; `image` records
+/// are Cairo's overlay's.
 fn refusal(
     rec: &Record,
     shapes: &HashMap<Key, Shape>,
     paints: &HashMap<Key, Stops>,
     shading: bool,
-    ce_light: bool,
 ) -> Option<Unsupported> {
     let prototype = rec
         .geometry
@@ -1712,7 +1768,7 @@ fn refusal(
             | RecordKind::Instances
     ) {
         let mesh = matches!(prototype, Some(ShapeData::Mesh { .. }));
-        if let Some(reason) = field_refusal(rec, paints, mesh, shading, ce_light) {
+        if let Some(reason) = field_refusal(rec, paints, mesh, shading) {
             reason
         } else if rec.kind == RecordKind::Path && drawn_points(rec, shapes).is_none() {
             "a path's blend of two shapes of different lengths".into()
