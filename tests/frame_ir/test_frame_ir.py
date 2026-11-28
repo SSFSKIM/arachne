@@ -321,7 +321,7 @@ def _square_and(record: object) -> object:
     "make",
     [
         lambda key: Record("volume", {"payload": b"\x01\x02"}),
-        lambda key: Record("path", {"shape": key, "features": 4}),
+        lambda key: Record("path", {"shape": key, "features": 8}),
         lambda key: Record("path", {"shape": key, "place": _SHIFTED}),
         lambda key: Record("path", {"shape": key, "blend": (key, _SHIFTED, 0.5)}),
         lambda key: Record("path", {"shape": key, "dash": (1.0, 0.5, 0.0)}),

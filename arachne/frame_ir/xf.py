@@ -41,8 +41,8 @@ import numpy as np
 #: when a face group carries its faces' ends or stroke widths, 1.4 when a
 #: record carries its joins, 1.5 when a record carries its ``source`` (the
 #: objects it was drawn from) or its ``facing_group``, which nothing drawn
-#: reads.
-XF_VERSION = (1, 5)
+#: reads. 1.6 when an ``instances`` record carries ``parts``.
+XF_VERSION = (1, 6)
 #: The record's paint is CE's background-image fill (Cairo only).
 FEATURE_BACKGROUND_IMAGE = 1
 #: The record carries what a camera of the scene's own made of it
@@ -168,10 +168,21 @@ class Record:
 
 
 def _references(fields: Mapping[str, Any]) -> Iterable[bytes]:
-    for name in ("shape", "colors", "face_fill", "face_stroke", "fill_image"):
+    for name in (
+        "shape",
+        "colors",
+        "face_fill",
+        "face_stroke",
+        "fill_image",
+        "instance_fill",
+        "instance_stroke",
+    ):
         value = fields.get(name)
         if isinstance(value, bytes):
             yield value
+    for part in fields.get("parts", ()):
+        # An instances record's parts (XF 1.6): a shape and a paint block each.
+        yield from _references(part)
     blend = fields.get("blend")
     if blend is not None:
         yield blend[0]
@@ -338,6 +349,15 @@ def _core_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
             k: (v.tolist() if isinstance(v, np.ndarray) else v)
             for k, v in paint_b.items()
         }
+    parts = found.get("parts")
+    if parts is not None:
+        found["parts"] = [
+            {
+                k: (v.tolist() if isinstance(v, np.ndarray) else v)
+                for k, v in part.items()
+            }
+            for part in parts
+        ]
     sub_frame = found.get("sub_frame")
     if sub_frame is not None:
         rank, view, order = sub_frame
