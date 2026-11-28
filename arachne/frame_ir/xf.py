@@ -88,12 +88,20 @@ def paint_key(rows: np.ndarray) -> bytes:
 
 class Shape:
     """Geometry uploaded once under its content key: a path's points (CE's
-    cubic layout) or an image's straight RGBA. ``data`` is read-only.
+    cubic layout) or an image's straight RGBA. ``data`` is read-only;
+    ``emitted`` marks a path the snap hands on as it is.
     """
 
-    __slots__ = ("data", "key", "kind")
+    __slots__ = ("data", "emitted", "key", "kind")
 
-    def __init__(self, kind: str, data: np.ndarray, key: bytes | None = None) -> None:
+    def __init__(
+        self,
+        kind: str,
+        data: np.ndarray,
+        key: bytes | None = None,
+        *,
+        emitted: bool = False,
+    ) -> None:
         if kind == "path":
             data = np.asarray(data, dtype=float).reshape(-1, 3)
             found = path_key(data) if key is None else key
@@ -110,6 +118,9 @@ class Shape:
         self.kind = kind
         self.data = data
         self.key = found
+        #: A path on its own grid already, which the snap hands on as it is: a
+        #: canonical prototype (:mod:`.affine`).
+        self.emitted = emitted
 
 
 class PaintTable:

@@ -282,7 +282,8 @@ def test_paths_whose_joins_are_decided_as_made_are_drawn_unbatched():
     """
     pytest.importorskip("arachne_core")
     with tempconfig(SMALL):
-        spikes = VGroup(_spike(), _spike().shift(0.3 * UP))
+        # One over the other: the same points, so one shape's key.
+        spikes = VGroup(_spike(), _spike())
         groups = [("moving", [spikes])]
         with batching() as tally:
             on, painter = _drawn(Camera(), groups, instancing_on=True, frames=1)
@@ -357,9 +358,12 @@ def _member_shapes(deltas):
 def test_a_stream_regridded_finer_is_batched_as_one_extracted_at_the_finer_grid():
     with tempconfig(SMALL):
         camera = ThreeDCamera()
-        field = _field()
+        # Circles of several sizes: a canonical shape off every grid.
+        circles = VGroup(
+            *(Circle(radius=0.2 + 0.05 * i).shift(0.6 * i * RIGHT) for i in range(10))
+        )
         stream, batched = FrameStream(), Instancing()
-        groups = [("moving", [field])]
+        groups = [("moving", [circles])]
         made = stream.frame(camera, groups)
         coarse, fine = 2.0**-10, 2.0**-16
         sent = [batched(made, coarse)]

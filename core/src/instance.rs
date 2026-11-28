@@ -124,33 +124,43 @@ pub fn produced_path<'a, 't>(
 /// row `i` of the record's tables where its prototype fills or strokes, its stroke at width `i` of
 /// the record's widths where it carries them.
 #[allow(clippy::too_many_arguments)]
-pub fn path_members<'a>(
+pub fn path_members<'a, 't>(
     record: &'a Record,
     prototypes: &[&'a [[f64; 3]]],
     body: &'a Instances,
     fill: &'a Stops,
     stroke: &'a Stops,
+    table: impl Fn(&Key) -> &'t Stops + Copy,
     order: u32,
     out: &mut Vec<PathDraw<'a>>,
 ) {
     let period = body.period();
     debug_assert_eq!(prototypes.len(), period, "one prototype's points per part");
+    // Each prototype's paint block, its paints read through `table` as a path record's are: a
+    // table of one stop is that stop (drawing refused a prototype's gradient).
+    let blocks: Vec<(&PaintBlock, [Option<[f64; 4]>; 3])> = (0..period)
+        .map(|j| {
+            let p = if j == 0 {
+                &record.paint
+            } else {
+                &body.parts[j - 1].paint
+            };
+            let stop = |paint: &Paint| rows(paint, table).map(|r| r[0]);
+            (p, [stop(&p.fill), stop(&p.stroke), stop(&p.background_stroke)])
+        })
+        .collect();
     out.reserve(body.placements.len());
     for (i, placement) in body.placements.iter().enumerate() {
         let j = i % period;
-        let p = if j == 0 {
-            &record.paint
-        } else {
-            &body.parts[j - 1].paint
-        };
+        let (p, [fills, strokes, background]) = blocks[j];
         out.push(PathDraw {
             record,
             points: Cow::Borrowed(prototypes[j]),
             place: compose(placement, &record.geometry.place_a),
             places: [*placement, record.geometry.place_a],
-            fill: one(&p.fill).map(|_| vec![fill.rows()[i]]),
-            stroke: one(&p.stroke).map(|_| vec![stroke.rows()[i]]),
-            background_stroke: one(&p.background_stroke).map(|c| vec![c]),
+            fill: fills.map(|_| vec![fill.rows()[i]]),
+            stroke: strokes.map(|_| vec![stroke.rows()[i]]),
+            background_stroke: background.map(|c| vec![c]),
             ends: None,
             surface: false,
             pre_projected: false,
@@ -221,17 +231,19 @@ pub fn face<'a, 't>(
 
 /// An `instances` record's members whose prototype is a mesh.
 #[allow(clippy::too_many_arguments)]
-pub fn mesh_members<'a>(
+pub fn mesh_members<'a, 't>(
     record: &'a Record,
     positions: &'a [[f64; 3]],
     triangles: &'a [[u32; 3]],
     normals: Option<&'a [[f64; 3]]>,
     body: &'a Instances,
     fill: &'a Stops,
+    table: impl Fn(&Key) -> &'t Stops,
     order: u32,
     out: &mut Vec<MeshDraw<'a>>,
 ) {
-    if one(&record.paint.fill).is_none() {
+    // Filled where the prototype fills, its paint read through `table` (a table of one stop).
+    if rows(&record.paint.fill, table).is_none() {
         return;
     }
     let per = triangles.len() as u32;

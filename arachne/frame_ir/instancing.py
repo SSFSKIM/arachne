@@ -13,19 +13,24 @@ leaves draw as records of the same shapes and placements
 (``core/tests/instances.rs``).
 
 Leaves of one shape (one content key) batch as they are: the prototype is
-their shape, their placements the identity. Others are **factored**: CE
-builds each arrow of a field from scratch, so arrows of different lengths
-and directions share no key. A small path's points ``P`` are written as
-``o + M C``: ``o`` its first point, ``M`` a frame taken from its own points
-(:func:`factor`), ``C`` its canonical shape. Leaves whose canonical shapes,
-snapped to the frame's input grid, are one shape batch with that shape for
-prototype and ``[M | o]`` for placement. A leaf is factored only when its
-canonical shape mapped back reproduces its points within
-:data:`RECONSTRUCTION` scene units; the snap then moves the batched points as
-it moves any (:mod:`.canonical`), so a factored run draws within the parity
-tolerance of its leaves, not byte for byte, and a run is factored only in a
-family of at least :data:`FEWEST_FACTORED_GROUPS` groups: two squares of
-different sizes stay records of their own.
+their shape, their placements their own (the identity, or a record's
+``place``). Others are **factored** (:mod:`.affine`): CE builds each arrow of
+a field from scratch, so arrows of different lengths and directions share no
+key. A small path's points are written as its canonical shape, emitted on its
+own fine grid, placed by an affine of its own; leaves whose canonical shapes
+are one shape batch with it for prototype, each at its affine. A leaf is
+factored only when that shape, placed as the core places it, stands within
+:data:`.affine.RECONSTRUCTION` scene units of its points; the snap then moves
+each placement as it moves any (:mod:`.canonical`), so a factored run draws
+within the parity tolerance of its leaves, not byte for byte, and a run is
+factored only in a family of at least :data:`FEWEST_FACTORED_GROUPS` groups:
+two squares of different sizes stay records of their own.
+
+What an instances record cannot carry keeps its leaves as records: a path
+whose miter joins are decided on its points as made (XF 1.4's ``joins``,
+:func:`.canonical.path_joins`), a record a display's sub-frame names, and,
+in a frame that draws a camera-facing label, a leaf of another source than
+its run's (the core reads each surface's sheet from its record's source).
 
 Only a core drawer reads ``instances`` records: :class:`Instancing` turns
 the deltas a :class:`~.extract.FrameStream` made into the batched deltas the
@@ -38,14 +43,10 @@ Nothing here imports the core.
 from __future__ import annotations
 
 __all__ = [
-    "MOST_FACTORED_POINTS",
     "FEWEST_FACTORED_GROUPS",
     "MOST_PARTS",
-    "RECONSTRUCTION",
-    "Factored",
     "Instancing",
     "expand",
-    "factor",
 ]
 
 from collections.abc import Mapping, Sequence
@@ -54,28 +55,20 @@ from typing import Any
 
 import numpy as np
 
+from .affine import Factored, _apply, factor
 from .xf import Delta, PaintTable, Record, Shape, StreamState
 
 #: The longest group of leaves a run repeats.
 MOST_PARTS = 4
-#: The most points a path is factored with: a small path's (an arrow's shaft
-#: has 4, its tip 12, a dot 32).
-MOST_FACTORED_POINTS = 256
 
 #: The fewest groups a run batches in when its shapes were factored: its
 #: members then draw within the parity tolerance of their own records, not
 #: byte for byte, which only a family of leaves large enough to be drawn
 #: faster batched is worth.
 FEWEST_FACTORED_GROUPS = 8
-#: How far, in scene units, a factored leaf's canonical shape mapped back may
-#: stand from its own points.
-RECONSTRUCTION = 1e-9
 #: Where the slots of instances records start: above every slot a stream
 #: gives a leaf.
 SLOT_BASE = 1 << 31
-#: How far, relative to a path's extent, a point must stand from the line or
-#: plane of the frame's earlier axes to give it another axis.
-_RANK = 1e-6
 
 #: The record fields a leaf may carry and still batch: a plain path's (CE's
 #: own), unshaded, not facing the camera, without a term.
@@ -93,144 +86,13 @@ _BATCHABLE = frozenset(
         "z_index",
         "shade_in_3d",
         "source",
+        "place",
     }
 )
 #: The paint block a prototype shares with its instances, by field name,
 #: beyond its paints: each instance strokes at a width of its own (CE thins
 #: a short arrow's stroke by its length).
 _BLOCK = ("background_stroke_width", "joint", "cap")
-
-
-@dataclass(frozen=True)
-class Factored:
-    """A path's points as ``place[:, :3] @ shape + place[:, 3]``: its
-    canonical ``shape`` (``(n, 3)``) and the affine ``place`` (``(3, 4)``).
-    """
-
-    shape: np.ndarray
-    place: np.ndarray
-
-
-def _cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    return np.array(
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    )
-
-
-def _norm(v: np.ndarray) -> float:
-    return float(np.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
-
-
-def _first(rows: np.ndarray, size: np.ndarray, bound: float) -> int | None:
-    """The first row whose ``size`` exceeds ``bound``."""
-    found = np.flatnonzero(size > bound)
-    return int(found[0]) if len(found) else None
-
-
-def factor(points: Any) -> Factored | None:
-    """``points`` (``(n, 3)``) factored into a canonical shape and a
-    placement, or ``None``: too many points, a value not finite, or a
-    reconstruction off by more than :data:`RECONSTRUCTION`.
-
-    The frame is taken from the points in their order, so every affine
-    image of one path gets one canonical shape: its origin the first point;
-    its first axis the first point apart from it; its second the first point
-    off that axis's line, its third the first off their plane, each by more
-    than :data:`_RANK` of the path's extent. An axis a path does not span
-    (a line spans one, a flat shape two) is made perpendicular to those it
-    spans, as long as the first, and the canonical shape is 0 along it.
-    Elementwise IEEE arithmetic alone, no reduction a vector unit or a BLAS
-    kernel orders, so the factoring is the same on every machine.
-    """
-    p = np.asarray(points, dtype=np.float64)
-    if p.ndim != 2 or p.shape[1] != 3 or not 0 < len(p) <= MOST_FACTORED_POINTS:
-        return None
-    if not np.isfinite(p).all():
-        return None
-    origin = p[0].copy()
-    d = p - origin
-    size = np.sqrt(d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1] + d[:, 2] * d[:, 2])
-    extent = float(size.max())
-    if extent == 0.0:
-        # A path at one point: placed there, its shape at the origin.
-        place = np.zeros((3, 4))
-        place[:, :3] = np.eye(3)
-        place[:, 3] = origin
-        return Factored(np.zeros_like(p), place)
-    i = _first(d, size, _RANK * extent)
-    assert i is not None
-    u = d[i]
-    across = np.array([_norm(_cross(u, row)) for row in d])
-    j = _first(d, across, _RANK * _norm(u) * extent)
-    if j is None:
-        # A line: any perpendicular, as long as u.
-        axis = np.zeros(3)
-        axis[int(np.argmin(np.abs(u)))] = 1.0
-        v = _cross(u, axis)
-        v = v * (_norm(u) / _norm(v))
-    else:
-        v = d[j]
-    n = _cross(u, v)
-    beyond = np.abs(d[:, 0] * n[0] + d[:, 1] * n[1] + d[:, 2] * n[2])
-    k = _first(d, beyond, _RANK * _norm(n) * extent)
-    w = n * (_norm(u) / _norm(n)) if k is None else d[k]
-    m = np.column_stack([u, v, w])
-    # m's inverse by its adjugate, entry by entry.
-    cof = np.array(
-        [
-            [
-                m[1, 1] * m[2, 2] - m[1, 2] * m[2, 1],
-                m[0, 2] * m[2, 1] - m[0, 1] * m[2, 2],
-                m[0, 1] * m[1, 2] - m[0, 2] * m[1, 1],
-            ],
-            [
-                m[1, 2] * m[2, 0] - m[1, 0] * m[2, 2],
-                m[0, 0] * m[2, 2] - m[0, 2] * m[2, 0],
-                m[0, 2] * m[1, 0] - m[0, 0] * m[1, 2],
-            ],
-            [
-                m[1, 0] * m[2, 1] - m[1, 1] * m[2, 0],
-                m[0, 1] * m[2, 0] - m[0, 0] * m[2, 1],
-                m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0],
-            ],
-        ]
-    )
-    det = m[0, 0] * cof[0, 0] + m[0, 1] * cof[1, 0] + m[0, 2] * cof[2, 0]
-    if not (det != 0.0 and np.isfinite(det)):
-        return None
-    inverse = cof / det
-    shape = _apply(inverse, d)
-    if k is None:
-        shape[:, 2] = 0.0
-    if j is None:
-        shape[:, 1] = 0.0
-    back = _apply(m, shape) + origin
-    if not float(np.abs(back - p).max()) <= RECONSTRUCTION:
-        return None
-    place = np.zeros((3, 4))
-    place[:, :3] = m
-    place[:, 3] = origin
-    return Factored(shape, place)
-
-
-def _apply(m: np.ndarray, rows: np.ndarray) -> np.ndarray:
-    """``m @ row`` for each row, as the core places a point: each output the
-    sum of its three products in order.
-    """
-    return np.column_stack(
-        [
-            m[r, 0] * rows[:, 0] + m[r, 1] * rows[:, 1] + m[r, 2] * rows[:, 2]
-            for r in range(3)
-        ]
-    )
-
-
-def _snap(values: np.ndarray, grid: float) -> np.ndarray:
-    return np.round(values / grid) * grid + 0.0
 
 
 def _one(value: Any) -> np.ndarray | None:
@@ -258,6 +120,11 @@ class _Leaf:
     fill: np.ndarray | None
     stroke: np.ndarray | None
     width: float
+    #: Its own placement, where it has one: it then batches only with
+    #: leaves of its own shape, at their placements.
+    place: np.ndarray | None
+    #: What it was drawn from, as one value (XF 1.5's source).
+    source: Any
 
 
 def _leaf(record: Record) -> _Leaf | None:
@@ -284,7 +151,27 @@ def _leaf(record: Record) -> _Leaf | None:
         stroke is None,
         None if background is None else background.tobytes(),
     )
-    return _Leaf(shape, block, fill, stroke, float(fields.get("stroke_width", 0.0)))
+    place = fields.get("place")
+    if place is not None:
+        place = np.asarray(place, dtype=float).reshape(3, 4)
+        if np.array_equal(place, _IDENTITY):
+            place = None
+    return _Leaf(
+        shape,
+        block,
+        fill,
+        stroke,
+        float(fields.get("stroke_width", 0.0)),
+        place,
+        _frozen(fields.get("source")),
+    )
+
+
+def _frozen(value: Any) -> Any:
+    """``value`` (nested lists and tuples) as nested tuples."""
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen(v) for v in value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -322,14 +209,17 @@ class Instancing:
         self._grid: float | None = None
         #: Each leaf record's reading, by its id (the record held beside).
         self._leaves: dict[int, tuple[Record, _Leaf | None]] = {}
-        #: Each shape's factoring, by its key and the grid its canonical
-        #: shape was snapped to.
-        self._factored: dict[
-            tuple[bytes, float], tuple[Factored, bytes, Shape] | None
-        ] = {}
-        #: Each run's record, by its members' records and period.
+        #: Each shape's factoring, by its key.
+        self._factored: dict[bytes, tuple[Factored, bytes, Shape] | None] = {}
+        #: Whether each leaf record carries join decisions, by its id (the
+        #: record and the view it was decided through held beside).
+        self._joins: dict[int, tuple[Record, Any, bool]] = {}
+        #: The slots of the leaves the last batching left as they are for
+        #: their joins.
+        self._joined: set[int] = set()
+        #: Each run's record, by its members' records, period and grid.
         self._runs: dict[
-            tuple[tuple[int, ...], int], tuple[tuple[Record, ...], Record]
+            tuple[tuple[int, ...], int, float], tuple[tuple[Record, ...], Record]
         ] = {}
         #: Shapes and paint tables made here, by key.
         self._made: dict[bytes, Shape | PaintTable] = {}
@@ -369,6 +259,15 @@ class Instancing:
             and not delta.release
             and grid == self._grid
         )
+        if held and delta.view is not None:
+            # A view moves the join decisions of the leaves it strokes.
+            held = self._joined == {
+                slot
+                for _, slot, part in self._in.order
+                if part == 0
+                and self._reading(self._in.records[slot]) is not None
+                and self._needs_joins(self._in.records[slot])
+            }
         if held:
             return found
         self._grid = grid
@@ -431,21 +330,34 @@ class Instancing:
         self._leaves[id(record)] = (record, leaf)
         return leaf
 
-    def _factoring(
-        self, key: bytes, grid: float
-    ) -> tuple[Factored, bytes, Shape] | None:
-        """The factoring of shape ``key`` and its canonical shape snapped to
-        ``grid``, with that shape's key.
+    def _factoring(self, key: bytes) -> tuple[Factored, bytes, Shape] | None:
+        """The factoring of shape ``key`` (:func:`.affine.factor`), with its
+        canonical shape as emitted and that shape's key.
         """
-        at = (key, grid)
-        if at not in self._factored:
+        if key not in self._factored:
             found = factor(self._in.shapes[key].data)
             if found is None:
-                self._factored[at] = None
+                self._factored[key] = None
             else:
-                shape = Shape("path", _snap(found.shape, grid))
-                self._factored[at] = (found, shape.key, shape)
-        return self._factored[at]
+                shape = Shape("path", found.shape, emitted=True)
+                self._factored[key] = (found, shape.key, shape)
+        return self._factored[key]
+
+    def _needs_joins(self, record: Record) -> bool:
+        """Whether ``record`` carries Cairo's join decisions on its points as
+        made (:func:`.canonical.path_joins`, through the view held), which an
+        instances record cannot carry: it is then sent as it is.
+        """
+        from .canonical import path_joins
+
+        view = self._in.view
+        held = self._joins.get(id(record))
+        if held is not None and held[0] is record and held[1] is view:
+            return held[2]
+        points = self._in.shapes[record.fields["shape"]].data
+        needs = view is not None and path_joins(record.fields, points, view) is not None
+        self._joins[id(record)] = (record, view, needs)
+        return needs
 
     def _batched(
         self, grid: float
@@ -464,27 +376,43 @@ class Instancing:
             if record.fields.get("sub_frame") is not None
             for entry in record.fields["sub_frame"][2]
         }
+        # In a frame that draws a camera-facing label, the core reads each
+        # record's source for the surfaces' sheets (``label_plan.rs``): there
+        # a run's members share their source, which the run carries.
+        labelled = any(
+            state.records[slot].fields.get("facing_group") for _, slot, _ in entries
+        )
+        joined: set[int] = set()
         for layer, slot, part in entries:
             record = state.records[slot]
-            leaf = self._reading(record) if part == 0 and slot not in named else None
+            leaf = self._reading(record) if part == 0 else None
+            if leaf is not None and self._needs_joins(record):
+                joined.add(slot)
+                leaf = None
+            if slot in named:
+                leaf = None
             leaves.append(leaf)
             if leaf is None:
                 signatures.append(-1 - len(signatures))
                 continue
-            factoring = self._factoring(leaf.shape, grid)
+            factoring = None if leaf.place is not None else self._factoring(leaf.shape)
             # A leaf that factors batches with those whose canonical shapes are
-            # its own; one that does not, with those of its own shape.
+            # its own; one that does not (or one placed), with those of its own
+            # shape.
             prototype = (
                 ("own", leaf.shape)
                 if factoring is None
                 else ("canonical", factoring[1])
             )
-            name = (layer, prototype, leaf.block)
+            name = (layer, prototype, leaf.block, leaf.source if labelled else None)
             signatures.append(names.setdefault(name, len(names)))
+        self._joined = joined
         records: dict[int, Record] = {}
         batched: set[int] = set()
         order: list[tuple[str, int, int]] = []
-        runs: dict[tuple[tuple[int, ...], int], tuple[tuple[Record, ...], Record]] = {}
+        runs: dict[
+            tuple[tuple[int, ...], int, float], tuple[tuple[Record, ...], Record]
+        ] = {}
         at = 0
         while at < len(entries):
             period, groups = _run_at(signatures, at)
@@ -501,7 +429,8 @@ class Instancing:
                 continue
             end = at + period * groups
             members = [state.records[slot] for _, slot, _ in entries[at:end]]
-            ident = (tuple(id(r) for r in members), period)
+            # The run's record, made at this grid.
+            ident = (tuple(id(r) for r in members), period, grid)
             cached = self._runs.get(ident)
             if cached is not None and all(
                 a is b for a, b in zip(cached[0], members, strict=True)
@@ -528,8 +457,9 @@ class Instancing:
         self._runs = runs
         live = {id(r) for r in state.records.values()}
         self._leaves = {k: v for k, v in self._leaves.items() if k in live}
-        keys = {(r.fields.get("shape"), grid) for r in state.records.values()}
+        keys = {r.fields.get("shape") for r in state.records.values()}
         self._factored = {k: v for k, v in self._factored.items() if k in keys}
+        self._joins = {k: v for k, v in self._joins.items() if k in live}
         return records, order
 
     def _run_record(
@@ -547,10 +477,11 @@ class Instancing:
         for j in range(period):
             own = [leaf for leaf in leaves[j::period] if leaf is not None]
             if len({leaf.shape for leaf in own}) == 1:
-                # One shape throughout: its own key, each at the identity.
-                parts.append(_Part(own[0].shape, None, [_IDENTITY] * len(own), False))
+                # One shape throughout: its own key, each at its own placement.
+                places = [_IDENTITY if leaf.place is None else leaf.place for leaf in own]
+                parts.append(_Part(own[0].shape, None, places, False))
                 continue
-            factorings = [self._factoring(leaf.shape, grid) for leaf in own]
+            factorings = [self._factoring(leaf.shape) for leaf in own]
             assert all(f is not None for f in factorings)
             first = factorings[0]
             assert first is not None

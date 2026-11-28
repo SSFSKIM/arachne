@@ -58,13 +58,16 @@ def batching() -> Iterator[dict[str, int]]:
     batched (:mod:`.instancing`), in the dictionary yielded: ``instances``,
     the instances records made, and ``factored``, the leaves among their
     members whose shape was factored into a canonical shape and a placement.
+    Scopes nest: each counts what is batched while it is open, an outer one
+    what its inner ones count too.
     """
     found = {"instances": 0, "factored": 0}
     _BATCHING.append(found)
     try:
         yield found
     finally:
-        _BATCHING.remove(found)
+        # By identity: two open tallies may hold equal counts.
+        del _BATCHING[next(i for i, t in enumerate(_BATCHING) if t is found)]
 
 
 def _count_batching(*, instances: int = 0, factored: int = 0) -> None:

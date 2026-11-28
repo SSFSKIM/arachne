@@ -77,6 +77,7 @@ __all__ = [
     "canonical_order",
     "frame_grid",
     "input_grid",
+    "path_joins",
     "relative",
     "shades",
     "snap",
@@ -461,7 +462,9 @@ class Canonical:
                 uses.setdefault(key, set()).add(_way(record))
         uploaded: set[bytes] = set()
         for shape in delta.upload:
-            if shape.kind == "image":
+            if shape.kind == "image" or shape.emitted:
+                # An image, or a canonical prototype on its own grid already
+                # (:mod:`.affine`): handed on as it is.
                 found.upload.append(shape)
             elif shape.kind == "path":
                 self._shapes[shape.key] = shape
@@ -729,8 +732,7 @@ class Canonical:
 
     def _joins(self, record: Record) -> tuple[int, ...] | None:
         """A stroked path's miter joins as Cairo decides them on its points as
-        made (:func:`.joins.joins`), where a drawer handed them snapped could
-        decide otherwise; ``None`` elsewhere.
+        made (:func:`path_joins`); ``None`` elsewhere.
         """
         fields = dict(record.fields)
         view = self._view
@@ -739,25 +741,6 @@ class Canonical:
         # The points drawn: a reveal's or a blend's, made from its shapes as
         # the core makes them.
         made = self._points(fields)
-        if fields.get("joint", "auto") not in ("auto", "miter"):
-            return None
-        # Stroked at either end of a paint blend.
-        if not any(
-            block.get(paint) is not None and block.get(width)
-            for block in (fields, fields.get("paint_b") or {})
-            for paint, width in (
-                ("stroke", "stroke_width"),
-                ("background_stroke", "background_stroke_width"),
-            )
-        ):
-            return None
-        # A placed path, or one the camera keeps facing it, is placed by the
-        # drawer otherwise than here: not decided.
-        place = fields.get("place")
-        if fields.get("fixed_orientation_centre") is not None or (
-            place is not None and not np.array_equal(place, _IDENTITY)
-        ):
-            return None
         pre = fields.get("pre_projected")
         if made is not None:
             points = made
@@ -767,13 +750,43 @@ class Canonical:
             if shape is None:
                 return None
             points = shape.data
-        if pre is None and view.get("camera") == "three_d":
-            # The camera places a world-space path's points before Cairo
-            # strokes them; a path in any other space is not decided here.
-            if fields.get("space", "world") != "world":
-                return None
-            points = _placed(view, points)
-        return cairo_joins(points, view)
+        return path_joins(fields, points, view)
+
+
+def path_joins(
+    fields: Mapping[str, Any], points: np.ndarray, view: Mapping[str, Any]
+) -> tuple[int, ...] | None:
+    """The miter joins of a path record of ``fields`` drawing ``points`` (its
+    shape's, or what a reveal or a blend made of it), as Cairo decides them
+    through ``view`` (:func:`.joins.joins`), where a drawer handed them
+    snapped could decide otherwise; ``None`` elsewhere.
+    """
+    if fields.get("joint", "auto") not in ("auto", "miter"):
+        return None
+    # Stroked at either end of a paint blend.
+    if not any(
+        block.get(paint) is not None and block.get(width)
+        for block in (fields, fields.get("paint_b") or {})
+        for paint, width in (
+            ("stroke", "stroke_width"),
+            ("background_stroke", "background_stroke_width"),
+        )
+    ):
+        return None
+    # A placed path, or one the camera keeps facing it, is placed by the
+    # drawer otherwise than here: not decided.
+    place = fields.get("place")
+    if fields.get("fixed_orientation_centre") is not None or (
+        place is not None and not np.array_equal(place, _IDENTITY)
+    ):
+        return None
+    if fields.get("pre_projected") is None and view.get("camera") == "three_d":
+        # The camera places a world-space path's points before Cairo
+        # strokes them; a path in any other space is not decided here.
+        if fields.get("space", "world") != "world":
+            return None
+        points = _placed(view, points)
+    return cairo_joins(points, view)
 
 
 #: CE's ``tolerance_for_point_equality`` and the relative tolerance of its

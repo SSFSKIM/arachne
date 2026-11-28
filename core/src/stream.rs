@@ -1191,6 +1191,7 @@ impl Stream {
                         body,
                         table(&body.fill),
                         table(&body.stroke),
+                        table,
                         order,
                         &mut paths,
                     ),
@@ -1205,6 +1206,7 @@ impl Stream {
                         normals.as_deref(),
                         body,
                         table(&body.fill),
+                        table,
                         order,
                         &mut meshes,
                     ),
@@ -1393,6 +1395,7 @@ impl Stream {
                         body,
                         table(&body.fill),
                         table(&body.stroke),
+                        table,
                         0,
                         &mut paths,
                     )

@@ -394,18 +394,9 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             Body::FaceGroup(f) if f.carries_face_lists() || r.joins.is_some() => Some(f),
             _ => None,
         };
-        // XF 1.6: an instances record's parts, then its widths, follow its joins, written empty
-        // when it carries none (an instances record never does).
-        let members = match &r.body {
-            Body::Instances(i) if i.carries_member_styles() => Some(i),
-            _ => None,
-        };
-        if r.planes.is_some()
-            || r.normals.is_some()
-            || faces.is_some()
-            || r.joins.is_some()
-            || members.is_some()
-        {
+        // An instances record's parts and widths (XF 1.6) are not in its bytes but in the delta's
+        // members section, after XF 1.5's last, where an XF 1.5 reader skips them.
+        if r.planes.is_some() || r.normals.is_some() || faces.is_some() || r.joins.is_some() {
             let planes = r.planes.as_deref().unwrap_or_default();
             w.count(planes.len());
             planes.iter().for_each(|code| w.u8(*code));
@@ -424,17 +415,6 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
         if let Some(joins) = &r.joins {
             w.count(joins.len());
             joins.iter().for_each(|b| w.u8(*b));
-        } else if members.is_some() {
-            w.count(0);
-        }
-        if let Some(i) = members {
-            w.count(i.parts.len());
-            for part in &i.parts {
-                w.key(&part.shape);
-                write_paint_block(w, &part.paint);
-            }
-            w.count(i.widths.len());
-            w.f64s(&i.widths);
         }
     })
 }
@@ -460,11 +440,7 @@ pub fn encoded_version(d: &Delta) -> (u16, u16) {
         .set
         .iter()
         .any(|r| matches!(&r.body, Body::FaceGroup(f) if f.carries_face_lists()));
-    let members = d
-        .set
-        .iter()
-        .any(|r| matches!(&r.body, Body::Instances(i) if i.carries_member_styles()));
-    let minor = if members {
+    let minor = if !member_rows(d).is_empty() {
         6
     } else if carries_source(d) {
         5
@@ -521,10 +497,40 @@ pub fn encode_delta(d: &Delta) -> Vec<u8> {
         if let Some(order) = &d.order {
             write_order(w, order);
         }
-        if carries_source(d) {
+        // XF 1.6's members section follows XF 1.5's, written empty when it is.
+        let members = member_rows(d);
+        if carries_source(d) || !members.is_empty() {
             write_source(w, d);
         }
+        if !members.is_empty() {
+            w.count(members.len());
+            for (slot, i) in members {
+                w.u32(slot);
+                w.count(i.parts.len());
+                for part in &i.parts {
+                    w.key(&part.shape);
+                    write_paint_block(w, &part.paint);
+                }
+                w.count(i.widths.len());
+                w.f64s(&i.widths);
+            }
+        }
     })
+}
+
+/// XF 1.6's rows: each instances record the delta sets carrying parts or widths (the last record
+/// of its slot), by slot, in the order it sets them.
+fn member_rows(d: &Delta) -> Vec<(u32, &Instances)> {
+    let last: HashMap<u32, usize> = d.set.iter().enumerate().map(|(i, r)| (r.slot, i)).collect();
+    d.set
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| last[&r.slot] == *i)
+        .filter_map(|(_, r)| match &r.body {
+            Body::Instances(i) if i.carries_member_styles() => Some((r.slot, i)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Whether the delta holds a row ([`source_rows`]).
@@ -1100,32 +1106,6 @@ fn decode_record(r: &mut R) -> Result<Record> {
         let n = r.count(1)?;
         rec.joins = Some((0..n).map(|_| r.u8()).collect::<Result<Vec<_>>>()?);
     }
-    // XF 1.6: an instances record's parts, then its widths, after joins written empty (an
-    // instances record carries none).
-    if r.at < r.b.len()
-        && let Body::Instances(i) = &mut rec.body
-    {
-        if rec.joins.as_ref().is_some_and(Vec::is_empty) {
-            rec.joins = None;
-        }
-        let n = r.count(16)?;
-        i.parts = (0..n)
-            .map(|_| {
-                Ok(Part {
-                    shape: r.key()?,
-                    paint: read_paint_block(r)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let n = r.count(8)?;
-        i.widths = (0..n).map(|_| r.f64()).collect::<Result<Vec<_>>>()?;
-    }
-    let members = matches!(&rec.body, Body::Instances(i) if i.carries_member_styles());
-    if (rec.features & FEATURE_MEMBERS != 0) != members {
-        return Err(XfError::Invalid(
-            "members feature bit and an instances record's member styles disagree".into(),
-        ));
-    }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(rec)
 }
@@ -1133,6 +1113,15 @@ fn decode_record(r: &mut R) -> Result<Record> {
 /// Reads one delta. A major version other than this build's is refused; a newer minor is read,
 /// with what it appended skipped.
 pub fn decode_delta(bytes: &[u8]) -> Result<Delta> {
+    decode_delta_as(bytes, XF_VERSION.1)
+}
+
+/// Reads one delta as a reader of XF 1.`minor` (at most this build's) reads it: what a later
+/// minor appended to the delta is skipped, and nothing it added is checked. Every record reads as
+/// this build reads it (no minor since XF 1.5 appends to a record's bytes), so at 5 this is XF
+/// 1.5's reader: what the compatibility of later minors is tested against.
+pub fn decode_delta_as(bytes: &[u8], minor: u16) -> Result<Delta> {
+    assert!(minor <= XF_VERSION.1, "a reader of a minor this build knows");
     let mut r = R::new(bytes, "a delta");
     let version = (r.u16()?, r.u16()?);
     if version.0 != XF_VERSION.0 {
@@ -1187,11 +1176,61 @@ pub fn decode_delta(bytes: &[u8]) -> Result<Delta> {
         d.order = Some(read_order(&mut r)?);
     }
     // XF 1.5: the records' sources, when the delta carries them.
-    if r.at < r.b.len() {
+    if minor >= 5 && r.at < r.b.len() {
         read_source(&mut r, &mut d)?;
+    }
+    // XF 1.6: the instances records' parts and widths, when the delta carries them.
+    if minor >= 6 {
+        if r.at < r.b.len() {
+            read_members(&mut r, &mut d)?;
+        }
+        if let Some(rec) = d.set.iter().find(|rec| {
+            (rec.features & FEATURE_MEMBERS != 0)
+                != matches!(&rec.body, Body::Instances(i) if i.carries_member_styles())
+        }) {
+            return Err(XfError::Invalid(format!(
+                "slot {}: members feature bit and an instances record's member styles disagree",
+                rec.slot
+            )));
+        }
     }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(d)
+}
+
+/// XF 1.6's section: each row's parts and widths, set on the last record of its slot the delta
+/// sets, which is an instances record.
+fn read_members(r: &mut R, d: &mut Delta) -> Result<()> {
+    let last: HashMap<u32, usize> = d.set.iter().enumerate().map(|(i, rec)| (rec.slot, i)).collect();
+    let mut rowed = HashSet::new();
+    let rows = r.count(12)?;
+    for _ in 0..rows {
+        let slot = r.u32()?;
+        let n = r.count(16)?;
+        let parts = (0..n)
+            .map(|_| {
+                Ok(Part {
+                    shape: r.key()?,
+                    paint: read_paint_block(r)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let n = r.count(8)?;
+        let widths = (0..n).map(|_| r.f64()).collect::<Result<Vec<_>>>()?;
+        let refuse = |why: String| XfError::Invalid(format!("a delta's members: {why}"));
+        if !rowed.insert(slot) {
+            return Err(refuse(format!("slot {slot} is named by an earlier row")));
+        }
+        let Some(Body::Instances(i)) = last.get(&slot).map(|&k| &mut d.set[k].body) else {
+            return Err(refuse(format!("slot {slot} sets no instances record")));
+        };
+        if parts.is_empty() && widths.is_empty() {
+            return Err(refuse(format!("the row of slot {slot} carries nothing")));
+        }
+        i.parts = parts;
+        i.widths = widths;
+    }
+    Ok(())
 }
 
 /// XF 1.5's section: each row's source and facing group set on the last record of its slot the
