@@ -18,7 +18,12 @@ from . import scenes
 
 pytest.importorskip("arachne_core")
 
-SIZE = {"pixel_width": scenes.WIDTH, "pixel_height": scenes.HEIGHT}
+#: Lit by CE's light model, the one whose pixels the checks record.
+SIZE = {
+    "pixel_width": scenes.WIDTH,
+    "pixel_height": scenes.HEIGHT,
+    "core_light": "ce",
+}
 
 
 @functools.cache

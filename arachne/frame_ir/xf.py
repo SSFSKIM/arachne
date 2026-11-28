@@ -41,8 +41,9 @@ import numpy as np
 #: when a face group carries its faces' ends or stroke widths, 1.4 when a
 #: record carries its joins, 1.5 when a record carries its ``source`` (the
 #: objects it was drawn from) or its ``facing_group``, which nothing drawn
-#: reads.
-XF_VERSION = (1, 5)
+#: reads, 1.6 when a face group carries its ``corner_normals`` (the soft
+#: light's normals at its faces' corners).
+XF_VERSION = (1, 6)
 #: The record's paint is CE's background-image fill (Cairo only).
 FEATURE_BACKGROUND_IMAGE = 1
 #: The record carries what a camera of the scene's own made of it
