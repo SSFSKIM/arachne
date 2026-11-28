@@ -226,14 +226,15 @@ fn an_xf_1_4_reader_reads_the_delta_without_its_section() {
 fn bytes_after_the_section_belong_to_a_newer_minor() {
     let mut d = empty();
     d.set = vec![glyph(9)];
+    // XF 1.6's section follows (here empty), then what a newer minor appended.
     let mut bytes = wire::encode_delta(&d);
-    bytes.extend_from_slice(&[0xff, 0xfe, 0xfd]);
-    bytes[2..4].copy_from_slice(&6u16.to_le_bytes());
+    bytes.extend_from_slice(&[u32(0), vec![0xff, 0xfe, 0xfd]].concat());
+    bytes[2..4].copy_from_slice(&7u16.to_le_bytes());
     let read = wire::decode_delta(&bytes).unwrap();
     assert_eq!(read.set, d.set);
     // A newer minor writes the section empty when no record carries one.
     let mut bytes = wire::encode_delta(&empty());
-    bytes.extend_from_slice(&[u32(0), u32(0), vec![0xff]].concat());
+    bytes.extend_from_slice(&[u32(0), u32(0), u32(0), vec![0xff]].concat());
     assert_eq!(wire::decode_delta(&bytes).unwrap().set, Vec::new());
 }
 

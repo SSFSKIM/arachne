@@ -36,7 +36,8 @@ from .stress_scenes import FPS, SCENES, ConeApex, SpherePoles
 
 pytest.importorskip("arachne_core")
 
-FULL = {"pixel_width": 854, "pixel_height": 480}
+#: Lit by CE's light model, as Cairo lights the frames compared.
+FULL = {"pixel_width": 854, "pixel_height": 480, "core_light": "ce"}
 #: How far from a degenerate corner (pixels) the seam band is cut away, so
 #: the pixels around a pole or an apex stay in the strict count.
 CORNER_RADIUS = 3.0

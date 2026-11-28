@@ -14,7 +14,7 @@ pub use key::Key;
 ///
 /// From XF 1 the layout is append-only: a new field or kind bumps the minor, and nothing removes
 /// or retypes a field.
-pub const XF_VERSION: (u16, u16) = (1, 5);
+pub const XF_VERSION: (u16, u16) = (1, 6);
 
 /// CE's background-image fill: paint the path into a separate array and multiply by an image.
 /// Carried by XF, drawn by Cairo only in this build.
@@ -613,6 +613,12 @@ pub struct Record {
     /// The camera-facing label the record belongs to, by a token its glyphs share (XF 1.5); `0`
     /// for none. Read only to place camera-facing labels ([`crate::label_plan`]).
     pub facing_group: u32,
+    /// The normals the soft light lights a face group's faces by at their corners, decided before
+    /// its geometry was snapped ([`crate::normals::corner_normals`], XF 1.6): four per face, in
+    /// face order, corner `k` at the face's point `4k`; smooth across the surface's grid. Carried
+    /// for face groups the camera shades under the soft light only. `None` when the writer did not
+    /// decide: the drawer finds them from the points it is handed.
+    pub corner_normals: Option<Vec<[f64; 3]>>,
 }
 
 impl Record {
@@ -638,6 +644,7 @@ impl Record {
             joins: None,
             source: Vec::new(),
             facing_group: 0,
+            corner_normals: None,
         }
     }
 

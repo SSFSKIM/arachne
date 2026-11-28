@@ -6,7 +6,8 @@ layout of CE's pixel array, or raises :class:`Unsupported` (``render.unsupported
 record carries what this build cannot draw. ``Stream.draw_resolves`` also returns how each pixel
 was resolved, as indices into ``RESOLVES``. ``read_xf`` and ``write_xf`` read and write XF's binary
 form, used for fixtures. ``probe_fixtures`` builds the class probes' streams, the parity kit's
-fixtures (``python -m arachne_core.parity``).
+fixtures (``python -m arachne_core.parity``). ``SOFT_DIFFUSE`` is the soft light's default
+``(ambient, wrap)``, the light a 3D scene is drawn in unless its view names another.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from arachne_core._core import (
     COVERAGE_TO_SAMPLE_LSB,
     FEATURES,
     RESOLVES,
+    SOFT_DIFFUSE,
     XF_VERSION,
     ApplyStats,
     FrameDelta,
@@ -29,6 +31,7 @@ __all__ = [
     "COVERAGE_TO_SAMPLE_LSB",
     "FEATURES",
     "RESOLVES",
+    "SOFT_DIFFUSE",
     "XF_VERSION",
     "ApplyStats",
     "FrameDelta",

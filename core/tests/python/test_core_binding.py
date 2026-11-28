@@ -32,7 +32,7 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
 
 
 def test_the_version_is_xf_1():
-    assert ac.XF_VERSION == (1, 5)
+    assert ac.XF_VERSION == (1, 6)
 
 
 GLYPH_SOURCE = (

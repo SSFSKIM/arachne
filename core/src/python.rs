@@ -783,6 +783,7 @@ impl PyFrameDelta {
         record.body = body_of(kind, &fields)?;
         record.planes = fields.get::<Vec<u8>>("planes")?;
         record.normals = fields.get::<Vec<[f64; 3]>>("normals")?;
+        record.corner_normals = fields.get::<Vec<[f64; 3]>>("corner_normals")?;
         record.joins = fields.get::<Vec<u8>>("joins")?;
         record.source = source_of(py, fields.or("source", Vec::new())?)?;
         record.facing_group = fields.or("facing_group", 0u32)?;
@@ -1028,6 +1029,21 @@ impl PyStream {
     ) -> PyResult<BTreeMap<u32, Vec<[f64; 3]>>> {
         self.stream
             .normals(&slots, grid)
+            .map_err(|e| draw_error(py, e))
+    }
+
+    /// Per slot of ``slots`` holding a face group the camera shades under the soft light, the
+    /// normals its faces are lit by at their corners, decided from the points the stream holds: a
+    /// list of ``(x, y, z)``, four per face in face order, smooth across its surface's grid
+    /// (``core/XF.md``, XF 1.6). Other slots have no entry, and under CE's light none has. Nothing
+    /// is drawn.
+    fn corner_normals(
+        &self,
+        py: Python<'_>,
+        slots: Vec<u32>,
+    ) -> PyResult<BTreeMap<u32, Vec<[f64; 3]>>> {
+        self.stream
+            .corner_normals(&slots)
             .map_err(|e| draw_error(py, e))
     }
 
@@ -1723,6 +1739,8 @@ fn take_counts() -> Vec<(&'static str, u64)> {
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("XF_VERSION", XF_VERSION)?;
+    let soft = crate::shade::SOFT_DIFFUSE;
+    m.add("SOFT_DIFFUSE", (soft.ambient, soft.wrap))?;
     let features = PyDict::new(m.py());
     features.set_item("background_image", FEATURE_BACKGROUND_IMAGE)?;
     features.set_item("pre_projected", FEATURE_PRE_PROJECTED)?;

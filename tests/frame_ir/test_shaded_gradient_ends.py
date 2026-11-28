@@ -29,7 +29,8 @@ from ..timeline.conftest import render
 pytest.importorskip("arachne_core")
 
 FPS = 15
-FULL = {"pixel_width": 854, "pixel_height": 480}
+#: Lit by CE's light model, as Cairo lights the frames compared.
+FULL = {"pixel_width": 854, "pixel_height": 480, "core_light": "ce"}
 #: Levels per channel the two paths may differ by inside a stroke.
 LEVELS = 2
 #: Levels the two lit stops of a ramp under test differ by at least, so the ramp is there to see.

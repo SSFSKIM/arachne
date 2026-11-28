@@ -454,7 +454,9 @@ pub fn encoded_version(d: &Delta) -> (u16, u16) {
         .set
         .iter()
         .any(|r| matches!(&r.body, Body::FaceGroup(f) if f.carries_face_lists()));
-    let minor = if carries_source(d) {
+    let minor = if carries_corner_normals(d) {
+        6
+    } else if carries_source(d) {
         5
     } else if d.set.iter().any(|r| r.joins.is_some()) {
         4
@@ -509,10 +511,40 @@ pub fn encode_delta(d: &Delta) -> Vec<u8> {
         if let Some(order) = &d.order {
             write_order(w, order);
         }
-        if carries_source(d) {
+        // XF 1.6's section follows XF 1.5's, which is written, empty, where only it is carried.
+        let corner_normals = carries_corner_normals(d);
+        if carries_source(d) || corner_normals {
             write_source(w, d);
         }
+        if corner_normals {
+            write_corner_normals(w, d);
+        }
     })
+}
+
+/// Whether a record the delta sets carries XF 1.6's corner normals.
+fn carries_corner_normals(d: &Delta) -> bool {
+    d.set.iter().any(|r| r.corner_normals.is_some())
+}
+
+/// XF 1.6's section, after XF 1.5's: a row for each record the delta sets carrying corner normals,
+/// in the order it sets them (of a slot set more than once, its last record's alone), each its
+/// slot and its normals.
+fn write_corner_normals(w: &mut W, d: &Delta) {
+    let last: HashMap<u32, usize> = d.set.iter().enumerate().map(|(i, r)| (r.slot, i)).collect();
+    let rows: Vec<(u32, &[[f64; 3]])> = d
+        .set
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| last[&r.slot] == *i)
+        .filter_map(|(_, r)| Some((r.slot, r.corner_normals.as_deref()?)))
+        .collect();
+    w.count(rows.len());
+    for (slot, normals) in rows {
+        w.u32(slot);
+        w.count(normals.len());
+        normals.iter().for_each(|n| w.f64s(n));
+    }
 }
 
 /// Whether the delta holds a row ([`source_rows`]).
@@ -1118,8 +1150,48 @@ pub fn decode_delta(bytes: &[u8]) -> Result<Delta> {
     if r.at < r.b.len() {
         read_source(&mut r, &mut d)?;
     }
+    // XF 1.6: the records' corner normals, when the delta carries them.
+    if r.at < r.b.len() {
+        read_corner_normals(&mut r, &mut d)?;
+    }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(d)
+}
+
+/// XF 1.6's section: each row's corner normals set on the last record of its slot the delta sets;
+/// the whole section read and checked before the delta is returned. A row names a slot once, a
+/// slot the delta sets, and at least one normal.
+fn read_corner_normals(r: &mut R, d: &mut Delta) -> Result<()> {
+    let refuse = |code: &str, why: String| {
+        XfError::Invalid(format!("a delta's corner normals: {code}: {why}"))
+    };
+    let set: HashMap<u32, usize> = d
+        .set
+        .iter()
+        .enumerate()
+        .map(|(i, rec)| (rec.slot, i))
+        .collect();
+    let mut rowed = HashSet::new();
+    let rows = r.count(8)?;
+    for _ in 0..rows {
+        let slot = r.u32()?;
+        let n = r.count(24)?;
+        let normals = (0..n).map(|_| r.f64s()).collect::<Result<Vec<_>>>()?;
+        if !rowed.insert(slot) {
+            let why = format!("slot {slot} is named by an earlier row");
+            return Err(refuse("slot_named_twice", why));
+        }
+        let Some(&i) = set.get(&slot) else {
+            let why = format!("slot {slot} is not set by the delta");
+            return Err(refuse("slot_not_set", why));
+        };
+        if normals.is_empty() {
+            let why = format!("the row of slot {slot} carries nothing");
+            return Err(refuse("row_empty", why));
+        }
+        d.set[i].corner_normals = Some(normals);
+    }
+    Ok(())
 }
 
 /// XF 1.5's section: each row's source and facing group set on the last record of its slot the

@@ -350,7 +350,14 @@ def test_what_the_core_is_handed_carries_its_grid_and_planes(scene_class, monkey
                 if record.fields.get("shade_in_3d") and self._view.get(
                     "should_apply_shading"
                 ):
-                    assert "normals" in record.fields, f"slot {slot}: {record.kind}"
+                    # Under the soft light a face group's corners are lit by
+                    # the smooth normals across its grid instead.
+                    lit_by = (
+                        "corner_normals"
+                        if record.kind == "face_group" and self.light is not None
+                        else "normals"
+                    )
+                    assert lit_by in record.fields, f"slot {slot}: {record.kind}"
                     shaded.append(slot)
             if record.fields.get("sub_frame") is not None:
                 assert record.fields["sub_frame"][1]["input_grid"] == self.grid
@@ -391,7 +398,8 @@ def test_a_thin_curved_face_keeps_its_coverage_when_snapped():
     decided before the snap, they keep their curve's depth, and the line
     covers what Cairo covers, within 1% (its red, less its green, summed).
     """
-    full = {"pixel_width": 854, "pixel_height": 480}
+    # Lit by CE's light model, as Cairo lights it: the red compared is coverage.
+    full = {"pixel_width": 854, "pixel_height": 480, "core_light": "ce"}
     _, cairo = render(LineAcrossTheFrame, FPS, draw_path="ir_cairo", **full)
     _, core = render(LineAcrossTheFrame, FPS, draw_path="core", **full)
 

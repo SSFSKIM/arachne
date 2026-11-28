@@ -86,9 +86,11 @@ def _camera():
     return camera
 
 
-def _painted(surface, size=SMALL):
-    """``surface`` drawn on the core from its record: the painter, its frame."""
-    with tempconfig(size):
+def _painted(surface, size=SMALL, light="soft"):
+    """``surface`` drawn on the core from its record, lit by ``light``: the
+    painter, its frame.
+    """
+    with tempconfig({**size, "core_light": light}):
         painter = CorePainter()
         frame = painter.paint(_camera(), [("moving", [surface])], roots=[surface])
     return painter, frame
@@ -170,10 +172,10 @@ def test_a_surface_mid_write_is_one_face_group_each_face_at_its_own_width(make):
     )
 
 
-#: The core's frame of the ellipsoid undrawn and whole, as it drew them
-#: before a group carried its faces' ends or widths; the whole one as it
-#: draws once a stroke under 0.8 px is stroked at a share of its half width
-#: (its faces' strokes are about 0.07 px wide here).
+#: The core's frame of the ellipsoid undrawn and whole, lit by CE's light
+#: model, as it drew them before a group carried its faces' ends or widths;
+#: the whole one as it draws once a stroke under 0.8 px is stroked at a share
+#: of its half width (its faces' strokes are about 0.07 px wide here).
 FRAMES = {
     0.0: "fc779d8b138f5c8d0e3a0a2a4e901c6a4f6d3945ee4cdc7a63edee0f2ef02456",
     1.0: "8126cfcdd1d7b97f1c017c1abe26c12f419a34b94f1a1265c23cfe61a9f89835",
@@ -186,7 +188,7 @@ def test_a_surface_undrawn_or_whole_draws_the_bytes_it_drew(alpha):
     and draws the frame it drew.
     """
     surface = _at(_ellipsoid(), Create, alpha)
-    painter, frame = _painted(surface)
+    painter, frame = _painted(surface, light="ce")
     _, record = _group(painter, surface)
     assert not {"face_ends", "face_widths"} & record.fields.keys()
     assert hashlib.sha256(frame.tobytes()).hexdigest() == FRAMES[alpha]

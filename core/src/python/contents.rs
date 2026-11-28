@@ -196,6 +196,13 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
             .collect::<PyResult<Vec<_>>>()?;
         out.set_item("normals", PyTuple::new(py, rows)?)?;
     }
+    if let Some(normals) = &r.corner_normals {
+        let rows = normals
+            .iter()
+            .map(|n| PyTuple::new(py, n))
+            .collect::<PyResult<Vec<_>>>()?;
+        out.set_item("corner_normals", PyTuple::new(py, rows)?)?;
+    }
     if let Some(p) = &r.pre_projected {
         let projected = PyDict::new(py);
         projected.set_item("points", key(py, p.points))?;

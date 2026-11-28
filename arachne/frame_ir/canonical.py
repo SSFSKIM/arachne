@@ -48,6 +48,17 @@ control arm a few 1/256 px long or a turn near the miter limit leaves to the
 last bits the snap moves (:mod:`.joins`); a path with such a join carries
 Cairo's decisions as its ``joins`` (XF 1.4).
 
+The light the core draws in is the writer's to state (``light``, the
+view's ``light_model`` on a 3D camera). Under the soft light the normals a
+path is lit by are its own (flat where it lies on a plane), and a face
+group's faces are lit at their four corners by normals smooth across its
+surface's grid, welded at a closed seam and joined at a pole: decided by the
+core on the values as made (``Stream.corner_normals``), carried as the
+record's ``corner_normals`` (XF 1.6) and snapped to :data:`RATIO_GRID`.
+Under CE's light (``light`` ``None``) the view states none and nothing of the
+soft light is decided or written: the core is handed what it was handed
+before the soft light existed.
+
 Whether a path's cubics join and whether its subpaths close are decided by
 the core on the snapped points, by CE's point-equality rule (each coordinate
 within ``1e-6 + 1e-5 * |b|``). A comparison is sensitive only at its
@@ -83,6 +94,7 @@ __all__ = [
 ]
 
 import contextlib
+import dataclasses
 import math
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from typing import Any
@@ -376,9 +388,17 @@ class Canonical:
     With ``planes`` (the core's input), a stream of the deltas as made, held
     by the core (``arachne_core.Stream``), decides how each path a record
     draws lies, and the snapped record carries it.
+
+    ``light`` is the light model a 3D view is drawn in, ``(code, parameters)``
+    as the view's ``light_model`` takes it; ``None`` states none, which the
+    core reads as CE's.
     """
 
-    def __init__(self, *, planes: bool = True) -> None:
+    def __init__(
+        self, *, planes: bool = True, light: tuple[int, tuple[float, ...]] | None = None
+    ) -> None:
+        #: The light model a 3D view is stated in, or ``None``.
+        self.light = light
         #: Each path shape of the stream held, by its own key, as the scene
         #: made it.
         self._shapes: dict[bytes, Shape] = {}
@@ -424,6 +444,7 @@ class Canonical:
         self._made = {}
         self._touched = {}
         shading = shades(self._view)
+        delta = self._lit(delta)
         if delta.view is not None:
             self._view = dict(delta.view)
         reshade = shades(self._view) != shading
@@ -513,8 +534,12 @@ class Canonical:
                 and self._joins(record) != self._joins_sent.get(slot)
             )
         normals = self._normals(setting, grid)
+        corners = self._corner_normals(setting)
         found.set = [
-            (slot, self._record(slot, record, found, normals.get(slot)))
+            (
+                slot,
+                self._record(slot, record, found, normals.get(slot), corners.get(slot)),
+            )
             for slot, record in setting.items()
         ]
         for slot in delta.remove:
@@ -565,6 +590,38 @@ class Canonical:
             slot: [snap(tuple(n), RATIO_GRID) for n in normals]
             for slot, normals in self._decider.normals(slots, grid).items()
         }
+
+    def _lit(self, delta: Delta) -> Delta:
+        """``delta`` with its 3D view stated in :attr:`light`, where it has
+        one and a light is stated.
+        """
+        view = delta.view
+        if self.light is None or view is None or view.get("camera") != "three_d":
+            return delta
+        return dataclasses.replace(delta, view={**view, "light_model": self.light})
+
+    def _corner_normals(
+        self, setting: Mapping[int, Record]
+    ) -> dict[int, tuple[tuple[float, ...], ...]]:
+        """The corner normals each shaded face group of ``setting`` is lit by
+        under the soft light, decided by the core on the values as made,
+        snapped to :data:`RATIO_GRID`; by slot. None under CE's light.
+        """
+        slots = [
+            slot for slot, record in setting.items() if record.kind == "face_group"
+        ]
+        if (
+            self._decider is None
+            or not slots
+            or self._view is None
+            or self.light is None
+        ):
+            return {}
+        found = {}
+        for slot, normals in self._decider.corner_normals(slots).items():
+            snapped = snap(np.asarray(normals, dtype=np.float64), RATIO_GRID)
+            found[slot] = tuple(map(tuple, snapped.tolist()))
+        return found
 
     def _hold(
         self, holder: Any, points: Any, found: Delta, uses: Set[Way] = frozenset({1})
@@ -659,6 +716,7 @@ class Canonical:
         record: Record,
         found: Delta,
         normals: list[tuple[float, ...]] | None = None,
+        corner_normals: tuple[tuple[float, ...], ...] | None = None,
     ) -> Record:
         assert self.grid is not None
         grid = self.grid
@@ -698,6 +756,8 @@ class Canonical:
             snapped["planes"] = self._planes[slot]
         if normals is not None:
             snapped["normals"] = normals
+        if corner_normals is not None:
+            snapped["corner_normals"] = corner_normals
         decided = self._joins(record)
         self._joins_sent[slot] = decided
         if decided is not None:
