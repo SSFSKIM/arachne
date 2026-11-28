@@ -14,7 +14,7 @@ pub use key::Key;
 ///
 /// From XF 1 the layout is append-only: a new field or kind bumps the minor, and nothing removes
 /// or retypes a field.
-pub const XF_VERSION: (u16, u16) = (1, 5);
+pub const XF_VERSION: (u16, u16) = (1, 6);
 
 /// CE's background-image fill: paint the path into a separate array and multiply by an image.
 /// Carried by XF, drawn by Cairo only in this build.
@@ -24,8 +24,16 @@ pub const FEATURE_BACKGROUND_IMAGE: u64 = 1;
 /// Carried by XF 1.1, drawn by Cairo only in this build.
 pub const FEATURE_PRE_PROJECTED: u64 = 2;
 
+/// An `instances` record whose members carry styles of their own (XF 1.6): they cycle through
+/// several prototypes ([`Instances::parts`]: a run of leaves repeating a group of them, as an
+/// arrow's shaft and tip), or stroke at widths of their own ([`Instances::widths`]: CE thins a
+/// short arrow's stroke by its length). Set exactly when the record carries either, so a drawer
+/// that does not know them refuses the record rather than drawing every member as its first
+/// prototype.
+pub const FEATURE_MEMBERS: u64 = 4;
+
 /// Feature bits this build understands. A drawer can still refuse a known feature it cannot draw.
-pub const KNOWN_FEATURES: u64 = FEATURE_BACKGROUND_IMAGE | FEATURE_PRE_PROJECTED;
+pub const KNOWN_FEATURES: u64 = FEATURE_BACKGROUND_IMAGE | FEATURE_PRE_PROJECTED | FEATURE_MEMBERS;
 
 /// An exact time: numerator over a positive denominator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -514,7 +522,8 @@ pub enum ImageSource {
     },
 }
 
-/// One run of batched leaves sharing a prototype shape and paint block.
+/// One run of batched leaves sharing a prototype shape and paint block, or, with parts, a run
+/// of groups of leaves each sharing one per place in the group.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Instances {
     pub placements: Vec<Affine>,
@@ -523,6 +532,34 @@ pub struct Instances {
     pub stroke: Key,
     /// Per-instance object refs.
     pub objects: Vec<u32>,
+    /// XF 1.6: the prototypes after the record's own, for a run whose leaves repeat a group of
+    /// `parts.len() + 1`: instance `i` draws prototype `i % (parts.len() + 1)`, 0 the record's
+    /// shape and paint block, `j > 0` part `j - 1`'s. Empty: every instance the record's own.
+    /// Path prototypes only.
+    pub parts: Vec<Part>,
+    /// XF 1.6: per instance, its stroke width in CE's units, finite and at least 0. Empty: each
+    /// at its prototype's.
+    pub widths: Vec<f64>,
+}
+
+impl Instances {
+    /// How many prototypes the instances cycle through: the record's own and its parts.
+    pub fn period(&self) -> usize {
+        self.parts.len() + 1
+    }
+
+    /// Whether it carries XF 1.6's member styles ([`FEATURE_MEMBERS`]).
+    pub fn carries_member_styles(&self) -> bool {
+        !self.parts.is_empty() || !self.widths.is_empty()
+    }
+}
+
+/// One prototype of an `instances` record beyond its own (XF 1.6): a path shape and the paint
+/// block its instances share, with the record's own block's meaning.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Part {
+    pub shape: Key,
+    pub paint: PaintBlock,
 }
 
 /// The kind-specific part of a record.
@@ -665,6 +702,9 @@ impl Record {
         {
             keys.push(*key);
         }
+        if let Body::Instances(i) = &self.body {
+            keys.extend(i.parts.iter().map(|p| p.shape));
+        }
         keys
     }
 
@@ -676,13 +716,19 @@ impl Record {
                 keys.push(*k);
             }
         };
-        paint(&self.paint.fill);
-        paint(&self.paint.stroke);
-        paint(&self.paint.background_stroke);
-        if let Some(b) = &self.paint.paint_b {
-            paint(&b.fill);
-            paint(&b.stroke);
-            paint(&b.background_stroke);
+        let blocks = std::iter::once(&self.paint).chain(match &self.body {
+            Body::Instances(i) => i.parts.iter().map(|p| &p.paint).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        });
+        for block in blocks {
+            paint(&block.fill);
+            paint(&block.stroke);
+            paint(&block.background_stroke);
+            if let Some(b) = &block.paint_b {
+                paint(&b.fill);
+                paint(&b.stroke);
+                paint(&b.background_stroke);
+            }
         }
         if let Some(p) = &self.pre_projected {
             paint(&p.fill);

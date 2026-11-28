@@ -309,6 +309,13 @@ _RECORD: dict[str, Callable[[Any, float], Any]] = {
     "face_widths": _as_given,
     "colors": _as_given,
     "radius": _as_given,
+    # An instances record's own: its members' colour tables and objects; its
+    # placements are an affine's (above) and its parts' fields are snapped
+    # as a record's (:meth:`Canonical._part`).
+    "instance_fill": _as_given,
+    "instance_stroke": _as_given,
+    "instance_widths": _as_given,
+    "objects": _as_given,
     "resampling": _as_given,
     "image_opacity": _as_given,
     # What the record was drawn from: no geometry; only a camera-facing label's
@@ -692,6 +699,8 @@ class Canonical:
             elif name == "sub_frame":
                 rank, view, order = value
                 snapped[name] = (rank, self._view_of(view), list(order))
+            elif name == "parts":
+                snapped[name] = tuple(self._part(part, grid) for part in value)
             else:
                 snapped[name] = _classified(_RECORD, "record", name)(value, grid)
         if slot in self._planes:
@@ -703,6 +712,20 @@ class Canonical:
         if decided is not None:
             snapped["joins"] = decided
         return Record(record.kind, snapped)
+
+    def _part(self, part: Mapping[str, Any], grid: float) -> dict[str, Any]:
+        """An instances record's part (XF 1.6) as the core receives it: its
+        shape's key the snapped shape's, its other fields snapped as a
+        record's.
+        """
+        return {
+            name: (
+                self._key(value)
+                if name == "shape"
+                else _classified(_RECORD, "part", name)(value, grid)
+            )
+            for name, value in part.items()
+        }
 
     def _joins(self, record: Record) -> tuple[int, ...] | None:
         """A stroked path's miter joins as Cairo decides them on its points as

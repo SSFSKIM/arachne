@@ -920,6 +920,43 @@ pub struct OpaquePass<'a> {
     producers: &'a [&'a dyn Producer],
     pub(crate) source: u16,
     fragments: Vec<(u32, Fragment<'a>)>,
+    /// Per pixel, the last [`repeats`] candidate added there, as its index in `fragments`
+    /// ([`NONE`] for none yet): made on the first candidate.
+    last: Vec<u32>,
+}
+
+/// No fragment.
+const NONE: u32 = u32::MAX;
+
+/// Whether `f` may stand for another fragment of its record ([`repeats`]): opaque, covering
+/// every sub-sample, and carrying nothing the order reads but its depth, its draw order and its
+/// producer (no surface, no path layer, no plane, no flat record, no stroke share), as a point
+/// cloud's block does.
+fn plain(f: &Fragment) -> bool {
+    f.is_opaque()
+        && f.coverage == Coverage::Mask(FULL)
+        && f.surface == 0
+        && !f.path_layer
+        && f.plane == [0; 4]
+        && f.record.is_none()
+        && f.wide == f64::NEG_INFINITY
+        && f.own == f64::NEG_INFINITY
+}
+
+/// Whether `a` and `b`, both [`plain`], differ in their colour and sub-order alone: one record's
+/// (one place in the draw order, so one role to the labels' placement), one producer's, at one
+/// depth plane with one error bound and one snap share. Then every pairwise order reads them
+/// alike against any third fragment but where paint order breaks a tie, where the later is the
+/// nearer; the later is in front of the earlier at every sub-sample and, opaque and covering, hides
+/// it there: the earlier changes nothing the resolves or the opaque depth read, so the pass keeps
+/// the later alone. A cloud of coincident points would otherwise buffer one fragment per point per
+/// pixel.
+fn repeats(a: &Fragment, b: &Fragment) -> bool {
+    a.order == b.order
+        && a.sub != b.sub
+        && a.source == b.source
+        && a.depth == b.depth
+        && a.snap.to_bits() == b.snap.to_bits()
 }
 
 impl<'a> OpaquePass<'a> {
@@ -929,6 +966,7 @@ impl<'a> OpaquePass<'a> {
             producers,
             source: 0,
             fragments: Vec::new(),
+            last: Vec::new(),
         }
     }
 
@@ -937,11 +975,34 @@ impl<'a> OpaquePass<'a> {
     }
 
     /// Adds an opaque fragment to pixel `(x, y)`. (A fragment that is not opaque is composited
-    /// like any other but adds nothing to the opaque depth.)
+    /// like any other but adds nothing to the opaque depth.) Of two that [`repeats`] finds the one
+    /// standing for the other, only the later in paint order is kept.
     pub fn add(&mut self, x: u32, y: u32, mut fragment: Fragment<'a>) {
         fragment.source = self.source;
-        let i = self.rect.index(x, y) as u32;
-        self.fragments.push((i, fragment));
+        let i = self.rect.index(x, y);
+        if plain(&fragment) {
+            if self.last.is_empty() {
+                self.last = vec![NONE; self.rect.pixels()];
+            }
+            let at = self.last[i];
+            if at != NONE {
+                let held = &mut self.fragments[at as usize].1;
+                if repeats(held, &fragment) {
+                    if (fragment.order, fragment.sub) > (held.order, held.sub) {
+                        *held = fragment;
+                    }
+                    return;
+                }
+            }
+            self.last[i] = self.fragments.len() as u32;
+        }
+        self.fragments.push((i as u32, fragment));
+    }
+
+    /// The fragments the pass holds.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        self.fragments.len()
     }
 
     /// Ends the opaque pass: its depth becomes readable.
@@ -2606,5 +2667,54 @@ mod tests {
                 4 + fronts as u8
             );
         }
+    }
+
+    /// A thousand coincident opaque blocks of one cloud, each over a 64-pixel tile: the pass holds
+    /// one fragment per pixel, the last point's, where buffering every block's would take 469 MiB.
+    /// Blocks of two records, at two depths, or not covering the pixel are each kept.
+    #[test]
+    fn the_opaque_pass_keeps_one_of_a_records_coincident_opaque_blocks() {
+        let rect = Rect {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+        };
+        let mut pass = OpaquePass::new(rect, &[]);
+        let block = |point: u32, order: u32, depth: f64, coverage: u16| {
+            let colour = [(point % 251) as u8, 7, 9, 255];
+            Fragment::new(
+                Plane::constant(depth),
+                colour,
+                Coverage::Mask(coverage),
+                order,
+                point,
+            )
+        };
+        for point in 0..1000 {
+            for y in 0..64 {
+                for x in 0..64 {
+                    pass.add(x, y, block(point, 3, 0.5, FULL));
+                }
+            }
+        }
+        assert_eq!(pass.held(), 64 * 64);
+        assert!(pass.fragments.iter().all(|(_, f)| f.sub == 999));
+        // Arriving in any order, the later in paint order stays.
+        let mut pass = OpaquePass::new(rect, &[]);
+        pass.add(0, 0, block(5, 3, 0.5, FULL));
+        pass.add(0, 0, block(2, 3, 0.5, FULL));
+        assert_eq!(pass.held(), 1);
+        assert_eq!(pass.fragments[0].1.sub, 5);
+        // Not one record's, not at one depth, not covering or not opaque: kept.
+        let mut pass = OpaquePass::new(rect, &[]);
+        pass.add(0, 0, block(1, 3, 0.5, FULL));
+        pass.add(0, 0, block(2, 4, 0.5, FULL));
+        pass.add(0, 0, block(3, 4, 0.25, FULL));
+        pass.add(0, 0, block(4, 4, 0.25, 0x00FF));
+        let mut clear = block(5, 4, 0.25, FULL);
+        clear.colour[3] = 200;
+        pass.add(0, 0, clear);
+        assert_eq!(pass.held(), 5);
     }
 }

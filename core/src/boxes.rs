@@ -86,14 +86,22 @@ pub fn record_box<'a>(
             vec![placed(corners, place_a)]
         }
         (RecordKind::Instances, Some(prototype), Body::Instances(body)) => {
-            let points: &[[f64; 3]] = match prototype {
+            // Member `i` places prototype `i % period`: the record's shape, then each part's.
+            let mut prototypes: Vec<&[[f64; 3]]> = vec![match prototype {
                 ShapeData::Path { points } => points,
                 ShapeData::Mesh { positions, .. } => positions,
                 _ => return None,
-            };
+            }];
+            for part in &body.parts {
+                match shape(&part.shape) {
+                    Some(ShapeData::Path { points }) => prototypes.push(points),
+                    _ => return None,
+                }
+            }
             body.placements
                 .iter()
-                .map(|m| placed(points, &compose(m, place_a)))
+                .enumerate()
+                .map(|(i, m)| placed(prototypes[i % prototypes.len()], &compose(m, place_a)))
                 .collect()
         }
         _ => return None,
@@ -260,6 +268,8 @@ mod tests {
             fill: Key([4; 16]),
             stroke: Key([5; 16]),
             objects: vec![0, 1],
+            parts: Vec::new(),
+            widths: Vec::new(),
         });
         let got = record_box(&view(Camera::Flat), &rec, |k| (*k == key).then_some(&data));
         close(got.unwrap(), [80.0, 45.0, 90.0, 75.0]);

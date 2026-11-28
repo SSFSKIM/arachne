@@ -30,6 +30,7 @@ from .cairo_painter import CairoDrawer
 from .canonical import _PATH_KINDS, Canonical, canonical_order, frame_grid, shades
 from .contributors import Box, LiveFrame, Outline, PixelContributors
 from .extract import FrameStream, Term, Unable
+from .instancing import Instancing, expand
 from .replay import Replays
 from .xf import Delta, StreamState
 
@@ -62,12 +63,17 @@ class CorePainter:
     #: (:mod:`.replay`).
     replay_overlay = True
 
+    #: Whether runs of like leaves reach the core as instances records
+    #: (:mod:`.instancing`).
+    instancing = True
+
     def __init__(
         self,
         *,
         keep: bool | None = None,
         stream: FrameStream | None = None,
         threads: int = 1,
+        instancing: bool | None = None,
     ) -> None:
         try:
             import arachne_core
@@ -90,6 +96,11 @@ class CorePainter:
         #: The deltas as the core received them, their geometry snapped
         #: (:mod:`.canonical`).
         self.canonical = Canonical()
+        #: The deltas as made, their runs batched for the core (Cairo draws
+        #: from them as made).
+        self.batches = Instancing(
+            enabled=self.instancing if instancing is None else instancing
+        )
         self.deltas: list[Delta] = []
         self.last: Delta | None = None
         #: Frames this painter drew.
@@ -132,7 +143,7 @@ class CorePainter:
         import arachne_core
 
         self.whole = not self.live
-        sent = self.canonical(delta)
+        sent = self.sent(delta)
         read = arachne_core.FrameDelta.from_bytes(sent.to_core().to_bytes())
         self.core.apply(read)
         self.state.apply(Delta.from_contents(read.contents()))
@@ -167,6 +178,12 @@ class CorePainter:
             self.drawer.draw_over(self.made, frame, overlay, self.replays)
         return frame
 
+    def sent(self, delta: Delta) -> Delta:
+        """The delta the core is handed for ``delta``, as made: its runs
+        batched (:mod:`.instancing`), its geometry snapped (:mod:`.canonical`).
+        """
+        return self.canonical(self.batches(delta, self.canonical.frame_grid))
+
     def drawn_by_cairo(self, background: np.ndarray) -> np.ndarray:
         """The last frame as Cairo draws it over ``background``, every leaf
         from the scene's values (:attr:`made`), as ``ir_cairo`` draws it: what
@@ -190,12 +207,15 @@ class CorePainter:
                 " take them from the frame's state extracted whole"
             )
         cairo = {slot for _, slot, _ in self.core.overlay_entries()}
-        order = self.state.order
+        # Each instances record's members, as the core placed them.
+        state = expand(self.state)
         found = self.drawer.outlines(
-            self.state, [e for e in order if e[1] not in cairo]
+            state, [e for e in state.order if e[1] not in cairo]
         )
         found.update(
-            self.drawer.outlines(self.made, [e for e in order if e[1] in cairo])
+            self.drawer.outlines(
+                self.made, [e for e in self.state.order if e[1] in cairo]
+            )
         )
         return found
 

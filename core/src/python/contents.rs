@@ -98,32 +98,9 @@ fn source<'py>(py: Python<'py>, paths: &[Vec<SourceNode>]) -> PyResult<Bound<'py
     PyTuple::new(py, paths)
 }
 
-fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
-    let out = PyDict::new(py);
-    out.set_item("features", r.features)?;
-    if !r.source.is_empty() {
-        out.set_item("source", source(py, &r.source)?)?;
-    }
-    if r.facing_group != 0 {
-        out.set_item("facing_group", r.facing_group)?;
-    }
-    if let RecordKind::Unknown(_) = r.kind {
-        if let Body::Opaque(payload) = &r.body {
-            out.set_item("payload", PyBytes::new(py, payload))?;
-        }
-        return Ok(out);
-    }
-    if let Some(k) = r.geometry.shape_a {
-        out.set_item("shape", key(py, k))?;
-    }
-    out.set_item("place", rows(py, &r.geometry.place_a)?)?;
-    if let Some(b) = &r.geometry.blend {
-        out.set_item("blend", (key(py, b.shape_b), rows(py, &b.place_b)?, b.t))?;
-    }
-    if let Some(window) = r.geometry.reveal {
-        out.set_item("reveal", window)?;
-    }
-    let p = &r.paint;
+/// A paint block's fields, by `set_record`'s names: a record's, or a part's (XF 1.6).
+fn paint_block(out: &Bound<'_, PyDict>, p: &PaintBlock) -> PyResult<()> {
+    let py = out.py();
     out.set_item("fill", paint(py, &p.fill)?)?;
     out.set_item("stroke", paint(py, &p.stroke)?)?;
     out.set_item("background_stroke", paint(py, &p.background_stroke)?)?;
@@ -156,6 +133,35 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
         out.set_item("paint_b", block)?;
     }
     out.set_item("mix", p.mix)?;
+    Ok(())
+}
+
+fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item("features", r.features)?;
+    if !r.source.is_empty() {
+        out.set_item("source", source(py, &r.source)?)?;
+    }
+    if r.facing_group != 0 {
+        out.set_item("facing_group", r.facing_group)?;
+    }
+    if let RecordKind::Unknown(_) = r.kind {
+        if let Body::Opaque(payload) = &r.body {
+            out.set_item("payload", PyBytes::new(py, payload))?;
+        }
+        return Ok(out);
+    }
+    if let Some(k) = r.geometry.shape_a {
+        out.set_item("shape", key(py, k))?;
+    }
+    out.set_item("place", rows(py, &r.geometry.place_a)?)?;
+    if let Some(b) = &r.geometry.blend {
+        out.set_item("blend", (key(py, b.shape_b), rows(py, &b.place_b)?, b.t))?;
+    }
+    if let Some(window) = r.geometry.reveal {
+        out.set_item("reveal", window)?;
+    }
+    paint_block(&out, &r.paint)?;
     if let Some(d) = r.dash {
         out.set_item("dash", (d.period, d.duty, d.phase))?;
     }
@@ -260,6 +266,22 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
             out.set_item("instance_fill", key(py, i.fill))?;
             out.set_item("instance_stroke", key(py, i.stroke))?;
             out.set_item("objects", &i.objects)?;
+            if !i.parts.is_empty() {
+                let parts = i
+                    .parts
+                    .iter()
+                    .map(|part| {
+                        let dict = PyDict::new(py);
+                        dict.set_item("shape", key(py, part.shape))?;
+                        paint_block(&dict, &part.paint)?;
+                        Ok(dict)
+                    })
+                    .collect::<PyResult<Vec<_>>>()?;
+                out.set_item("parts", PyTuple::new(py, parts)?)?;
+            }
+            if !i.widths.is_empty() {
+                out.set_item("instance_widths", PyArray1::from_slice(py, &i.widths))?;
+            }
         }
         Body::Opaque(payload) => out.set_item("payload", PyBytes::new(py, payload))?,
     }

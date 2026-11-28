@@ -377,6 +377,25 @@ fn paint_block(fields: &Fields) -> PyResult<PaintBlock> {
     })
 }
 
+/// An instances record's parts (XF 1.6): each a dictionary of its path shape's key (`shape`) and
+/// its paint block, by `set_record`'s names.
+fn parts_of(fields: &Fields) -> PyResult<Vec<Part>> {
+    let Some(parts) = fields.take("parts")? else {
+        return Ok(Vec::new());
+    };
+    let mut found = Vec::new();
+    for (i, part) in parts.try_iter()?.enumerate() {
+        let part = part?;
+        let dict = part.cast::<PyDict>()?;
+        let part = Fields::new(format!("{}: part {i}", fields.what), Some(dict), part.py())?;
+        let shape = need_key(&part, "shape")?;
+        let paint = paint_block(&part)?;
+        part.finish()?;
+        found.push(Part { shape, paint });
+    }
+    Ok(found)
+}
+
 fn body_of(kind: RecordKind, fields: &Fields) -> PyResult<Body> {
     Ok(match kind {
         RecordKind::Path | RecordKind::Mesh => Body::None,
@@ -469,6 +488,11 @@ fn body_of(kind: RecordKind, fields: &Fields) -> PyResult<Body> {
                 fill: need_key(fields, "instance_fill")?,
                 stroke: need_key(fields, "instance_stroke")?,
                 objects,
+                parts: parts_of(fields)?,
+                widths: fields
+                    .get::<PyArrayLike1<f64, AllowTypeChange>>("instance_widths")?
+                    .map(|w| w.as_array().to_vec())
+                    .unwrap_or_default(),
             })
         }
         RecordKind::Volume | RecordKind::Field | RecordKind::Emission => {
@@ -781,6 +805,14 @@ impl PyFrameDelta {
         record.opacity = fields.or("opacity", 1.0)?;
         record.layer = fields.or("layer", 0u16)?;
         record.body = body_of(kind, &fields)?;
+        if matches!(&record.body, Body::Instances(i) if i.carries_member_styles()) {
+            record.features |= FEATURE_MEMBERS;
+        } else if record.features & FEATURE_MEMBERS != 0 {
+            return Err(xf_error(
+                py,
+                "the members feature needs parts or instance widths".into(),
+            ));
+        }
         record.planes = fields.get::<Vec<u8>>("planes")?;
         record.normals = fields.get::<Vec<[f64; 3]>>("normals")?;
         record.joins = fields.get::<Vec<u8>>("joins")?;
@@ -1726,6 +1758,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let features = PyDict::new(m.py());
     features.set_item("background_image", FEATURE_BACKGROUND_IMAGE)?;
     features.set_item("pre_projected", FEATURE_PRE_PROJECTED)?;
+    features.set_item("members", FEATURE_MEMBERS)?;
     m.add("FEATURES", features)?;
     m.add("RESOLVES", ("background", "fast", "coverage", "sample"))?;
     m.add(

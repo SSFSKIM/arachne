@@ -256,6 +256,11 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             r.pre_projected.is_some(),
             "pre_projected feature bit and tail field disagree"
         );
+        assert_eq!(
+            r.features & FEATURE_MEMBERS != 0,
+            matches!(&r.body, Body::Instances(i) if i.carries_member_styles()),
+            "members feature bit and an instances record's member styles disagree"
+        );
 
         let g = &r.geometry;
         w.u8(g.shape_a.is_some() as u8
@@ -275,28 +280,7 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             w.f64(hi);
         }
 
-        let p = &r.paint;
-        write_paint(w, &p.fill);
-        write_paint(w, &p.stroke);
-        write_paint(w, &p.background_stroke);
-        w.f64(p.stroke_width);
-        w.f64(p.background_stroke_width);
-        w.bool(p.gradient.is_some());
-        if let Some([a, b]) = &p.gradient {
-            w.f64s(a);
-            w.f64s(b);
-        }
-        w.u8(p.joint as u8);
-        w.u8(p.cap as u8);
-        w.bool(p.paint_b.is_some());
-        if let Some(b) = &p.paint_b {
-            write_paint(w, &b.fill);
-            write_paint(w, &b.stroke);
-            write_paint(w, &b.background_stroke);
-            w.f64(b.stroke_width);
-            w.f64(b.background_stroke_width);
-        }
-        w.f64(p.mix);
+        write_paint_block(w, &r.paint);
 
         w.bool(r.dash.is_some());
         if let Some(d) = &r.dash {
@@ -410,7 +394,18 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             Body::FaceGroup(f) if f.carries_face_lists() || r.joins.is_some() => Some(f),
             _ => None,
         };
-        if r.planes.is_some() || r.normals.is_some() || faces.is_some() || r.joins.is_some() {
+        // XF 1.6: an instances record's parts, then its widths, follow its joins, written empty
+        // when it carries none (an instances record never does).
+        let members = match &r.body {
+            Body::Instances(i) if i.carries_member_styles() => Some(i),
+            _ => None,
+        };
+        if r.planes.is_some()
+            || r.normals.is_some()
+            || faces.is_some()
+            || r.joins.is_some()
+            || members.is_some()
+        {
             let planes = r.planes.as_deref().unwrap_or_default();
             w.count(planes.len());
             planes.iter().for_each(|code| w.u8(*code));
@@ -429,6 +424,17 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
         if let Some(joins) = &r.joins {
             w.count(joins.len());
             joins.iter().for_each(|b| w.u8(*b));
+        } else if members.is_some() {
+            w.count(0);
+        }
+        if let Some(i) = members {
+            w.count(i.parts.len());
+            for part in &i.parts {
+                w.key(&part.shape);
+                write_paint_block(w, &part.paint);
+            }
+            w.count(i.widths.len());
+            w.f64s(&i.widths);
         }
     })
 }
@@ -454,7 +460,13 @@ pub fn encoded_version(d: &Delta) -> (u16, u16) {
         .set
         .iter()
         .any(|r| matches!(&r.body, Body::FaceGroup(f) if f.carries_face_lists()));
-    let minor = if carries_source(d) {
+    let members = d
+        .set
+        .iter()
+        .any(|r| matches!(&r.body, Body::Instances(i) if i.carries_member_styles()));
+    let minor = if members {
+        6
+    } else if carries_source(d) {
         5
     } else if d.set.iter().any(|r| r.joins.is_some()) {
         4
@@ -851,6 +863,70 @@ fn decode_stops(r: &mut R) -> Result<Stops> {
     Ok(Stops::read(stated, rows))
 }
 
+/// A paint block: a record's, or an instances record's part's (XF 1.6).
+fn write_paint_block(w: &mut W, p: &PaintBlock) {
+    write_paint(w, &p.fill);
+    write_paint(w, &p.stroke);
+    write_paint(w, &p.background_stroke);
+    w.f64(p.stroke_width);
+    w.f64(p.background_stroke_width);
+    w.bool(p.gradient.is_some());
+    if let Some([a, b]) = &p.gradient {
+        w.f64s(a);
+        w.f64s(b);
+    }
+    w.u8(p.joint as u8);
+    w.u8(p.cap as u8);
+    w.bool(p.paint_b.is_some());
+    if let Some(b) = &p.paint_b {
+        write_paint(w, &b.fill);
+        write_paint(w, &b.stroke);
+        write_paint(w, &b.background_stroke);
+        w.f64(b.stroke_width);
+        w.f64(b.background_stroke_width);
+    }
+    w.f64(p.mix);
+}
+
+fn read_paint_block(r: &mut R) -> Result<PaintBlock> {
+    let mut p = PaintBlock {
+        fill: read_paint(r)?,
+        stroke: read_paint(r)?,
+        background_stroke: read_paint(r)?,
+        stroke_width: r.f64()?,
+        background_stroke_width: r.f64()?,
+        ..PaintBlock::default()
+    };
+    if r.bool()? {
+        p.gradient = Some([r.f64s()?, r.f64s()?]);
+    }
+    p.joint = match r.u8()? {
+        0 => Joint::Auto,
+        1 => Joint::Round,
+        2 => Joint::Bevel,
+        3 => Joint::Miter,
+        v => return Err(r.invalid("joint", v)),
+    };
+    p.cap = match r.u8()? {
+        0 => Cap::Auto,
+        1 => Cap::Round,
+        2 => Cap::Butt,
+        3 => Cap::Square,
+        v => return Err(r.invalid("cap", v)),
+    };
+    if r.bool()? {
+        p.paint_b = Some(PaintB {
+            fill: read_paint(r)?,
+            stroke: read_paint(r)?,
+            background_stroke: read_paint(r)?,
+            stroke_width: r.f64()?,
+            background_stroke_width: r.f64()?,
+        });
+    }
+    p.mix = r.f64()?;
+    Ok(p)
+}
+
 fn decode_record(r: &mut R) -> Result<Record> {
     let kind = RecordKind::from_code(r.u8()?);
     let mut rec = Record::new(kind, 0, 0);
@@ -880,39 +956,7 @@ fn decode_record(r: &mut R) -> Result<Record> {
         g.reveal = Some((r.f64()?, r.f64()?));
     }
 
-    let p = &mut rec.paint;
-    p.fill = read_paint(r)?;
-    p.stroke = read_paint(r)?;
-    p.background_stroke = read_paint(r)?;
-    p.stroke_width = r.f64()?;
-    p.background_stroke_width = r.f64()?;
-    if r.bool()? {
-        p.gradient = Some([r.f64s()?, r.f64s()?]);
-    }
-    p.joint = match r.u8()? {
-        0 => Joint::Auto,
-        1 => Joint::Round,
-        2 => Joint::Bevel,
-        3 => Joint::Miter,
-        v => return Err(r.invalid("joint", v)),
-    };
-    p.cap = match r.u8()? {
-        0 => Cap::Auto,
-        1 => Cap::Round,
-        2 => Cap::Butt,
-        3 => Cap::Square,
-        v => return Err(r.invalid("cap", v)),
-    };
-    if r.bool()? {
-        p.paint_b = Some(PaintB {
-            fill: read_paint(r)?,
-            stroke: read_paint(r)?,
-            background_stroke: read_paint(r)?,
-            stroke_width: r.f64()?,
-            background_stroke_width: r.f64()?,
-        });
-    }
-    p.mix = r.f64()?;
+    rec.paint = read_paint_block(r)?;
 
     if r.bool()? {
         let [period, duty, phase] = r.f64s()?;
@@ -999,6 +1043,8 @@ fn decode_record(r: &mut R) -> Result<Record> {
                 fill,
                 stroke,
                 objects,
+                parts: Vec::new(),
+                widths: Vec::new(),
             })
         }
         RecordKind::Volume | RecordKind::Field | RecordKind::Emission => {
@@ -1053,6 +1099,32 @@ fn decode_record(r: &mut R) -> Result<Record> {
     if r.at < r.b.len() {
         let n = r.count(1)?;
         rec.joins = Some((0..n).map(|_| r.u8()).collect::<Result<Vec<_>>>()?);
+    }
+    // XF 1.6: an instances record's parts, then its widths, after joins written empty (an
+    // instances record carries none).
+    if r.at < r.b.len()
+        && let Body::Instances(i) = &mut rec.body
+    {
+        if rec.joins.as_ref().is_some_and(Vec::is_empty) {
+            rec.joins = None;
+        }
+        let n = r.count(16)?;
+        i.parts = (0..n)
+            .map(|_| {
+                Ok(Part {
+                    shape: r.key()?,
+                    paint: read_paint_block(r)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let n = r.count(8)?;
+        i.widths = (0..n).map(|_| r.f64()).collect::<Result<Vec<_>>>()?;
+    }
+    let members = matches!(&rec.body, Body::Instances(i) if i.carries_member_styles());
+    if (rec.features & FEATURE_MEMBERS != 0) != members {
+        return Err(XfError::Invalid(
+            "members feature bit and an instances record's member styles disagree".into(),
+        ));
     }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(rec)

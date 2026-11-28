@@ -376,6 +376,8 @@ fn a_shaded_path_is_lit_as_ce_lights_it_and_refused_under_another_light() {
                     fill: colours.key(),
                     stroke: colours.key(),
                     objects: vec![7],
+                    parts: Vec::new(),
+                    widths: Vec::new(),
                 });
             }
             r.depth.space = Space::World;

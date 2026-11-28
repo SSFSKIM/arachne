@@ -21,12 +21,13 @@ Nothing here imports the core.
 
 from __future__ import annotations
 
-__all__ = ["FrameStream", "Unable", "library_class"]
+__all__ = ["FrameStream", "Unable", "batching", "library_class"]
 
+import contextlib
 import functools
 import sys
 import weakref
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
@@ -45,6 +46,32 @@ from .xf import (
 if TYPE_CHECKING:
     from arachne.camera.camera import Camera
     from arachne.mobject.mobject import Mobject
+
+
+#: The tallies :func:`batching` holds open, innermost last.
+_BATCHING: list[dict[str, int]] = []
+
+
+@contextlib.contextmanager
+def batching() -> Iterator[dict[str, int]]:
+    """Within: what the frames described for core drawers in this process
+    batched (:mod:`.instancing`), in the dictionary yielded: ``instances``,
+    the instances records made, and ``factored``, the leaves among their
+    members whose shape was factored into a canonical shape and a placement.
+    """
+    found = {"instances": 0, "factored": 0}
+    _BATCHING.append(found)
+    try:
+        yield found
+    finally:
+        _BATCHING.remove(found)
+
+
+def _count_batching(*, instances: int = 0, factored: int = 0) -> None:
+    """Adds to every tally :func:`batching` holds open."""
+    for tally in _BATCHING:
+        tally["instances"] += instances
+        tally["factored"] += factored
 
 
 class Unable(Exception):
