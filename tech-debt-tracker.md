@@ -382,3 +382,25 @@ lifted.
 - **Polish.** `arachne/server/registry.py`'s module docstring wraps one sentence oddly near line 44, and a
   `.alive-XXXX` temporary file a server left between making its lock and naming it (a crash in that instant) is
   never swept. Direction: rewrap; sweep `.alive-*` files that are old and unlocked.
+
+## Depth on the core (`core/src/depth.rs`)
+
+- **The shared-axis tolerance scales with the widest extent, on every
+  axis.** `shared_axis` takes a coordinate as shared when every point lies
+  within `PLANAR_TOLERANCE * max(extent, 1)` of the first point's, the
+  extent being the widest of the three axes, and it looks for a shared
+  axis before a plane. On a primitive millions of units long, that
+  tolerance passes real offsets on a short axis. The endpoints
+  `[-1e7, 0, -0.005]` and `[1e7, 0, 0.005]` give a tolerance of 0.02, so
+  the line keys as the plane z = -0.005, though its y is shared exactly
+  and its visible middle sits at z = 0. Seen face on over a sheet at
+  z = -0.002 it then draws behind the sheet instead of in front, and with
+  the endpoints reversed it keys at z = +0.005 (the offset is the first
+  point's). Below extents of about 100 units the tolerance stays under
+  1e-7 and nothing shows. Reproducer: `WorldPlane::of_points` on those
+  two endpoints returns the plane with normal `[0, 0, 1]` and offset
+  -0.005 (rounded to the grid). The tolerance exists because the same
+  content reaches the core one ulp apart on different machines. The fix
+  belongs with giving the core canonical float inputs, the same bits on
+  every machine, after which the test can be exact again; short of that,
+  a tolerance against each axis's own extent.

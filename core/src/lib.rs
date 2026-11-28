@@ -7,23 +7,65 @@
 //! - [`shade`]: the one place lighting lives (CE's per-face model, soft diffuse light).
 //! - [`composite`]: the one place blending lives: fragments, the opaque and transparent passes,
 //!   the two resolves, emission, and the frame buffer.
+//! - [`order`]: the order fragments composite in at a pixel: depth where two cover one
+//!   sub-sample, paint order elsewhere.
 //! - [`mesh`]: the triangle rasterizer, a producer of mask fragments with depth.
 //! - [`path`]: the path rasterizer (fills, strokes, dashes, glyphs), a producer of
 //!   exact-area fragments with depth, on [`scanline`]'s exact nonzero coverage.
+//! - [`join_mask`]: a stroke's miter joins decided as Cairo decides them, where a path record
+//!   carries its `joins`.
+//! - [`geometry`]: a path record's reveal, blend and paint blend made into what is drawn.
+//! - [`gradient`]: linear gradients, coloured as Cairo's pattern and pixman's fetch colour them.
 //! - [`depth`]: canonical planes, so coplanar things tie exactly, and depth along curves.
+//! - [`label_class`]: what a camera-facing label's rule reads a record as (a label, a line, a
+//!   surface, or open), from the objects it was drawn from alone; nothing drawn calls it.
 //! - [`instance`]: `instances` and `points` records drawn as their members; [`points`], point
 //!   clouds as CE's square blocks.
+//! - [`boxes`]: where each record lands on the frame, found without drawing (`screen_boxes`).
 //! - [`tiles`]: a frame cut into tiles, drawn on threads scoped to the draw call.
+//! - [`contributors`]: per pixel, the drawn leaves its colour is made of, read from the passes the
+//!   resolves read (`Stream::contributors`).
+//! - [`diagnostics`]: internal, not a supported interface: per pixel, what its resolve composited,
+//!   enough to composite it again (`Stream::diagnostic_resolves`).
+//! - `counters`: call counts of the depth read along curves, in a build with the `counters`
+//!   feature only.
 //! - [`probes`]: the class probes, the parity kit's fixtures (`parity/probes.rs`).
 //!
 //! The core's output may not depend on the machine: no runtime CPU-feature dispatch, no fused
 //! multiply-add, transcendental functions from the pure-Rust `libm` crate (`clippy.toml` enforces
 //! the last two), and every pixel's result a function of its own fragments only.
 
+/// Adds `n` (one if not given) to the count `counters::$name`, or with `most` raises it to `n`, in
+/// a build with the `counters` feature; nothing otherwise.
+macro_rules! count {
+    ($name:ident) => {
+        count!($name, 1)
+    };
+    ($name:ident, $n:expr) => {
+        #[cfg(feature = "counters")]
+        crate::counters::add(&crate::counters::$name, $n);
+    };
+    (most $name:ident, $n:expr) => {
+        #[cfg(feature = "counters")]
+        crate::counters::most(&crate::counters::$name, $n);
+    };
+}
+
+pub mod boxes;
 pub mod composite;
+pub mod contributors;
+#[cfg(feature = "counters")]
+pub mod counters;
 pub mod depth;
+pub mod diagnostics;
+pub mod geometry;
+pub mod gradient;
 pub mod instance;
+pub mod join_mask;
+pub mod label_class;
+pub mod label_plan;
 pub mod mesh;
+pub mod order;
 pub mod path;
 pub mod points;
 #[path = "../parity/probes.rs"]

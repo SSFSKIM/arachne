@@ -10,8 +10,44 @@ import pytest
 import arachne
 
 
+def _cpu() -> str:
+    """The CPU's model, and whether it has AVX-512 (numpy's vectorised loops
+    differ with it in their last bits).
+    """
+    try:
+        info = Path("/proc/cpuinfo").read_text()
+    except OSError:
+        import platform
+
+        return platform.processor() or platform.machine()
+    model = next(
+        (
+            line.split(":", 1)[1].strip()
+            for line in info.splitlines()
+            if line.startswith("model name")
+        ),
+        "unknown",
+    )
+    flags = next((line for line in info.splitlines() if line.startswith("flags")), "")
+    return f"{model} ({'avx512f' if ' avx512f' in flags else 'no avx512f'})"
+
+
+@pytest.fixture(autouse=True)
+def _snapping_keeps_ces_point_equality():
+    """No path the test draws on the core has a join or a closed end that CE's
+    point-equality rule decides otherwise on its snapped points
+    (``frame_ir.canonical``).
+    """
+    from arachne.frame_ir import canonical
+
+    canonical.point_equality_disagreements.clear()
+    yield
+    found = list(canonical.point_equality_disagreements)
+    assert not found, f"(points, coordinates, boundaries) decided otherwise: {found}"
+
+
 def pytest_report_header(config):
-    return f"\nCairo Version: {cairo.cairo_version()}"
+    return f"\nCairo Version: {cairo.cairo_version()}\nCPU: {_cpu()}"
 
 
 def pytest_addoption(parser):
@@ -36,6 +72,14 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    # str and bytes hashes are salted per process unless PYTHONHASHSEED is set,
+    # and iterating a set of them orders some scenes' drawing: frames compare
+    # byte for byte only at one seed, which takes effect at interpreter start.
+    if sys.flags.hash_randomization:
+        raise pytest.UsageError(
+            "the test suite runs with hash randomization off: run it as "
+            "PYTHONHASHSEED=0 uv run pytest"
+        )
     config.addinivalue_line("markers", "skip_end_to_end: mark test as end_to_end test")
 
 

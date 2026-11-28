@@ -19,6 +19,7 @@ __all__ = ["CairoDrawer", "Unsupported"]
 
 import itertools as it
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -26,16 +27,68 @@ import numpy as np
 from arachne.camera.camera import Camera
 from arachne.camera.three_d_camera import ThreeDCamera
 from arachne.constants import CapStyleType, LineJointType
+from arachne.mobject.three_d.three_d_utils import (
+    get_3d_vmob_end_corner,
+    get_3d_vmob_end_corner_unit_normal,
+    get_3d_vmob_start_corner,
+    get_3d_vmob_start_corner_unit_normal,
+)
 from arachne.mobject.types.image_mobject import AbstractImageMobject
 from arachne.mobject.types.point_cloud_mobject import PMobject
 from arachne.mobject.types.vectorized_mobject import VMobject
+from arachne.utils.color import get_shaded_rgb
 
+from .contributors import Box, Leaf, Outline, PixelContributors, Subpath
+from .extract import Unable
 from .geometry import blended, revealed
-from .xf import FEATURE_BACKGROUND_IMAGE, Record, StreamState
+from .replay import Recording, Replays, replay
+from .xf import FEATURE_BACKGROUND_IMAGE, FEATURE_PRE_PROJECTED, Record, StreamState
 
+#: The bytes a leaf is drawn over a second time to find where it covers the
+#: pixel (premultiplied: no channel above its alpha).
+_SENTINEL = (1, 2, 3, 4)
 #: The record kinds and feature bits Cairo draws.
 _DRAWN_KINDS = frozenset({"path", "face_group", "points", "image"})
-_DRAWN_FEATURES = FEATURE_BACKGROUND_IMAGE
+_DRAWN_FEATURES = FEATURE_BACKGROUND_IMAGE | FEATURE_PRE_PROJECTED
+#: Whether the camera draws a record of each kind through its Cairo context
+#: (a path filled through a background image excepted).
+_THROUGH_CONTEXT = {"path": True, "face_group": True, "points": False, "image": False}
+#: The view's values a 3D camera's draw of an unshaded member fixed in frame
+#: never reads: its rotation, projection and light.
+_ROTATION_FIELDS = frozenset(
+    {
+        "phi",
+        "theta",
+        "gamma",
+        "focal_distance",
+        "zoom",
+        "exponential_projection",
+        "light_source",
+        "shading_factor",
+        "should_apply_shading",
+    }
+)
+
+
+def _view_key(view: dict[str, Any], *, flat: bool) -> tuple[Any, ...]:
+    """``view``'s values as a key, without :data:`_ROTATION_FIELDS` if
+    ``flat``.
+    """
+    return tuple(
+        (name, _keyed(value))
+        for name, value in sorted(view.items())
+        if not (flat and name in _ROTATION_FIELDS)
+    )
+
+
+def _keyed(value: Any) -> Any:
+    if isinstance(value, list | tuple):
+        return tuple(_keyed(v) for v in value)
+    if isinstance(value, dict):
+        return tuple((k, _keyed(v)) for k, v in sorted(value.items()))
+    if isinstance(value, np.ndarray):
+        return (value.shape, value.tobytes())
+    return value
 
 
 class Unsupported(Exception):
@@ -148,7 +201,46 @@ def _bare(cls: type, **attributes: Any) -> Any:
     return proxy
 
 
-class _PainterCamera(Camera):
+def _pre_of(mobject: Any) -> dict[str, Any] | None:
+    """What a pre-projected proxy's record says its camera produced."""
+    return getattr(mobject, "__dict__", {}).get("_xf_pre")
+
+
+class _Produced:
+    """A painter camera's part for pre-projected records: their points are
+    placed where the record says the camera that drew them placed them, and
+    painted in the colours it says that camera painted with; everything else
+    as the engine's camera does.
+    """
+
+    def transform_points_pre_display(self, mobject: Any, points: Any) -> Any:
+        pre = _pre_of(mobject)
+        if pre is None:
+            return super().transform_points_pre_display(mobject, points)  # type: ignore[misc]
+        own = mobject.__dict__
+        if points is own.get("_points"):
+            return pre["points"]
+        if pre["gradient"] is not None and points is own.get("_xf_gradient"):
+            return pre["gradient"]
+        raise Unable(
+            f"render.unable: a pre-projected {type(mobject).__name__} was asked to"
+            " place points its record does not hold"
+        )
+
+    def get_fill_rgbas(self, vmobject: Any) -> Any:
+        pre = _pre_of(vmobject)
+        if pre is None:
+            return super().get_fill_rgbas(vmobject)  # type: ignore[misc]
+        return pre["fill"]
+
+    def get_stroke_rgbas(self, vmobject: Any, background: bool = False) -> Any:
+        pre = _pre_of(vmobject)
+        if pre is None:
+            return super().get_stroke_rgbas(vmobject, background=background)  # type: ignore[misc]
+        return pre["background_stroke" if background else "stroke"]
+
+
+class _PainterCamera(_Produced, Camera):
     """A flat camera mapping frame to pixels around the view's mapping centre."""
 
     _xf_centre: tuple[float, ...] = (0.0, 0.0, 0.0)
@@ -157,46 +249,120 @@ class _PainterCamera(Camera):
         return _context(self, pixel_array)
 
 
-class _Painter3DCamera(ThreeDCamera):
-    """A ThreeDCamera mapping frame to pixels around the view's mapping centre."""
+class _Painter3DCamera(_Produced, ThreeDCamera):
+    """A ThreeDCamera mapping frame to pixels around the view's mapping centre.
+
+    A shaded path whose record carries its normals is lit by them, as the
+    core lights it: they were decided on its points as made, where the
+    normals CE would find again from its snapped points are the snap's.
+    """
 
     _xf_centre: tuple[float, ...] = (0.0, 0.0, 0.0)
 
     def get_cairo_context(self, pixel_array: Any) -> Any:
         return _context(self, pixel_array)
 
+    def modified_rgbas(self, vmobject: Any, rgbas: Any) -> Any:
+        decided = getattr(vmobject, "__dict__", {}).get("_xf_normals")
+        if (
+            decided is None
+            or not self.should_apply_shading
+            or not vmobject.shade_in_3d
+            or vmobject.get_num_points() == 0
+        ):
+            return super().modified_rgbas(vmobject, rgbas)
+        light = self.light_source.points[0]
+        shaded = rgbas.repeat(2, axis=0) if len(rgbas) < 2 else np.array(rgbas[:2])
+        corners = (get_3d_vmob_start_corner(vmobject), get_3d_vmob_end_corner(vmobject))
+        for k, corner in enumerate(corners):
+            shaded[k, :3] = get_shaded_rgb(
+                shaded[k, :3], corner, _lit_normal(vmobject, decided[k], k), light
+            )
+        return shaded
+
+
+def _lit_normal(vmobject: Any, decided: Sequence[float], corner: int) -> np.ndarray:
+    """The normal a shaded path is lit by at its lit ``corner`` (0, its start;
+    1, its end), its writer having decided ``decided`` there: as decided, or
+    at a degenerate corner (the zero vector) its face's Newell normal over its
+    points, and where that cancels too CE's own corner normal; as the core's
+    ``shade::ce_face_stops_decided`` lights it.
+    """
+    normal = np.asarray(decided, dtype=float)
+    if normal.any():
+        return normal
+    points = np.asarray(vmobject.points, dtype=float)
+    a = points - points[0]
+    b = np.roll(a, -1, axis=0)
+    newell = np.array(
+        [
+            ((a[:, 1] - b[:, 1]) * (a[:, 2] + b[:, 2])).sum(),
+            ((a[:, 2] - b[:, 2]) * (a[:, 0] + b[:, 0])).sum(),
+            ((a[:, 0] - b[:, 0]) * (a[:, 1] + b[:, 1])).sum(),
+        ]
+    )
+    length = float(np.sqrt(newell @ newell))
+    if length > 0.0:
+        return newell / length
+    if corner == 0:
+        return get_3d_vmob_start_corner_unit_normal(vmobject)
+    return get_3d_vmob_end_corner_unit_normal(vmobject)
+
+
+#: What a 3D painter camera calls to turn its view into a rotation matrix.
+_ROTATION = (
+    "reset_rotation_matrix",
+    "generate_rotation_matrix",
+    "get_rotation_matrix",
+    "get_phi",
+    "get_theta",
+    "get_gamma",
+    "get_focal_distance",
+    "get_zoom",
+)
+
+
+def _pin_engine_methods(cls: type, base: type, names: Sequence[str]) -> None:
+    """Give ``cls`` ``base``'s definitions of ``names`` as the engine made
+    them, taken when ``arachne`` was imported, so that a patch the scene's
+    code made to an engine camera class never runs inside the drawer: the
+    scene's camera code runs in its own capture alone, as often as on Cairo.
+    """
+    from arachne.timeline.frozen import class_members, engine_class
+
+    for name in names:
+        for klass in base.__mro__:
+            if engine_class(klass) and name in class_members(klass):
+                setattr(cls, name, class_members(klass)[name])
+                break
+        else:  # pragma: no cover - the engine's camera defines each
+            raise LookupError(f"{base.__name__} has no {name}")
+
+
+_pin_engine_methods(_Painter3DCamera, ThreeDCamera, _ROTATION)
+
 
 def _context(camera: Any, pixel_array: np.ndarray) -> Any:
-    """CE's ``get_cairo_context``, its matrix built from the centre CE froze."""
-    contexts: dict[int, Any] = camera.__dict__.setdefault("_xf_contexts", {})
+    """CE's ``get_cairo_context``, its matrix built from the centre CE froze.
+
+    The camera keeps one context, on the array it draws into now, made again
+    for another array or another mapping. A context draws into its array and
+    so holds it: kept past its frame, every frame a painter draws over (a new
+    array each time on the core) would stay in memory to the render's end.
+    """
     centre = camera._xf_centre
-    key = id(pixel_array)
-    found = contexts.get(key)
-    if (
-        found is not None
-        and found[0] is pixel_array
-        and found[1]
-        == (
-            centre,
-            camera.pixel_width,
-            camera.pixel_height,
-            camera.frame_width,
-            camera.frame_height,
-        )
-    ):
+    mapping = (
+        centre,
+        camera.pixel_width,
+        camera.pixel_height,
+        camera.frame_width,
+        camera.frame_height,
+    )
+    found = vars(camera).get("_xf_context")
+    if found is not None and found[0] is pixel_array and found[1] == mapping:
         return found[2]
     ctx = camera.make_cairo_context(pixel_array, np.array(centre))
-    contexts[key] = (
-        pixel_array,
-        (
-            centre,
-            camera.pixel_width,
-            camera.pixel_height,
-            camera.frame_width,
-            camera.frame_height,
-        ),
-        ctx,
-    )
+    camera._xf_context = (pixel_array, mapping, ctx)
     return ctx
 
 
@@ -207,6 +373,8 @@ class CairoDrawer:
         self._cameras: dict[tuple[str, Any], Any] = {}
         self._arrays: dict[Any, np.ndarray] = {}
         self._proxies: dict[int, tuple[Record, Any]] = {}
+        #: Records (by slot) :meth:`draw_over` found drawable.
+        self._checked: dict[int, Record] = {}
         self._state: StreamState | None = None
 
     # Cameras and arrays
@@ -282,6 +450,7 @@ class CairoDrawer:
                 _rgbas=state.paints[f["colors"]].rows,
                 stroke_width=f["radius"],
                 submobjects=[],
+                _xf_pre=_pre(f, state),
             )
         if kind == "image":
             if "sub_frame" in f:
@@ -299,6 +468,7 @@ class CairoDrawer:
                 resampling_algorithm=f["resampling"],
                 _xf_pixels=source,
                 submobjects=[],
+                _xf_pre=_pre(f, state),
             )
         raise NotImplementedError(f"the Cairo drawer has no {kind} records")
 
@@ -347,6 +517,8 @@ class CairoDrawer:
             _xf_gradient=None
             if gradient is None
             else (np.array(gradient[:3]), np.array(gradient[3:])),
+            _xf_pre=_pre(f, state),
+            _xf_normals=f.get("normals"),
         )
 
     def _faces(self, state: StreamState, f: dict[str, Any]) -> list[Any]:
@@ -354,7 +526,15 @@ class CairoDrawer:
         fills = state.paints[f["face_fill"]].rows
         strokes = state.paints[f["face_stroke"]].rows
         count = len(f["uv"])
-        size = len(points) // count
+        # Each face's run of the points: to its face end, or one of equal runs.
+        ends = f.get("face_ends")
+        if ends is None:
+            size = len(points) // count
+            ends = [size * (i + 1) for i in range(count)]
+        starts = [0, *ends[:-1]]
+        widths = f.get("face_widths")
+        if widths is None:
+            widths = [f["stroke_width"]] * count
         back = _rows(f.get("background_stroke"), state)
         common = {
             "n_points_per_cubic_curve": 4,
@@ -363,18 +543,21 @@ class CairoDrawer:
             "joint_type": LineJointType[f["joint"].upper()],
             "cap_style": CapStyleType[f["cap"].upper()],
             "_xf_background": back,
-            "_xf_width": f["stroke_width"],
             "_xf_background_width": f["background_stroke_width"],
             "_xf_image": None,
             "_xf_gradient": None,
         }
+        # Two normals per face, in its order.
+        normals = f.get("normals")
         return [
             _bare(
                 _PathProxy,
-                _points=points[i * size : (i + 1) * size],
+                _points=points[int(starts[i]) : int(ends[i])],
                 submobjects=[],
                 _xf_fill=fills[i : i + 1],
                 _xf_stroke=strokes[i : i + 1],
+                _xf_width=float(widths[i]),
+                _xf_normals=None if normals is None else normals[2 * i : 2 * i + 2],
                 **common,
             )
             for i in range(count)
@@ -418,35 +601,422 @@ class CairoDrawer:
         self._draw_entries(camera, order, array)
         return array
 
-    def draw(self, state: StreamState) -> np.ndarray:
+    def draw(
+        self, state: StreamState, background: np.ndarray | None = None
+    ) -> np.ndarray:
         """The frame ``state`` describes, as the camera's pixel array (the
-        drawer's own: copy it to keep it).
+        drawer's own: copy it to keep it); with ``background``, drawn over
+        that picture instead of the view's.
         """
-        self._refuse_unknown(state)
+        self._refuse_unknown(state, state.order)
         self._state = state
+        assert state.view is not None
+        array = (
+            self._array(state.view, "main")
+            if background is None
+            else np.array(background)
+        )
+        return self._draw_order(state, state.order, array)
+
+    def draw_over(
+        self,
+        state: StreamState,
+        frame: np.ndarray,
+        entries: Sequence[tuple[str, int, int]],
+        replays: Replays | None = None,
+    ) -> np.ndarray:
+        """``frame`` (written in place, and returned) with ``entries`` of
+        ``state`` drawn over it in their order, by a camera of the view, as
+        CE's capture draws them: a 3D scene's overlay over the core's frame.
+        With ``replays``, a member the camera draws through its context that
+        is the same as in the frame before is not drawn again: the calls it
+        made then are made again (:mod:`.replay`, :meth:`_draw_kept`).
+        """
+        if replays is None:
+            self._refuse_unknown(state, entries)
+        else:
+            # A record already found drawable is drawable while it stands (a
+            # display's is checked again: its sub-frame's records can change
+            # under it).
+            checked = self._checked
+            unchecked = [
+                e for e in entries if checked.get(e[1]) is not state.records[e[1]]
+            ]
+            self._refuse_unknown(state, unchecked)
+            for _, slot, _ in unchecked:
+                record = state.records[slot]
+                if "sub_frame" not in record.fields:
+                    checked[slot] = record
+            for slot in [s for s in checked if s not in state.records]:
+                del checked[slot]
+        self._state = state
+        try:
+            return self._draw_order(state, entries, frame, replays)
+        finally:
+            if replays is not None:
+                replays.next_frame()
+
+    def contributors(
+        self,
+        state: StreamState,
+        entries: Sequence[tuple[str, int, int]],
+        box: Box,
+    ) -> dict[tuple[int, int], PixelContributors]:
+        """The leaves ``entries`` of ``state`` paint at each pixel of ``box``
+        (any integers, clipped to the frame) that one of them touches, in
+        paint order, bottom first (:mod:`.contributors`).
+
+        Each entry is a leaf, drawn alone by a camera of the view as the
+        camera's capture draws it (the displays' pictures first, as a
+        MultiCamera captures them), Cairo clipped to the box: once over a
+        transparent pixel, what it leaves there its ``drawn`` (premultiplied,
+        whether the camera drew it through Cairo or wrote it as an image or a
+        point cloud does), and once over a pixel of other bytes, so that the
+        pixels it touches are known whatever it leaves there. A leaf drawn
+        source over ``covers`` a pixel only where its alpha is 255, however
+        near opaque it is; a point cloud's block covers where the camera wrote
+        it, whatever its alpha (the camera writes blocks over what is there).
+        A leaf is hidden where a later one covers the pixel, or, among paths
+        filled through one background image one after another (which the
+        camera draws as one mask, multiplied by the image once), where a later
+        one's mask is opaque: such a leaf touches the pixels its own mask
+        reaches, and draws there what the batch draws. A record's object is
+        its slot, as the Python stream writes it
+        (:meth:`.xf.Delta.to_core`). Refused as :meth:`draw` refuses.
+        """
+        self._refuse_unknown(state, entries)
+        self._state = state
+        view = state.view
+        assert view is not None
+        height, width = view["pixel_height"], view["pixel_width"]
+        x0, y0, x1, y1 = box
+        x0, x1 = max(0, x0), min(width, x1)
+        y0, y1 = max(0, y0), min(height, y1)
+        if x0 >= x1 or y0 >= y1:
+            return {}
+        live = set(state.records)
+        for slot in [s for s in self._proxies if s not in live]:
+            del self._proxies[slot]
+        camera = self._camera(view, "contributors")
+        array = np.zeros((height, width, 4), dtype=np.uint8)
+        camera.pixel_array = array
+        # Cairo draws inside the box only: a clip on whole pixels is a region,
+        # inside which every pixel is drawn as it is without one.
+        ctx = _context(camera, array)
+        matrix = ctx.get_matrix()
+        ctx.identity_matrix()
+        ctx.new_path()
+        ctx.rectangle(x0, y0, x1 - x0, y1 - y0)
+        ctx.clip()
+        ctx.set_matrix(matrix)
+        self._seed_images(camera, state)
+        self._orient(camera, state)
+        self._draw_displays(entries)
+        inside = array[y0:y1, x0:x1]
+
+        def drawn_over(
+            fill: tuple[int, ...], entry: tuple[str, int, int]
+        ) -> np.ndarray:
+            inside[...] = fill
+            self._draw_entries(camera, [entry], array)
+            return inside.astype(np.int32)
+
+        def premultiplied(pixels: np.ndarray) -> np.ndarray:
+            # Written as straight RGBA (an image's composite, a point cloud's
+            # colours): premultiplied as Cairo's are.
+            alpha = pixels[..., 3:4]
+            pixels[..., :3] = (pixels[..., :3] * alpha + 127) // 255
+            return pixels
+
+        # Paths filled through one background image one after another: the
+        # camera draws them as one mask, multiplied by the image once.
+        batches: list[tuple[Any, int]] = []
+        for number, (layer, slot, _) in enumerate(entries):
+            fields = state.records[slot].fields
+            filled = bool(int(fields.get("features", 0)) & FEATURE_BACKGROUND_IMAGE)
+            key = (layer, fields.get("fill_image")) if filled else None
+            if key is None:
+                batches.append((None, number))
+            elif number and batches[-1][0] == key:
+                batches.append(batches[-1])
+            else:
+                batches.append((key, number))
+        together: dict[int, np.ndarray] = {}
+
+        by_pixel: dict[tuple[int, int], list[tuple[Leaf, Any, bool]]] = {}
+        for number, entry in enumerate(entries):
+            layer, slot, part = entry
+            record = state.records[slot]
+            batch = batches[number] if batches[number][0] is not None else None
+            alone = drawn_over((0, 0, 0, 0), entry)
+            over = drawn_over(_SENTINEL, entry)
+            touched = alone.any(axis=-1) | (over != _SENTINEL).any(axis=-1)
+            if record.kind == "points":
+                # The camera writes a block over what is there: it covers
+                # where it was written, whatever its alpha.
+                covers = (alone == over).all(axis=-1) & touched
+            else:
+                # Source over: a leaf hides what is beneath only where it is
+                # opaque.
+                covers = (alone[..., 3] == 255) & touched
+            if batch is not None or not _THROUGH_CONTEXT.get(record.kind):
+                alone = premultiplied(alone)
+            mask = None
+            if batch is not None:
+                inside[...] = 0
+                camera.display_multiple_non_background_colored_vmobjects(
+                    [self._proxy(slot, part, record)], array
+                )
+                own = inside[..., 3].astype(np.int32)
+                mask = own == 255
+                # Whether the leaf touches a pixel is its own mask's, before
+                # the image multiplies it; what it paints is the batch's, as
+                # the camera composites the batch.
+                if batch[1] not in together:
+                    inside[...] = 0
+                    members = [e for n, e in enumerate(entries) if batches[n] == batch]
+                    self._draw_entries(camera, members, array)
+                    together[batch[1]] = premultiplied(inside.astype(np.int32))
+                touched = own > 0
+                alone = np.where(touched[..., None], together[batch[1]], 0)
+                covers = mask & (alone[..., 3] == 255)
+            stable = state.objects.get(slot, (None,))[0]
+            for y, x in zip(*np.nonzero(touched), strict=True):
+                r, g, b, a = (int(v) for v in alone[y, x])
+                leaf = Leaf(
+                    object=slot,
+                    part=part,
+                    id=stable,
+                    drawn=(r, g, b, a),
+                    shown=True,
+                    painter="cairo",
+                    covers=bool(covers[y, x]),
+                )
+                masked = (
+                    (batch[1], bool(mask[y, x]))
+                    if batch is not None and mask is not None
+                    else None
+                )
+                by_pixel.setdefault((int(x) + x0, int(y) + y0), []).append(
+                    (leaf, masked, bool(covers[y, x]))
+                )
+        out: dict[tuple[int, int], PixelContributors] = {}
+        for at, found in sorted(by_pixel.items()):
+            painted = []
+            for i, (leaf, masked, _) in enumerate(found):
+                later = found[i + 1 :]
+                hidden = any(c for _, _, c in later) or (
+                    masked is not None
+                    and any(
+                        m is not None and m[0] == masked[0] and m[1]
+                        for _, m, _ in later
+                    )
+                )
+                painted.append(replace(leaf, shown=False) if hidden else leaf)
+            out[at] = PixelContributors(
+                leaves=tuple(painted),
+                orders=(tuple((i, leaf.drawn[3]) for i, leaf in enumerate(painted)),),
+            )
+        return out
+
+    def outlines(
+        self,
+        state: StreamState,
+        entries: Sequence[tuple[str, int, int]],
+    ) -> dict[tuple[int, int], tuple[Outline, ...]]:
+        """What the camera hands Cairo for each entry of ``entries`` drawn
+        through its context (paths and faces), by ``(slot, part)``: each fill
+        and stroke in the order made (:class:`~.contributors.Outline`), the
+        path in pixels. The camera draws each entry alone, as for
+        :meth:`contributors`, into a frame of its own. Entries drawn by other
+        means (images, point clouds) have none. Refused as :meth:`draw`
+        refuses.
+        """
+        self._refuse_unknown(state, entries)
+        self._state = state
+        view = state.view
+        assert view is not None
+        camera = self._camera(view, "outlines")
+        array = np.zeros((view["pixel_height"], view["pixel_width"], 4), dtype=np.uint8)
+        camera.pixel_array = array
+        ctx = _context(camera, array)
+        self._seed_images(camera, state)
+        self._orient(camera, state)
+        out: dict[tuple[int, int], tuple[Outline, ...]] = {}
+        for _, slot, part in entries:
+            record = state.records[slot]
+            if not _THROUGH_CONTEXT.get(record.kind):
+                continue
+            if isinstance(camera, ThreeDCamera):
+                camera.reset_rotation_matrix()
+            taken = _Taken(ctx)
+            camera.display_vectorized(self._proxy(slot, part, record), taken)
+            out[(slot, part)] = tuple(taken.ops)
+        return out
+
+    def _draw_order(
+        self,
+        state: StreamState,
+        order: Sequence[tuple[str, int, int]],
+        array: np.ndarray,
+        replays: Replays | None = None,
+    ) -> np.ndarray:
         view = state.view
         assert view is not None
         live = set(state.records)
         for slot in [s for s in self._proxies if s not in live]:
             del self._proxies[slot]
         camera = self._camera(view, "main")
-        array = self._array(view, "main")
         camera.pixel_array = array
-        self._seed_images(camera, state)
-        self._orient(camera, state)
-        for _, run in it.groupby(state.order, key=lambda entry: entry[0]):
+        prepared = False
+
+        def prepare() -> None:
+            # What the camera's own draw reads beyond the view: a run made
+            # again from its calls reads neither.
+            nonlocal prepared
+            if not prepared:
+                self._seed_images(camera, state)
+                self._orient(camera, state)
+                prepared = True
+
+        if replays is None:
+            prepare()
+        views = (_view_key(view, flat=False), _view_key(view, flat=True))
+        key: Any = None
+        for _, run in it.groupby(order, key=lambda entry: entry[0]):
             entries = list(run)
             self._draw_displays(entries)
-            self._draw_entries(camera, entries, array)
+            if replays is None:
+                self._draw_entries(camera, entries, array)
+            else:
+                key = self._draw_kept(
+                    camera, entries, array, replays, prepare, key, views
+                )
         return array
 
+    def _draw_kept(
+        self,
+        camera: Any,
+        entries: Sequence[tuple[str, int, int]],
+        array: np.ndarray,
+        replays: Replays,
+        prepare: Any,
+        key: Any,
+        views: tuple[Any, Any],
+    ) -> Any:
+        """Draw ``entries`` as :meth:`_draw_entries` does, each member the
+        camera draws through its context made again from the frame before's
+        calls where its key is the same, else drawn and its calls kept.
+
+        The camera draws a run of paths member by member on one context
+        (``display_multiple_non_background_colored_vmobjects``), and each
+        member sets every state its fill and strokes read. The one thing a
+        member takes from the member before is the current path, where its
+        camera places no points and so it begins no path of its own (CE hands
+        the camera only mobjects with points; a pre-projected record can
+        still hold none). A member's key is
+        therefore its record (by identity), its part and the view it reads (a
+        member fixed in frame and unshaded reads no rotation or light), and,
+        for a member whose calls begin no path, the key of the member before.
+        Images and point clouds never touch the context. Returns the key of
+        the last member drawn through the context.
+        """
+        state = self._state
+        assert state is not None
+        for through_context, run in it.groupby(
+            entries,
+            key=lambda entry: _THROUGH_CONTEXT.get(state.records[entry[1]].kind),
+        ):
+            group = list(run)
+            if not through_context:
+                prepare()
+                self._draw_entries(camera, group, array)
+                continue
+            records = [state.records[slot] for _, slot, _ in group]
+            replays.hold(records)
+            context = _context(camera, array)
+            drawing = False
+            # The camera draws paths filled through a background image in
+            # batches of their own, into arrays of their own, never through
+            # the context (``display_multiple_vectorized_mobjects``): drawn
+            # anew, they leave the context as they found it.
+            for filled, batch in it.groupby(
+                zip(group, records, strict=True),
+                key=lambda member: bool(
+                    int(member[1].fields.get("features", 0)) & FEATURE_BACKGROUND_IMAGE
+                ),
+            ):
+                key, drawing = self._draw_batch(
+                    camera,
+                    list(batch),
+                    filled,
+                    array,
+                    context,
+                    replays,
+                    prepare,
+                    key,
+                    views,
+                    drawing,
+                )
+        return key
+
+    def _draw_batch(
+        self,
+        camera: Any,
+        batch: list[tuple[tuple[str, int, int], Record]],
+        filled: bool,
+        array: np.ndarray,
+        context: Any,
+        replays: Replays,
+        prepare: Any,
+        key: Any,
+        views: tuple[Any, Any],
+        drawing: bool,
+    ) -> tuple[Any, bool]:
+        """One batch of a run the camera draws through its context: paths
+        filled through a background image (``filled``), drawn anew, or
+        members each made again or drawn and kept (:meth:`_draw_kept`).
+        Returns the key of the last member drawn through the context, and
+        whether the camera is ready to draw.
+        """
+        if filled:
+            prepare()
+            self._draw_entries(camera, [entry for entry, _ in batch], array)
+            return key, drawing
+        for (_, slot, part), record in batch:
+            fields = record.fields
+            flat = fields.get("space") == "overlay" and not fields.get("shade_in_3d")
+            own = (id(record), part, views[flat])
+            calls = replays.found(own)
+            if calls is not None:
+                key = own
+            else:
+                calls = replays.found((key, own))
+                if calls is not None:
+                    key = (key, own)
+            if calls is not None:
+                replay(context, calls)
+                continue
+            if not drawing:
+                prepare()
+                if isinstance(camera, ThreeDCamera):
+                    camera.reset_rotation_matrix()
+                drawing = True
+            recording = Recording(context)
+            camera.display_vectorized(self._proxy(slot, part, record), recording)
+            key = own if recording.begins_path() else (key, own)
+            replays.keep(key, recording.calls)
+        return key, drawing
+
     @staticmethod
-    def _refuse_unknown(state: StreamState) -> None:
-        """Refuse the frame if a record it draws (in the order, or in a
-        display's sub-frame) has a kind, a feature bit or a field value Cairo
+    def _refuse_unknown(
+        state: StreamState, order: Sequence[tuple[str, int, int]]
+    ) -> None:
+        """Refuse the frame if a record of ``order`` (or of a display's
+        sub-frame it reaches) has a kind, a feature bit or a field value Cairo
         does not draw.
         """
-        todo = [slot for _, slot, _ in state.order]
+        todo = [slot for _, slot, _ in order]
         seen: set[int] = set()
         while todo:
             slot = todo.pop()
@@ -546,6 +1116,133 @@ class CairoDrawer:
             sub_camera = self._camera(sub_view, ("display", slot))
             sub_camera.pixel_array = sub_array
             self._draw_entries(sub_camera, sub_order, sub_array)
+
+
+class _Taken:
+    """A Cairo context that keeps, at each fill and stroke made on it, what
+    it was handed (:class:`~.contributors.Outline`), and makes every call on
+    the context it stands for.
+    """
+
+    def __init__(self, context: Any) -> None:
+        self._context = context
+        self.ops: list[Outline] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._context, name)
+
+    def fill(self) -> None:
+        self._take("fill")
+        self._context.fill()
+
+    def fill_preserve(self) -> None:
+        self._take("fill")
+        self._context.fill_preserve()
+
+    def stroke(self) -> None:
+        self._take("stroke")
+        self._context.stroke()
+
+    def stroke_preserve(self) -> None:
+        self._take("stroke")
+        self._context.stroke_preserve()
+
+    def _take(self, op: str) -> None:
+        import cairo
+
+        ctx = self._context
+        matrix = ctx.get_matrix()
+        source = ctx.get_source()
+        if isinstance(source, cairo.SolidPattern):
+            stops = [source.get_rgba()]
+        elif isinstance(source, cairo.Gradient):
+            stops = [stop[1:] for stop in source.get_color_stops_rgba()]
+        else:  # pragma: no cover - the camera paints solids and gradients
+            stops = []
+        # The camera hands Cairo its colours' channels reversed (the surface
+        # holds them in that order): the frame's order is the reverse.
+        colours = tuple((b, g, r, a) for r, g, b, a in stops)
+        width = 0.0
+        join = cap = ""
+        if op == "stroke":
+            dx, dy = ctx.user_to_device_distance(ctx.get_line_width(), 0.0)
+            width = float(np.hypot(dx, dy))
+            # pycairo's enums name themselves only in their repr ("cairo.LineJoin.MITER").
+            join = repr(ctx.get_line_join()).rsplit(".", 1)[-1].lower()
+            cap = repr(ctx.get_line_cap()).rsplit(".", 1)[-1].lower()
+        subpaths: list[Subpath] = []
+        start: tuple[float, float] | None = None
+        at: tuple[float, float] = (0.0, 0.0)
+        rows: list[list[tuple[float, float]]] = []
+
+        def close(closed: bool) -> None:
+            # Cairo begins a new subpath at a closed one's start (a lone move draws nothing).
+            if start is not None and rows:
+                segments = np.array(rows, dtype=float).reshape(-1, 3, 2)
+                subpaths.append(Subpath(start, segments, closed))
+
+        for kind, points in ctx.copy_path():
+            placed = [
+                matrix.transform_point(points[i], points[i + 1])
+                for i in range(0, len(points), 2)
+            ]
+            if kind == cairo.PATH_MOVE_TO:
+                close(False)
+                start = at = placed[0]
+                rows = []
+            elif kind == cairo.PATH_LINE_TO:
+                end = placed[0]
+                rows.append(
+                    [
+                        (at[0] + (end[0] - at[0]) / 3, at[1] + (end[1] - at[1]) / 3),
+                        (
+                            at[0] + 2 * (end[0] - at[0]) / 3,
+                            at[1] + 2 * (end[1] - at[1]) / 3,
+                        ),
+                        end,
+                    ]
+                )
+                at = end
+            elif kind == cairo.PATH_CURVE_TO:
+                rows.append(placed)
+                at = placed[2]
+            elif kind == cairo.PATH_CLOSE_PATH:
+                close(True)
+                at = start if start is not None else at
+                start = None
+                rows = []
+        close(False)
+        self.ops.append(
+            Outline(
+                op=op,
+                colours=colours,
+                width=width,
+                subpaths=tuple(subpaths),
+                join=join,
+                cap=cap,
+            )
+        )
+
+
+def _pre(f: dict[str, Any], state: StreamState) -> dict[str, Any] | None:
+    """A pre-projected record's produced values, as the painter camera hands
+    them to CE's display code: the placed points, the gradient's placed ends
+    as CE's camera receives them back, and the paints' RGBA rows.
+    """
+    pre = f.get("pre_projected")
+    if pre is None:
+        return None
+    gradient = pre.get("gradient")
+    return {
+        "points": state.shapes[pre["points"]].data,
+        "gradient": None
+        if gradient is None
+        else np.array([gradient[:3], gradient[3:]], dtype=float),
+        **{
+            name: _rows(pre.get(name), state)
+            for name in ("fill", "stroke", "background_stroke")
+        },
+    }
 
 
 def _mixed(a: Any, b: Any, mix: float) -> Any:

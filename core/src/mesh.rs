@@ -9,8 +9,11 @@
 //!   across a projected triangle (for CE's default projection; under the exponential option, or
 //!   with a corner at or behind the eye, the plane through the corners approximates it), so a plane
 //!   per triangle is exact at every sub-sample. The plane comes from the triangle's canonical world
-//!   plane (`depth::WorldPlane`), so coplanar triangles of any triangulation, and paths on their
-//!   plane, get bit-identical depth and tie by draw order. A fixed orientation record is a
+//!   plane (`depth::WorldPlane`), so coplanar triangles of any triangulation get bit-identical
+//!   depth; offered to the frame's `depth::Registry` with its paths, the triangle takes the
+//!   identity of the plane it lies on, which paths and other meshes on that plane share, so
+//!   they tie by draw order where their keys lie within the snap's departure of one plane
+//!   (`order::coplanar_tied`). A fixed orientation record is a
 //!   camera-facing plane at its centre's depth. Anything else is in front of the scene, and ties go
 //!   by draw order, as under a flat camera, where everything ties.
 //! - Colour: the fill, by the record's group opacity; lit when the record is `shade_in_3d` and the
@@ -22,14 +25,15 @@
 //!   way from either side of a shared edge.
 
 use crate::composite::{
-    Coverage, FULL, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, SUBPIXEL,
-    TransparentPass, premultiply, sample_fixed,
+    Coverage, FULL, FlatRecord, Fragment, OpaquePass, Plane, Producer, Rect, SAMPLES, SUBPIXEL,
+    TransparentPass, clear, premultiply, sample_fixed,
 };
-use crate::depth::WorldPlane;
+use crate::depth::{Registry, WorldPlane};
 use crate::project::{FrameMap, Projection, placement, pre_display};
 use crate::shade::{Light, TriangleColour};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
+use std::sync::Arc;
 
 /// How far outside the frame, in pixels, a triangle may reach before it is clipped.
 const GUARD: f64 = 65536.0;
@@ -43,6 +47,9 @@ pub struct MeshDraw<'a> {
     pub triangles: &'a [[u32; 3]],
     pub normals: Option<&'a [[f64; 3]]>,
     pub place: Affine,
+    /// The placements `place` is made of, outer first (the identity for none): an instance's
+    /// placement and its record's ([`crate::path::PathDraw::places`]).
+    pub places: [Affine; 2],
     pub fill: [f64; 4],
     pub order: u32,
     pub sub: u32,
@@ -68,6 +75,18 @@ struct Tri {
     /// Which mesh drawn it belongs to (from 1), so the compositor can merge one surface's
     /// fragments that tile a pixel.
     surface: u32,
+    /// The identity of the registered plane it lies on ([`Fragment::plane`]), all zero for none:
+    /// set from `handle` once the registry settles ([`Meshes::identify`]).
+    plane: [u32; 4],
+    /// Its record's handle in the frame's registry plus one, `0` for a triangle not offered.
+    handle: u32,
+    /// The snap's departure of its key ([`Fragment::snap`]), finite on a registered plane.
+    snap: f64,
+    /// Whether it is a flat record of the registry, which its fragments carry
+    /// ([`Fragment::record`]): set once the registry settles ([`Meshes::identify`]).
+    flat: bool,
+    /// Its share against what else has no plane of its own ([`Fragment::wide`]).
+    wide: f64,
 }
 
 /// Mesh records lowered to triangles, binned by tile: a producer of mask fragments.
@@ -75,6 +94,62 @@ pub struct Meshes {
     tris: Vec<Tri>,
     bins: Vec<Vec<u32>>,
     width: u32,
+    /// The frame's map and its camera's projection, which key a triangle's share once the
+    /// registry settles ([`Meshes::identify`]).
+    map: FrameMap,
+    projection: Option<Projection>,
+    /// The frame's registry, settled, which holds the flat triangles' records their fragments
+    /// carry ([`Fragment::record`]); none before [`Meshes::identify`].
+    records: Option<Arc<Registry>>,
+}
+
+impl Meshes {
+    /// Gives each triangle offered to `registry`, now settled, the identities of the planes it lies
+    /// on, and its fragments the record it is where it is flat ([`Fragment::record`]). A triangle
+    /// with no plane of its own (`Registry::offer_triangle`) carries, as any record with no plane
+    /// of its own does, the largest share its identities give it: for each, how far its corners
+    /// may stand off that identity's plane where it meets the flat records on it
+    /// (`Registry::off_members`), which bounds how far its key, read on its corners within their
+    /// hull, stands from that plane's there; and, attached to flat records' identities, the
+    /// largest their whole departure gives (`Registry::off_identity`), against what else has no
+    /// plane of its own ([`Fragment::wide`]).
+    pub fn identify(&mut self, registry: &Arc<Registry>) {
+        self.records = Some(Arc::clone(registry));
+        for t in &mut self.tris {
+            if t.handle == 0 {
+                continue;
+            }
+            let handle = t.handle - 1;
+            t.plane = registry.identities(handle);
+            if registry.is_flat(handle) {
+                t.flat = t.snap.is_finite();
+                continue;
+            }
+            count!(DEGENERATE_TRIANGLES);
+            if !registry.attached(handle) {
+                count!(UNATTACHED_TRIANGLES);
+            }
+            if let Some(p) = &self.projection
+                && t.plane[0] != 0
+            {
+                let most = |off: fn(&Registry, u32, u32) -> f64| {
+                    t.plane
+                        .iter()
+                        .take_while(|id| **id != 0)
+                        .map(|id| {
+                            let off = off(registry, handle, *id);
+                            p.key_reach(&registry.plane(*id), &self.map, off)
+                        })
+                        .fold(0.0, f64::max)
+                };
+                let (snap, wide) = (most(Registry::off_members), most(Registry::off_identity));
+                t.snap = snap;
+                if registry.attached(handle) {
+                    t.wide = wide;
+                }
+            }
+        }
+    }
 }
 
 /// A normal through a placement: by the cofactors of its linear part, normalized.
@@ -93,24 +168,31 @@ fn transform_normal(m: &Affine, n: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// Lowers mesh records to triangles for a frame of `width x height` pixels.
-pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Meshes {
-    let map = FrameMap::cairo(
-        width,
-        height,
-        view.frame_width,
-        view.frame_height,
-        view.frame_center,
-    );
+/// Lowers mesh records to triangles for a frame of `width x height` pixels, offering each triangle
+/// keyed on its world plane to the frame's `registry`; once it settles, [`Meshes::identify`] gives
+/// them their identities.
+pub fn lower(
+    view: &View,
+    width: u32,
+    height: u32,
+    draws: &[MeshDraw<'_>],
+    registry: &mut Registry,
+) -> Meshes {
+    // A mesh is a surface's faces: CE paints them as paths, through its Cairo context.
+    let map = FrameMap::of_kind(view, RecordKind::Mesh, width, height);
     let camera = match &view.camera {
         Camera::ThreeD(c) => Some(c),
         _ => None,
     };
     let projection = camera.map(|c| Projection::new(c, view.frame_center));
+    let grid = crate::depth::input_grid(view);
     let mut meshes = Meshes {
         tris: Vec::new(),
         bins: vec![Vec::new(); (tiles_across(width) * height.div_ceil(TILE)) as usize],
         width,
+        map,
+        projection: projection.clone(),
+        records: None,
     };
     for (surface, draw) in draws.iter().enumerate() {
         let rec = draw.record;
@@ -130,18 +212,24 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
             rec.depth.fixed_orientation_centre,
         );
         let shown = pre_display(&world, projection.as_ref(), placement);
-        let corners: Vec<([f64; 2], f64)> = shown
+        // Each corner on screen, its key and how far that key may err.
+        let corners: Vec<([f64; 2], f64, f64)> = shown
             .iter()
             .map(|p| {
                 let at = map.apply(*p);
-                let key = match keyed {
-                    Some(plane) => plane.at(at[0], at[1]),
-                    None => -projection.as_ref().unwrap().factor(p[2]),
-                };
-                (at, key)
+                match keyed {
+                    Some(plane) => (at, plane.at(at[0], at[1]), 0.0),
+                    None => {
+                        let projection = projection.as_ref().unwrap();
+                        (at, -projection.factor(p[2]), projection.key_error(*p))
+                    }
+                }
             })
             .collect();
         let alpha = fill[3] * rec.opacity;
+        // Of a clear alpha (`composite::clear`), Cairo paints nothing of its triangles: none is
+        // offered to the registry, whose identities what draws nothing must not move.
+        let paints = !clear(premultiply([0.0, 0.0, 0.0, alpha]));
         let rgb = [fill[0], fill[1], fill[2]];
         let light = match camera {
             Some(c) if rec.depth.shade_in_3d && c.should_apply_shading => Some(Light::new(
@@ -157,23 +245,62 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
                 .map(|n| transform_normal(&draw.place, *n))
                 .collect()
         });
-        let opaque = premultiply([0.0, 0.0, 0.0, alpha])[3] == 255;
+        let alpha8 = premultiply([0.0, 0.0, 0.0, alpha])[3];
+        let opaque = alpha8 == 255;
         for (sub, t) in draw.triangles.iter().enumerate() {
             let idx = t.map(|i| i as usize);
             let px = idx.map(|i| corners[i].0);
-            let through =
-                || Plane::through(idx.map(|i| [corners[i].0[0], corners[i].0[1], corners[i].1]));
-            // A projected triangle lies on its world plane, made canonical so coplanar meshes of
-            // any triangulation (and paths on the same plane) get the same depth plane.
-            let depth = match (keyed, projection.as_ref()) {
-                (Some(plane), _) => plane,
-                (None, Some(p)) if idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
-                    WorldPlane::of_triangle(idx.map(|i| world[i]))
-                        .and_then(|plane| p.key_plane(&plane, &map, world[idx[0]], MIN_PLANE_COS))
-                        .unwrap_or_else(through)
-                }
-                _ => through(),
+            let through = || {
+                Plane::through_with_errors(
+                    idx.map(|i| [corners[i].0[0], corners[i].0[1], corners[i].1]),
+                    idx.map(|i| corners[i].2),
+                )
             };
+            // The triangle's box on screen: a mask covers a sub-sample only inside it.
+            let region = [
+                px.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min),
+                px.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
+                px.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max),
+                px.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max),
+            ];
+            // A projected triangle lies on its world plane, made canonical so coplanar meshes of
+            // any triangulation get the same depth plane, and offered to the registry, so what
+            // lies on it shares its identity. Its key carries the snap's departure of its corners,
+            // placed (`depth::snap_departure`) and theirs off its plane (`depth::departure`:
+            // nothing but rounding, unless the plane is the axis plane its corners share within
+            // the grid). The rounding of its plane's coefficients is in its key's own bound, as it
+            // happened (`Projection::key_plane`). A triangle whose corners lie on a line has no
+            // plane of its own (`Registry::offer_triangle`): keyed on its corners' axis plane where
+            // they share one, else through its corners on screen, it takes the identities it lies
+            // on, and the share they give it ([`Meshes::identify`]), once the registry settles.
+            let (depth, handle, snap) = match (keyed, projection.as_ref()) {
+                (Some(plane), _) => (plane, 0, f64::INFINITY),
+                (None, Some(p)) if paints && idx.iter().all(|i| p.keys_planar_at(world[*i])) => {
+                    let at = idx.map(|i| world[i]);
+                    let own = idx.map(|i| draw.positions[i]);
+                    let plane = WorldPlane::of_triangle(at, grid);
+                    let (handle, flat) = registry.offer_triangle(plane, &at, &draw.places, &own);
+                    let keyed = plane.and_then(|plane| {
+                        let key = p.key_plane(&plane, &map, at[0], MIN_PLANE_COS, region)?;
+                        let normal = plane.unrounded.normal;
+                        let off = crate::depth::snap_departure(grid, normal, &draw.places, &own)
+                            + crate::depth::departure(&plane, &at);
+                        Some((key, p.key_reach(&plane, &map, off)))
+                    });
+                    match keyed {
+                        Some((key, snap)) => (key, handle + 1, snap),
+                        None if !flat => (through(), handle + 1, f64::INFINITY),
+                        None => (through(), 0, f64::INFINITY),
+                    }
+                }
+                _ => (through(), 0, f64::INFINITY),
+            };
+            // Of no alpha, Cairo paints nothing of it, as a path's solid layer
+            // ([`crate::path::Lowering::layers`]): not offered to the registry (`paints` above),
+            // as such a path is not, it lays no fragment either.
+            if alpha8 == 0 {
+                continue;
+            }
             let colour = match &light {
                 None => TriangleColour::flat(rgb, alpha),
                 Some(light) => light.triangle(
@@ -193,6 +320,11 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[MeshDraw<'_>]) -> Me
                 order: draw.order,
                 sub: draw.sub + sub as u32,
                 surface: surface as u32 + 1,
+                plane: [0; 4],
+                handle,
+                snap,
+                flat: false,
+                wide: f64::NEG_INFINITY,
             };
             meshes.push(px, tri, height);
         }
@@ -320,13 +452,17 @@ impl Meshes {
     }
 
     /// Rasterizes the opaque or the other triangles of the tile at `rect`.
-    fn raster(&self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment)) {
+    fn raster<'a>(&'a self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment<'a>)) {
         let offsets: [[i64; 2]; SAMPLES] = std::array::from_fn(sample_fixed);
+        let records = self.records.as_deref();
         for &i in &self.bins[tile_index(self.width, rect.x0, rect.y0)] {
             let t = &self.tris[i as usize];
             if t.opaque != opaque {
                 continue;
             }
+            let record = records
+                .filter(|_| t.flat)
+                .and_then(|r| r.flat_record(t.handle - 1));
             // Per edge: the offset of each sub-sample from the pixel's corner, and their range.
             let off: [[i64; SAMPLES]; 3] = t
                 .edges
@@ -354,12 +490,14 @@ impl Meshes {
                         continue;
                     }
                     let colour = t.colour.at(x, y, mask);
-                    add(
-                        x,
-                        y,
+                    let mut f =
                         Fragment::new(t.depth, colour, Coverage::Mask(mask), t.order, t.sub)
-                            .on_surface(t.surface),
-                    );
+                            .on_surface(t.surface);
+                    f.plane = t.plane;
+                    f.snap = t.snap;
+                    f.record = record.map(FlatRecord);
+                    f.wide = t.wide;
+                    add(x, y, f);
                 }
             }
         }
@@ -367,11 +505,11 @@ impl Meshes {
 }
 
 impl Producer for Meshes {
-    fn opaque(&self, pass: &mut OpaquePass<'_>) {
+    fn opaque<'a>(&'a self, pass: &mut OpaquePass<'a>) {
         self.raster(pass.rect(), true, |x, y, f| pass.add(x, y, f));
     }
 
-    fn transparent(&self, pass: &mut TransparentPass<'_>) {
+    fn transparent<'a>(&'a self, pass: &mut TransparentPass<'a>) {
         self.raster(pass.rect(), false, |x, y, f| pass.add(x, y, f));
     }
 }

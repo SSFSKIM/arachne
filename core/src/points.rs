@@ -15,11 +15,17 @@
 //! - Depth: a projected point's key is the camera-facing plane through it
 //!   ([`Projection::facing_plane`]), the plane a fixed orientation centred on it takes, so points
 //!   and camera-facing surfaces at one depth tie by draw order.
+//! - A pre-projected record's points are where its own camera placed them: drawn there, each keyed
+//!   by the plane facing that camera through it, in the camera's axes
+//!   ([`crate::project::produced_key`]).
 
 use crate::composite::{
     Coverage, FULL, Fragment, OpaquePass, Plane, Producer, Rect, TransparentPass,
 };
-use crate::project::{FrameMap, Projection, placement, pre_display, subpixel_coords};
+use crate::project::{
+    FrameMap, Placement, Projection, mapping_centre_of, placement, pre_display, produced_key,
+    subpixel_coords,
+};
 use crate::tiles::{TILE, tile_index, tiles_across};
 use crate::xf::*;
 
@@ -28,6 +34,12 @@ pub struct PointsDraw<'a> {
     pub record: &'a Record,
     pub positions: &'a [[f64; 3]],
     pub colours: &'a [[f64; 4]],
+    /// The positions are where a camera of the scene's own placed the points (a pre-projected
+    /// record's tail), placed and projected already.
+    pub pre_projected: bool,
+    /// Where that camera placed the record's fixed-orientation centre, when it has one
+    /// ([`crate::project::produced_pivot`]).
+    pub pivot: Option<[f64; 3]>,
     pub order: u32,
 }
 
@@ -88,14 +100,10 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
         Camera::ThreeD(c) => Some(Projection::new(c, view.frame_center)),
         _ => None,
     };
-    let map = FrameMap::cairo(
-        width,
-        height,
-        view.frame_width,
-        view.frame_height,
-        view.frame_center,
-    );
+    let map = FrameMap::of_kind(view, RecordKind::Points, width, height);
     let facing = projection.as_ref().map(|p| p.facing_planes(&map));
+    let axes = projection.as_ref().map(Projection::in_camera_axes);
+    let facing_axes = axes.as_ref().map(|p| p.facing_planes(&map));
     let mut out = Blocks {
         blocks: Vec::new(),
         bins: vec![Vec::new(); (tiles_across(width) * height.div_ceil(TILE)) as usize],
@@ -111,28 +119,41 @@ pub fn lower(view: &View, width: u32, height: u32, draws: &[PointsDraw<'_>]) -> 
             continue;
         }
         let lo = (-t).div_euclid(2) + 1;
-        let (place_kind, keyed) = placement(
-            projection.as_ref(),
-            &map,
-            rec.depth.space,
-            rec.depth.fixed_orientation_centre,
-        );
+        let (place_kind, keyed) = if draw.pre_projected {
+            let key = produced_key(axes.as_ref(), &map, rec.depth.space, draw.pivot);
+            (Placement::Flat, key)
+        } else {
+            placement(
+                projection.as_ref(),
+                &map,
+                rec.depth.space,
+                rec.depth.fixed_orientation_centre,
+            )
+        };
         for (i, p) in draw.positions.iter().enumerate() {
-            let world = place(&rec.geometry.place_a, *p);
+            let world = if draw.pre_projected {
+                *p
+            } else {
+                place(&rec.geometry.place_a, *p)
+            };
             if world.iter().any(|v| !v.is_finite()) {
                 continue; // CE draws a non-finite point nowhere on the frame.
             }
             let shown = pre_display(&[world], projection.as_ref(), place_kind)[0];
             // A projected point takes the key of the camera-facing plane through it, as a fixed
-            // orientation centred on it does, so points and surfaces at one depth tie exactly.
-            let depth = keyed.unwrap_or_else(|| facing.as_ref().unwrap().at(world));
+            // orientation centred on it does, so points and surfaces at one depth tie exactly; a
+            // pre-projected one, the plane facing its camera through where it was placed.
+            let depth = keyed.unwrap_or_else(|| match &facing_axes {
+                Some(f) if draw.pre_projected => f.at(axes.as_ref().unwrap().unproject(world)),
+                _ => facing.as_ref().unwrap().at(world),
+            });
             let [sx, sy] = subpixel_coords(
                 &[shown],
                 width,
                 height,
                 view.frame_width,
                 view.frame_height,
-                view.frame_center,
+                mapping_centre_of(view, RecordKind::Points),
             )[0];
             if !(sx.is_finite() && sy.is_finite()) || depth.a.is_nan() {
                 continue;
@@ -197,7 +218,7 @@ impl Blocks {
         self.blocks.is_empty()
     }
 
-    fn raster(&self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment)) {
+    fn raster<'f>(&self, rect: Rect, opaque: bool, mut add: impl FnMut(u32, u32, Fragment<'f>)) {
         for &i in &self.bins[tile_index(self.width, rect.x0, rect.y0)] {
             let b = &self.blocks[i as usize];
             if (b.colour[3] == 255) != opaque {

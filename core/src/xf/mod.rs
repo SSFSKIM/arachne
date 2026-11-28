@@ -14,14 +14,18 @@ pub use key::Key;
 ///
 /// From XF 1 the layout is append-only: a new field or kind bumps the minor, and nothing removes
 /// or retypes a field.
-pub const XF_VERSION: (u16, u16) = (1, 0);
+pub const XF_VERSION: (u16, u16) = (1, 5);
 
 /// CE's background-image fill: paint the path into a separate array and multiply by an image.
 /// Carried by XF, drawn by Cairo only in this build.
 pub const FEATURE_BACKGROUND_IMAGE: u64 = 1;
 
+/// A scene camera's pre-display geometry and paints, carried without projecting or shading again.
+/// Carried by XF 1.1, drawn by Cairo only in this build.
+pub const FEATURE_PRE_PROJECTED: u64 = 2;
+
 /// Feature bits this build understands. A drawer can still refuse a known feature it cannot draw.
-pub const KNOWN_FEATURES: u64 = FEATURE_BACKGROUND_IMAGE;
+pub const KNOWN_FEATURES: u64 = FEATURE_BACKGROUND_IMAGE | FEATURE_PRE_PROJECTED;
 
 /// An exact time: numerator over a positive denominator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -444,6 +448,38 @@ pub struct FaceGroup {
     pub fill: Key,
     /// Per-face stroke colours (one row per face), when the faces are stroked.
     pub stroke: Option<Key>,
+    /// XF 1.3: per face, the end of its run of the points (one past its last point), rising, the
+    /// last the points' count: a surface partly drawn holds faces of different lengths. Empty:
+    /// the points cut into one equal run per face, as before XF 1.3.
+    pub face_ends: Vec<u32>,
+    /// XF 1.3: per face, its stroke width: each face of a surface written stroked at its own
+    /// phase's width. Empty: every face at the record's stroke width.
+    pub face_widths: Vec<f64>,
+}
+
+impl FaceGroup {
+    /// Face `i`'s run of the record's `len` points: from the face end before it to its own, or
+    /// with no face ends one of equal runs. The stream checks a record's face ends, or that its
+    /// points divide into its faces, before reading them.
+    pub fn run(&self, len: usize, i: usize) -> std::ops::Range<usize> {
+        if self.face_ends.is_empty() {
+            let size = len / self.uv.len();
+            i * size..(i + 1) * size
+        } else {
+            let start = i.checked_sub(1).map_or(0, |j| self.face_ends[j] as usize);
+            start..self.face_ends[i] as usize
+        }
+    }
+
+    /// Face `i`'s stroke width: its own, or `width`, the record's, where the faces state none.
+    pub fn width(&self, width: f64, i: usize) -> f64 {
+        self.face_widths.get(i).copied().unwrap_or(width)
+    }
+
+    /// Whether it carries an XF 1.3 list.
+    pub fn carries_face_lists(&self) -> bool {
+        !self.face_ends.is_empty() || !self.face_widths.is_empty()
+    }
 }
 
 /// A point cloud: positions are the record's path-kind shape.
@@ -502,6 +538,36 @@ pub enum Body {
     Opaque(Vec<u8>),
 }
 
+/// A scene camera's pre-display output, carried in a record's XF 1.1 tail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreProjected {
+    pub points: Key,
+    pub gradient: Option<[[f64; 3]; 2]>,
+    pub fill: Paint,
+    pub stroke: Paint,
+    pub background_stroke: Paint,
+}
+
+/// One object of a record's source (XF 1.5), in mobject containment: never an address or a name
+/// of the scene's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceNode {
+    /// The object, by a token the writer keeps for it across the stream.
+    pub token: u32,
+    /// Its nearest library class, fully qualified: a scene's subclass is named by its base.
+    pub class: String,
+}
+
+/// A held record's new source and facing group (XF 1.5), its drawing unchanged: a row for a slot
+/// the delta neither sets nor removes, so the record is not set again and what an older minor
+/// carries does not move.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceRow {
+    pub slot: u32,
+    pub facing_group: u32,
+    pub source: Vec<Vec<SourceNode>>,
+}
+
 /// One drawn object.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
@@ -521,6 +587,32 @@ pub struct Record {
     /// The image multiplied into the record's paint; present exactly when bit 0 is set.
     pub fill_image: Option<Key>,
     pub body: Body,
+    /// Present exactly when bit 1 is set; follows the body on the wire.
+    pub pre_projected: Option<PreProjected>,
+    /// How each path the record draws lies, decided before its geometry was snapped
+    /// ([`crate::depth::Planarity`] codes, XF 1.2): one per path, in the order the record draws
+    /// them (a face group's faces, an instances record's members, else one). `None` when the
+    /// writer did not decide: the drawer decides from the points it is handed.
+    pub planes: Option<Vec<u8>>,
+    /// The normals CE's lighting lights each path the record draws by, at its two lit corners,
+    /// decided before its geometry was snapped ([`crate::shade::decided_normals`], XF 1.2): two
+    /// per path, in the order of `planes`; the zero vector at a degenerate corner, lit by the
+    /// face's own normal. Carried for records the camera shades. `None` when the writer did not
+    /// decide: the drawer finds them from the points it is handed.
+    pub normals: Option<Vec<[f64; 3]>>,
+    /// A path record's miter joins as Cairo decides them on the points as made (XF 1.4): one byte
+    /// per cubic of its points, bit 0 set where Cairo joins into the cubic and bit 1 where it
+    /// mitres there; for the first cubic of a closed subpath, its closing join. `None` when the
+    /// writer did not decide: the drawer decides from the points it is handed
+    /// ([`crate::join_mask`]).
+    pub joins: Option<Vec<u8>>,
+    /// The objects the record was drawn from (XF 1.5): one path per way it is contained, each the
+    /// record's owner first, then its containment ancestors. Empty: not carried. Read only to
+    /// place camera-facing labels ([`crate::label_plan`]).
+    pub source: Vec<Vec<SourceNode>>,
+    /// The camera-facing label the record belongs to, by a token its glyphs share (XF 1.5); `0`
+    /// for none. Read only to place camera-facing labels ([`crate::label_plan`]).
+    pub facing_group: u32,
 }
 
 impl Record {
@@ -540,7 +632,18 @@ impl Record {
             layer: 0,
             fill_image: None,
             body: Body::None,
+            pre_projected: None,
+            planes: None,
+            normals: None,
+            joins: None,
+            source: Vec::new(),
+            facing_group: 0,
         }
+    }
+
+    /// Whether it carries an XF 1.5 field: a source or a facing group.
+    pub fn carries_source(&self) -> bool {
+        !self.source.is_empty() || self.facing_group != 0
     }
 
     /// Every shape key the record references.
@@ -548,6 +651,9 @@ impl Record {
         let mut keys = Vec::new();
         keys.extend(self.geometry.shape_a);
         keys.extend(self.fill_image);
+        if let Some(p) = &self.pre_projected {
+            keys.push(p.points);
+        }
         if let Some(blend) = &self.geometry.blend {
             keys.push(blend.shape_b);
         }
@@ -577,6 +683,11 @@ impl Record {
             paint(&b.fill);
             paint(&b.stroke);
             paint(&b.background_stroke);
+        }
+        if let Some(p) = &self.pre_projected {
+            paint(&p.fill);
+            paint(&p.stroke);
+            paint(&p.background_stroke);
         }
         match &self.body {
             Body::FaceGroup(f) => {
@@ -671,13 +782,17 @@ pub struct View {
     pub frame_height: f64,
     pub frame_center: [f64; 3],
     /// Centre frozen into CE's cached Cairo frame-to-pixel matrix for this view's pixel array.
-    /// Carried for Cairo; drawers of this build still map by `frame_center`.
+    /// Paths (and faces, meshes and path instances) map to pixels around it; point clouds and
+    /// images around `frame_center` (`project::FrameMap::of_kind`).
     pub mapping_centre: [f64; 3],
     pub background: Background,
     pub camera: Camera,
     pub cairo_line_width_multiple: f64,
     pub use_z_index: bool,
     pub light: LightModel,
+    /// The grid the delta's geometry was snapped to, in scene units (XF 1.2); `0.0` when it was
+    /// not (absent on the wire).
+    pub input_grid: f64,
 }
 
 /// The layer an order entry draws in.
@@ -712,13 +827,15 @@ pub struct Delta {
     pub set: Vec<Record>,
     pub remove: Vec<u32>,
     pub order: Option<Vec<OrderEntry>>,
+    /// Held records' new sources (XF 1.5).
+    pub source: Vec<SourceRow>,
 }
 
 impl Delta {
     /// An empty delta at time `t`, sequence number `seq`.
     pub fn new(t: Time, seq: u64) -> Delta {
         Delta {
-            version: XF_VERSION,
+            version: (1, 0),
             t,
             seq,
             view: None,
@@ -729,6 +846,7 @@ impl Delta {
             set: Vec::new(),
             remove: Vec::new(),
             order: None,
+            source: Vec::new(),
         }
     }
 
@@ -742,5 +860,6 @@ impl Delta {
             && self.set.is_empty()
             && self.remove.is_empty()
             && self.order.is_none()
+            && self.source.is_empty()
     }
 }

@@ -152,6 +152,27 @@ def collect() -> list[DocsExample]:
     return examples
 
 
+def three_d(example: DocsExample) -> bool:
+    """Whether the block's scene is a ``ThreeDScene``: its class, or a class of the
+    block it derives from, names ``ThreeDScene`` or ``SpecialThreeDScene`` as a base.
+    """
+    bases = {
+        node.name: [base.id for base in node.bases if isinstance(base, ast.Name)]
+        for node in ast.walk(ast.parse(example.code))
+        if isinstance(node, ast.ClassDef)
+    }
+    seen: set[str] = set()
+    todo = [example.scene]
+    while todo:
+        name = todo.pop()
+        if name in ("ThreeDScene", "SpecialThreeDScene"):
+            return True
+        if name not in seen:
+            seen.add(name)
+            todo.extend(bases.get(name, []))
+    return False
+
+
 def sample_indices(frame_count: int) -> list[int]:
     """The frames an animated example compares: 4 spread evenly over it, then its last."""
     if frame_count < 1:

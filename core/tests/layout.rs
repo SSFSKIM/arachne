@@ -180,7 +180,7 @@ fn a_delta_lays_out_its_sections_in_order() {
         },
         0x0102_0304_0506_0708,
     );
-    d.version = (1, 3);
+    d.version = (1, 6);
     d.view = Some(view);
     d.objects = vec![ObjectInfo {
         object: 0x0a0b_0c0d,
@@ -229,7 +229,7 @@ fn a_delta_lays_out_its_sections_in_order() {
     ];
     let fields = vec![
         (0, "major", u16(1)),
-        (2, "minor", u16(3)),
+        (2, "minor", u16(6)),
         (4, "t_num", i64(-7)),
         (12, "t_den", i64(9_000_000_000)),
         (20, "seq", u64(0x0102_0304_0506_0708)),
@@ -298,6 +298,7 @@ fn flat_view() -> View {
         cairo_line_width_multiple: 0.01,
         use_z_index: true,
         light: LightModel::Ce,
+        input_grid: 0.0,
     }
 }
 
@@ -601,6 +602,8 @@ fn a_path_record_lays_out_every_fixed_field() {
     r.opacity = 0.75;
     r.layer = 0x0102;
     r.fill_image = Some(KF);
+    r.planes = Some(vec![1, 4, 0]);
+    r.normals = Some(vec![[0.0, 0.6, 0.8], [0.0, 0.0, 0.0]]);
     record_both_ways(
         &r,
         &[
@@ -658,6 +661,10 @@ fn a_path_record_lays_out_every_fixed_field() {
             (729, "layer", u16(0x0102)),
             (731, "has fill_image", u8(1)),
             (732, "fill_image", key(&KF)),
+            (748, "planes count (XF 1.2)", u32(3)),
+            (752, "planarity codes", vec![1, 4, 0]),
+            (755, "normals count (XF 1.2)", u32(2)),
+            (759, "normals", f64s(&[0.0, 0.6, 0.8, 0.0, 0.0, 0.0])),
         ],
     );
 }
@@ -810,6 +817,8 @@ fn a_face_group_with_and_without_strokes() {
         grid: [4, 5],
         fill: KB,
         stroke: Some(KC),
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
     });
     let mut fields = plain_fields(2, 0, 0, 0);
     fields.extend([
@@ -829,6 +838,23 @@ fn a_face_group_with_and_without_strokes() {
     f.stroke = None;
     fields.truncate(fields.len() - 2);
     fields.push((253, "has stroke", u8(0)));
+    record_both_ways(&r, &fields);
+
+    // XF 1.3: each face's end in the points and its stroke width, after XF 1.2's planes and
+    // normals (here empty lists: not carried).
+    let Body::FaceGroup(f) = &mut r.body else {
+        unreachable!()
+    };
+    f.face_ends = vec![16, 24];
+    f.face_widths = vec![2.0, 0.75];
+    fields.extend([
+        (254, "planes count (XF 1.2)", u32(0)),
+        (258, "normals count (XF 1.2)", u32(0)),
+        (262, "face end count (XF 1.3)", u32(2)),
+        (266, "face ends", u32s(&[16, 24])),
+        (274, "face width count", u32(2)),
+        (278, "face widths", f64s(&[2.0, 0.75])),
+    ]);
     record_both_ways(&r, &fields);
 }
 
@@ -1050,5 +1076,107 @@ fn a_reveal_without_a_blend_sets_flag_bit_4_only() {
             (222, "layer", u16(9)),
             (224, "has fill_image", u8(0)),
         ],
+    );
+}
+
+#[test]
+fn pre_projected_is_a_tail_after_the_body_not_a_geometry_flag() {
+    let mut r = plain(RecordKind::Points);
+    r.body = Body::Points(Points {
+        colors: KB,
+        radius: 2.25,
+    });
+    r.features = FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: KC,
+        gradient: Some([[-1.0, -2.0, -3.0], [4.0, 5.0, 6.0]]),
+        fill: Paint::One([0.1, 0.2, 0.3, 0.4]),
+        stroke: Paint::Two([[0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 0.05, 0.15]]),
+        background_stroke: Paint::Table(KD),
+    });
+    let mut fields = plain_fields(3, 0, 0, 0);
+    fields[1] = (1, "features (pre_projected)", u64(2));
+    fields.extend([
+        (209, "colors key", key(&KB)),
+        (225, "radius", f64(2.25)),
+        (233, "pre_projected points", key(&KC)),
+        (249, "pre_projected has gradient", u8(1)),
+        (
+            250,
+            "pre_projected gradient",
+            f64s(&[-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]),
+        ),
+        (298, "pre_projected fill (one)", u8(1)),
+        (299, "pre_projected fill rgba", f64s(&[0.1, 0.2, 0.3, 0.4])),
+        (331, "pre_projected stroke (two)", u8(2)),
+        (
+            332,
+            "pre_projected stroke rgba",
+            f64s(&[0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.05, 0.15]),
+        ),
+        (396, "pre_projected background (table)", u8(3)),
+        (397, "pre_projected background key", key(&KD)),
+    ]);
+    record_both_ways(&r, &fields);
+    r.pre_projected = Some(PreProjected {
+        points: KC,
+        gradient: None,
+        fill: Paint::None,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
+    fields.retain(|(offset, _, _)| *offset <= 225);
+    fields.extend([
+        (233, "pre_projected points", key(&KC)),
+        (249, "pre_projected has gradient", u8(0)),
+        (250, "pre_projected fill (none)", u8(0)),
+        (251, "pre_projected stroke (none)", u8(0)),
+        (252, "pre_projected background (none)", u8(0)),
+    ]);
+    record_both_ways(&r, &fields);
+    r.features = 0;
+    r.pre_projected = None;
+    fields.retain(|(offset, _, _)| *offset < 233);
+    fields[1] = (1, "features", u64(0));
+    record_both_ways(&r, &fields);
+}
+
+#[test]
+fn the_writer_asserts_both_pre_projected_presence_disagreements() {
+    let mut r = plain(RecordKind::Path);
+    r.features = FEATURE_PRE_PROJECTED;
+    assert!(std::panic::catch_unwind(|| wire::encode_record(&r)).is_err());
+    r.features = 0;
+    r.pre_projected = Some(PreProjected {
+        points: KC,
+        gradient: None,
+        fill: Paint::None,
+        stroke: Paint::None,
+        background_stroke: Paint::None,
+    });
+    assert!(std::panic::catch_unwind(|| wire::encode_record(&r)).is_err());
+}
+
+/// XF 1.2: a view snapped to a grid carries it after the light model's parameters, and its delta
+/// is version 1.2.
+#[test]
+fn a_view_snapped_to_a_grid_carries_its_grid_last() {
+    let view = View {
+        input_grid: 0.125,
+        ..flat_view()
+    };
+    let mut fields = flat_view_fields();
+    fields.push((120, "input_grid (XF 1.2)", f64(0.125)));
+    let mut d = empty_delta();
+    d.view = Some(view.clone());
+    let written = wire::encode_delta(&d);
+    assert_eq!(&written[..4], &[1, 0, 2, 0]);
+    assert_layout(&written[33..written.len() - 25], &fields);
+    let mut hand = hand_delta(Some(&laid_out(&fields)), &[], &[]);
+    hand[2..4].copy_from_slice(&u16(2));
+    assert_eq!(written, hand);
+    assert_eq!(
+        wire::decode_delta(&hand).unwrap().view.as_ref(),
+        Some(&view)
     );
 }

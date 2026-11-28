@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from arachne import Dot, Square
+from arachne import Dot, Square, VGroup
 from arachne.camera.camera import Camera
 from arachne.camera.three_d_camera import ThreeDCamera
 from arachne.timeline.draw import CameraExtras
@@ -48,6 +48,25 @@ def test_inputs_with_any_one_change_are_not_the_same():
 
     anchor.shift(np.array([1.0, 0.0, 0.0]))
     assert not before.same(_observed(camera))
+
+
+def test_inputs_whose_registration_families_changed_are_not_the_same():
+    """Mobjects kept facing the camera by one centre function are one family:
+    a member registered apart, or back with its family, at an equal centre,
+    changes the inputs though no centre moved.
+    """
+    camera = ThreeDCamera()
+    label = VGroup(Square(0.2), Square(0.1))
+    camera.add_fixed_orientation_mobjects(label)
+    shared = _observed(camera)
+    camera.add_fixed_orientation_mobjects(label[1], center_func=label.get_center)
+    apart = _observed(camera)
+    assert not shared.same(apart)
+    assert not apart.same(shared)
+    family = camera.fixed_orientation_mobjects[label]
+    camera.add_fixed_orientation_mobjects(label[1], center_func=family)
+    assert shared.same(_observed(camera))
+    assert not apart.same(_observed(camera))
 
 
 def test_a_supplied_background_is_the_same_only_as_itself():

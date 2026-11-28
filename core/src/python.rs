@@ -11,7 +11,7 @@ use pyo3::call::PyCallArgs;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 mod contents;
@@ -118,6 +118,25 @@ fn key_of(value: &Bound<'_, PyAny>) -> PyResult<Key> {
         .try_into()
         .map_err(|_| PyValueError::new_err("a key is 16 bytes"))?;
     Ok(Key(array))
+}
+
+/// A source from Python's paths of (token, class): each path names at least one object.
+fn source_of(py: Python<'_>, paths: Vec<Vec<(u32, String)>>) -> PyResult<Vec<Vec<SourceNode>>> {
+    let source: Vec<Vec<SourceNode>> = paths
+        .into_iter()
+        .map(|path| {
+            path.into_iter()
+                .map(|(token, class)| SourceNode { token, class })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if source.iter().any(Vec::is_empty) {
+        return Err(xf_error(
+            py,
+            "path_empty: a source path names at least one object".into(),
+        ));
+    }
+    Ok(source)
 }
 
 fn key_field(fields: &Fields, name: &str) -> PyResult<Option<Key>> {
@@ -270,9 +289,42 @@ fn view_of(fields: Fields) -> PyResult<View> {
         cairo_line_width_multiple: fields.or("cairo_line_width_multiple", 0.01)?,
         use_z_index: fields.or("use_z_index", true)?,
         light,
+        input_grid: fields.or("input_grid", 0.0)?,
     };
     fields.finish()?;
     Ok(view)
+}
+
+fn gradient_of(fields: &Fields) -> PyResult<Option<[[f64; 3]; 2]>> {
+    fields
+        .take("gradient")?
+        .map(|v| {
+            if let Ok([ax, ay, az, bx, by, bz]) = v.extract::<[f64; 6]>() {
+                Ok([[ax, ay, az], [bx, by, bz]])
+            } else {
+                v.extract::<[[f64; 3]; 2]>()
+                    .map_err(|e| fields.bad("gradient", e))
+            }
+        })
+        .transpose()
+}
+
+fn pre_projected_of(fields: &Fields) -> PyResult<Option<PreProjected>> {
+    fields
+        .take("pre_projected")?
+        .map(|v| {
+            let p = Fields::new("pre_projected".into(), Some(v.cast::<PyDict>()?), v.py())?;
+            let projected = PreProjected {
+                points: need_key(&p, "points")?,
+                gradient: gradient_of(&p)?,
+                fill: paint_of(p.take("fill")?)?,
+                stroke: paint_of(p.take("stroke")?)?,
+                background_stroke: paint_of(p.take("background_stroke")?)?,
+            };
+            p.finish()?;
+            Ok(projected)
+        })
+        .transpose()
 }
 
 fn paint_block(fields: &Fields) -> PyResult<PaintBlock> {
@@ -299,17 +351,7 @@ fn paint_block(fields: &Fields) -> PyResult<PaintBlock> {
         background_stroke: paint_of(fields.take("background_stroke")?)?,
         stroke_width: fields.or("stroke_width", 0.0)?,
         background_stroke_width: fields.or("background_stroke_width", 0.0)?,
-        gradient: fields
-            .take("gradient")?
-            .map(|v| {
-                if let Ok([ax, ay, az, bx, by, bz]) = v.extract::<[f64; 6]>() {
-                    Ok([[ax, ay, az], [bx, by, bz]])
-                } else {
-                    v.extract::<[[f64; 3]; 2]>()
-                        .map_err(|e| fields.bad("gradient", e))
-                }
-            })
-            .transpose()?,
+        gradient: gradient_of(fields)?,
         joint: named(
             "joint",
             &joint,
@@ -344,11 +386,16 @@ fn body_of(kind: RecordKind, fields: &Fields) -> PyResult<Body> {
             if uv.ncols() != 2 {
                 return Err(PyValueError::new_err("uv must have shape (faces, 2)"));
             }
+            let face_ends: Option<PyArrayLike1<u32, AllowTypeChange>> = fields.get("face_ends")?;
+            let face_widths: Option<PyArrayLike1<f64, AllowTypeChange>> =
+                fields.get("face_widths")?;
             Body::FaceGroup(FaceGroup {
                 uv: uv.rows().into_iter().map(|r| [r[0], r[1]]).collect(),
                 grid: fields.need("grid")?,
                 fill: need_key(fields, "face_fill")?,
                 stroke: key_field(fields, "face_stroke")?,
+                face_ends: face_ends.map_or_else(Vec::new, |a| a.as_array().to_vec()),
+                face_widths: face_widths.map_or_else(Vec::new, |a| a.as_array().to_vec()),
             })
         }
         RecordKind::Points => Body::Points(Points {
@@ -666,6 +713,24 @@ impl PyFrameDelta {
                 "background_image feature needs fill_image".into(),
             ));
         }
+        record.pre_projected = pre_projected_of(&fields)?;
+        if record.pre_projected.is_some() {
+            if !matches!(
+                kind,
+                RecordKind::Path | RecordKind::Points | RecordKind::Image
+            ) {
+                return Err(xf_error(
+                    py,
+                    format!("pre_projected is not valid on {} records", kind.name()),
+                ));
+            }
+            record.features |= FEATURE_PRE_PROJECTED;
+        } else if record.features & FEATURE_PRE_PROJECTED != 0 {
+            return Err(xf_error(
+                py,
+                "pre_projected feature needs pre_projected".into(),
+            ));
+        }
         record.geometry = Geometry {
             shape_a: key_field(&fields, "shape")?,
             place_a: fields.or("place", IDENTITY)?,
@@ -716,8 +781,40 @@ impl PyFrameDelta {
         record.opacity = fields.or("opacity", 1.0)?;
         record.layer = fields.or("layer", 0u16)?;
         record.body = body_of(kind, &fields)?;
+        record.planes = fields.get::<Vec<u8>>("planes")?;
+        record.normals = fields.get::<Vec<[f64; 3]>>("normals")?;
+        record.joins = fields.get::<Vec<u8>>("joins")?;
+        record.source = source_of(py, fields.or("source", Vec::new())?)?;
+        record.facing_group = fields.or("facing_group", 0u32)?;
         fields.finish()?;
         self.delta.set.push(record);
+        self.delta.version = wire::encoded_version(&self.delta);
+        Ok(())
+    }
+
+    /// Gives the record held in `slot` a new source and facing group (XF 1.5), its drawing
+    /// unchanged: a row for a slot the delta neither sets nor removes.
+    #[pyo3(signature = (slot, source=Vec::new(), facing_group=0))]
+    fn set_source(
+        &mut self,
+        py: Python<'_>,
+        slot: u32,
+        source: Vec<Vec<(u32, String)>>,
+        facing_group: u32,
+    ) -> PyResult<()> {
+        let source = source_of(py, source)?;
+        if source.is_empty() && facing_group == 0 {
+            return Err(xf_error(
+                py,
+                "row_empty: a source row carries a source or a facing group".into(),
+            ));
+        }
+        self.delta.source.push(SourceRow {
+            slot,
+            facing_group,
+            source,
+        });
+        self.delta.version = wire::encoded_version(&self.delta);
         Ok(())
     }
 
@@ -781,6 +878,14 @@ impl PyApplyStats {
 }
 
 /// What a drawer holds across frames. Make it in the process that draws (after any fork).
+/// An 8-bit RGBA colour as the binding hands it to Python.
+type Rgba8 = (u8, u8, u8, u8);
+/// A layer's two stops (straight RGBA) as the binding hands them to Python.
+type StopPair = ((f64, f64, f64, f64), (f64, f64, f64, f64));
+/// `Stream.face_stops`: per slot, per path, its layers' stops (background stroke, fill, stroke).
+type FaceStopsBySlot =
+    BTreeMap<u32, Vec<Option<(Option<StopPair>, Option<StopPair>, Option<StopPair>)>>>;
+
 #[pyclass(name = "Stream", module = "arachne_core")]
 struct PyStream {
     stream: Stream,
@@ -809,21 +914,349 @@ impl PyStream {
 
     /// Draws the frame: a uint8 array (height, width, 4), the layout of CE's pixel array. Raises
     /// Unsupported (render.unsupported) when a drawn record carries what this build cannot draw.
-    #[pyo3(signature = (width, height, *, threads=1))]
+    /// With ``overlay=False``, the overlay's entries (``overlay_entries``) are left out, neither
+    /// drawn nor refused: the frame Cairo draws a 3D scene's overlay over.
+    #[pyo3(signature = (width, height, *, threads=1, overlay=true))]
     fn draw<'py>(
         &self,
         py: Python<'py>,
         width: u32,
         height: u32,
         threads: usize,
+        overlay: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let stream = &self.stream;
         let rgba = py
-            .detach(|| stream.draw(width, height, threads))
+            .detach(|| {
+                if overlay {
+                    stream.draw(width, height, threads)
+                } else {
+                    stream
+                        .render_under_overlay(width, height, threads)
+                        .map(|r| r.rgba)
+                }
+            })
             .map_err(|e| draw_error(py, e))?;
         Ok(PyArray1::from_vec(py, rgba)
             .reshape([height as usize, width as usize, 4])?
             .into_any())
+    }
+
+    /// Whether the frame's camera-facing labels are placed (``label_plan.rs``): on, as a new
+    /// stream is; off, each label's records are drawn by depth as every other record is, the
+    /// frames a stream without facing groups draws.
+    fn set_label_placement(&mut self, on: bool) {
+        self.stream.set_label_placement(on);
+    }
+
+    /// The labels' plan for the frame ``draw(width, height, overlay=False)`` draws
+    /// (``label_plan.rs``): every label against every surface sheet it overlaps, as
+    /// ``(group, surface, sheet, centre, outcome, cause)``: the label's facing group, the
+    /// sheet's object by its token, the sheet's index in the frame, whether a fill of the
+    /// sheet holds the label's projected centre, ``outcome`` one of ``"qualifies"`` (the
+    /// label goes behind it), ``"not_nearer"`` or ``"open"``, and an open pair's
+    /// ``cause`` (``"interval"``, ``"folded"``, ``"disconnected"``, ``"mesh"``,
+    /// ``"label"``), else ``None``. Empty where the frame draws no label or labels are not
+    /// placed. Nothing is drawn.
+    #[allow(clippy::type_complexity)]
+    fn label_plan(
+        &self,
+        py: Python<'_>,
+        width: u32,
+        height: u32,
+    ) -> PyResult<Vec<(u32, u32, u32, bool, &'static str, Option<&'static str>)>> {
+        use crate::label_plan::Outcome;
+        let stream = &self.stream;
+        let plan = py
+            .detach(|| stream.label_plan(width, height))
+            .map_err(|e| draw_error(py, e))?;
+        Ok(plan
+            .map(|p| p.pairs)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| {
+                let (outcome, cause) = match p.outcome {
+                    Outcome::Qualifies => ("qualifies", None),
+                    Outcome::NotNearer => ("not_nearer", None),
+                    Outcome::Open(why) => ("open", Some(why.name())),
+                };
+                (p.group, p.surface, p.sheet, p.centre, outcome, cause)
+            })
+            .collect())
+    }
+
+    /// The order's entries a 3D scene's frame leaves to Cairo's overlay, in order, as
+    /// ``(layer, slot, part)``: records fixed in frame, images (displays included), and paths
+    /// filled through a background image.
+    fn overlay_entries(&self) -> Vec<(&'static str, u32, u32)> {
+        contents::order(&self.stream.overlay_entries())
+    }
+
+    /// The leaves ``(object, part)``, as :meth:`contributors` reports them, whose strokes the
+    /// drawer draws as a round cap's dot: faces of a face group at one spot as the camera shows
+    /// them, under a round cap, undashed or dashed on at their start. Nothing is drawn.
+    fn round_cap_dots(&self, py: Python<'_>) -> PyResult<Vec<(u32, u32)>> {
+        let found = self
+            .stream
+            .round_cap_dots()
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found.into_iter().collect())
+    }
+
+    /// Per slot of ``slots`` holding a record that draws paths, how each of them lies, decided
+    /// from the points the stream holds: a tuple of planarity codes in the order of the record's
+    /// ``planes`` (``core/XF.md``). A writer that snaps a record's geometry decides on the values
+    /// as made and carries this with the snapped record. Nothing is drawn.
+    fn planes(&self, py: Python<'_>, slots: Vec<u32>) -> PyResult<BTreeMap<u32, Vec<u32>>> {
+        let found = self.stream.planes(&slots).map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(slot, codes)| (slot, codes.into_iter().map(u32::from).collect()))
+            .collect())
+    }
+
+    /// Per slot of ``slots`` holding a record the camera shades, the normals each path it draws
+    /// is lit by at its two lit corners, decided from the points the stream holds as a writer that
+    /// snaps them to ``grid`` carries them: a list of ``(x, y, z)``, two per path in the order of
+    /// the record's ``planes``, the zero vector at a degenerate corner (``core/XF.md``). Nothing is
+    /// drawn.
+    fn normals(
+        &self,
+        py: Python<'_>,
+        slots: Vec<u32>,
+        grid: f64,
+    ) -> PyResult<BTreeMap<u32, Vec<[f64; 3]>>> {
+        self.stream
+            .normals(&slots, grid)
+            .map_err(|e| draw_error(py, e))
+    }
+
+    /// Per slot of ``slots`` holding a record the camera shades, which lit corners of each path it
+    /// draws the drawer lights by the face's Newell normal (its writer decided the corner
+    /// degenerate): a list of ``(start, end)`` booleans, one per path in the order of the record's
+    /// ``planes`` (``core/XF.md``). Nothing is drawn.
+    fn newell_corners(
+        &self,
+        py: Python<'_>,
+        slots: Vec<u32>,
+    ) -> PyResult<BTreeMap<u32, Vec<(bool, bool)>>> {
+        let found = self
+            .stream
+            .newell_corners(&slots)
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(slot, corners)| (slot, corners.into_iter().map(|[a, b]| (a, b)).collect()))
+            .collect())
+    }
+
+    /// Per slot of ``slots`` holding a record the camera shades, the stops each path it draws is
+    /// painted with: a list, one entry per path in the order of the record's ``planes``, of
+    /// ``(background_stroke, fill, stroke)``, each layer its two stops ``((r, g, b, a), (r, g, b,
+    /// a))`` lit at the path's start and end corners, straight, with the record's group opacity,
+    /// unclamped, or ``None`` for a layer without paint; ``None`` for a path the drawer draws
+    /// nothing of. Unshaded and pre-projected records have no entry. Nothing is drawn.
+    fn face_stops(&self, py: Python<'_>, slots: Vec<u32>) -> PyResult<FaceStopsBySlot> {
+        let found = self
+            .stream
+            .face_stops(&slots)
+            .map_err(|e| draw_error(py, e))?;
+        let rgba = |c: [f64; 4]| (c[0], c[1], c[2], c[3]);
+        let layer = |stops: Option<[[f64; 4]; 2]>| stops.map(|[a, b]| (rgba(a), rgba(b)));
+        Ok(found
+            .into_iter()
+            .map(|(slot, paths)| {
+                let paths = paths
+                    .into_iter()
+                    .map(|p| p.map(|[bg, fill, stroke]| (layer(bg), layer(fill), layer(stroke))))
+                    .collect();
+                (slot, paths)
+            })
+            .collect())
+    }
+
+    /// Per slot the order draws, the pixel box ``(x_min, y_min, x_max, y_max)`` (x right, y down)
+    /// of its record's points as the camera places them and maps them to pixels: paths, faces
+    /// and meshes around the view's mapping centre, point clouds and images around its frame
+    /// centre. A record placing no point has no entry. Nothing is drawn, so records the drawer
+    /// refuses have boxes too.
+    fn screen_boxes(&self, py: Python<'_>) -> PyResult<BTreeMap<u32, (f64, f64, f64, f64)>> {
+        let boxes = self.stream.screen_boxes().map_err(|e| draw_error(py, e))?;
+        Ok(boxes
+            .into_iter()
+            .map(|(slot, b)| (slot, (b[0], b[1], b[2], b[3])))
+            .collect())
+    }
+
+    /// What the core composites at each pixel of the box ``x0 <= x < x1``, ``y0 <= y < y1``
+    /// (any integers, clipped to the frame) that holds a fragment, the overlay's entries left out
+    /// as ``draw(overlay=False)`` leaves them: ``{(x, y): (leaves, orders, crossing, decided)}``.
+    /// ``leaves`` are ``(object, part, coverage, colour, drawn, shown, covers)``, bottom first,
+    /// each leaf once: each drawn leaf covering one of the pixel's sub-samples, hidden ones
+    /// included (``shown`` false), with its share of the sub-samples (0 to 255), its nearest
+    /// fragment's colour (that one fragment's paint, not the leaf's drawn colour) and what it
+    /// draws alone over a transparent pixel (premultiplied ``(r, g, b, a)`` both; neither is
+    /// what the pixel shows of it), and whether it hides everything beneath it (``covers``).
+    /// ``orders`` are the distinct sequences the sub-samples see, bottom first, as ``(index into
+    /// leaves, coverage)``, a leaf once per run of its fragments; ``crossing`` is whether they
+    /// order two leaves both ways or admit no one order (``contributors.rs``). ``decided`` is how
+    /// each pair of leaves was ordered, ``(a, b, rule)`` for indices ``a < b`` into ``leaves``,
+    /// ``rule`` one of ``"paint"`` (no sub-sample both cover), ``"tie"`` (their depths equal
+    /// within the key arithmetic's error wherever both cover, or, on one registered plane, within
+    /// that and what the input grid's snap can move each from one plane),
+    /// ``"depth"``, ``"majority"``
+    /// (their depths cross inside the pixel) or ``"placed"`` (a camera-facing label's placement,
+    /// ``label_plan.rs``) (``order.rs``). Nothing is drawn.
+    #[allow(clippy::type_complexity)]
+    fn contributors(
+        &self,
+        py: Python<'_>,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+    ) -> PyResult<
+        BTreeMap<
+            (u32, u32),
+            (
+                Vec<(u32, u32, u8, Rgba8, Rgba8, bool, bool)>,
+                Vec<Vec<(usize, u8)>>,
+                bool,
+                Vec<(usize, usize, &'static str)>,
+            ),
+        >,
+    > {
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
+        let stream = &self.stream;
+        let rule = |d: crate::order::Decided| match d {
+            crate::order::Decided::Paint => "paint",
+            crate::order::Decided::Tie => "tie",
+            crate::order::Decided::Depth => "depth",
+            crate::order::Decided::Majority => "majority",
+            crate::order::Decided::Placed => "placed",
+        };
+        let found = py
+            .detach(|| stream.contributors(x0, y0, x1, y1))
+            .map_err(|e| draw_error(py, e))?;
+        let rgba = |[r, g, b, a]: [u8; 4]| (r, g, b, a);
+        Ok(found
+            .into_iter()
+            .map(|(at, pixel)| {
+                let leaves = pixel
+                    .leaves
+                    .into_iter()
+                    .map(|l| {
+                        (
+                            l.object,
+                            l.part,
+                            l.coverage,
+                            rgba(l.colour),
+                            rgba(l.drawn),
+                            l.shown,
+                            l.covers,
+                        )
+                    })
+                    .collect();
+                let decided = pixel
+                    .decided
+                    .into_iter()
+                    .map(|(a, b, d)| (a, b, rule(d)))
+                    .collect();
+                (at, (leaves, pixel.orders, pixel.crossing, decided))
+            })
+            .collect())
+    }
+
+    /// Each sub-sample's own sequence at each pixel of the box ``contributors`` reports, from
+    /// the same pass: ``{(x, y): samples}``, ``samples`` one per sub-sample in ``sample_point``
+    /// order, each ``(index into contributors' leaves, coverage)`` bottom first, a sub-sample no
+    /// fragment covers empty. ``contributors``' ``orders`` are their distinct ones.
+    #[allow(clippy::type_complexity)]
+    fn contributor_samples(
+        &self,
+        py: Python<'_>,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+    ) -> PyResult<BTreeMap<(u32, u32), Vec<Vec<(usize, u8)>>>> {
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
+        let stream = &self.stream;
+        let found = py
+            .detach(|| stream.contributors(x0, y0, x1, y1))
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(at, pixel)| (at, pixel.samples))
+            .collect())
+    }
+
+    /// The own share of its key each stroke of a path with no plane of its own holds at each
+    /// pixel of the box ``contributors`` reports, from the same pass: ``{(x, y): [(object, part,
+    /// share)]}``, ``share`` the snap's move of the key at fixed points of its curve and how far
+    /// the pixel's reads along it may slide, as a share of the least of them: what the core ties
+    /// two such strokes on no shared identity within (``_lines_tied``'s ``s``).
+    #[allow(clippy::type_complexity)]
+    fn own_shares(
+        &self,
+        py: Python<'_>,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+    ) -> PyResult<BTreeMap<(u32, u32), Vec<(u32, u32, f64)>>> {
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
+        let stream = &self.stream;
+        let found = py
+            .detach(|| stream.own_shares(x0, y0, x1, y1))
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(at, leaves)| {
+                let leaves = leaves.into_iter().map(|((o, p), s)| (o, p, s)).collect();
+                (at, leaves)
+            })
+            .collect())
+    }
+
+    /// The edges the rasterizer reads for every leaf ``contributors`` reports with an exact area
+    /// in the box, from the same pass: ``{(object, part): layers}``, each of the leaf's layers once
+    /// (a fill, a stroke's outline after the stroker) as a list of ``(x0, y0, x1, y1, dir)`` in
+    /// device pixels, each edge oriented downward (``y0 < y1``) with ``dir`` the winding it adds
+    /// (+1 where the outline walks down it). A leaf drawn by masks (a mesh) has none.
+    #[allow(clippy::type_complexity)]
+    fn contributor_edges(
+        &self,
+        py: Python<'_>,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+    ) -> PyResult<BTreeMap<(u32, u32), Vec<Vec<(f64, f64, f64, f64, i32)>>>> {
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
+        let stream = &self.stream;
+        let found = py
+            .detach(|| stream.contributor_edges(x0, y0, x1, y1))
+            .map_err(|e| draw_error(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|(leaf, layers)| {
+                let layers = layers
+                    .into_iter()
+                    .map(|edges| {
+                        edges
+                            .into_iter()
+                            .map(|[a, b, c, d, dir]| (a, b, c, d, dir as i32))
+                            .collect()
+                    })
+                    .collect();
+                (leaf, layers)
+            })
+            .collect())
     }
 
     /// Draws the frame as ``draw`` does, and returns it with each pixel's resolve: a uint8 array
@@ -849,6 +1282,193 @@ impl PyStream {
                 .reshape([h, w])?
                 .into_any(),
         ))
+    }
+
+    /// Internal, for diagnostics; not a supported interface. What the resolve composited at
+    /// every pixel of the box ``x0 <= x < x1``, ``y0 <= y < y1``, from the frame
+    /// ``draw(overlay=False)`` draws: ``{(x, y): pixel}``, each ``pixel`` a dict of
+    ///
+    /// - ``resolve``: ``"background"``, ``"fast"``, ``"coverage"`` or ``"sample"``;
+    /// - ``background``: ``(r, g, b, a)``, the pixel beneath every fragment;
+    /// - ``entries``: every fragment there, culled or not, as ``(object, part, layer, order,
+    ///   sub, colour, coverage)``: its leaf, its layer (``"background_stroke"``, ``"fill"``,
+    ///   ``"stroke"``, ``"surface"`` or ``"mask"``), its draw-order index and part, its
+    ///   premultiplied ``(r, g, b, a)`` and its 8-bit coverage at each of the 16 sub-samples;
+    /// - ``samples``: per sub-sample, the indices into ``entries`` covering it, front first, as
+    ///   the sample resolve composites them (for the fast and coverage resolves, in their units'
+    ///   order); the sample resolve's may hold what the opaque drop removed behind a layer opaque
+    ///   and covering the pixel whole, which blends over them exactly;
+    /// - ``units``: for the fast and coverage resolves, the units blended, back to front, as
+    ///   ``(members, colour, coverage)`` (members front first, the colour and 8-bit coverage it
+    ///   was blended with); empty otherwise;
+    /// - ``emission``: ``(r, g, b)`` linear light added after the resolve, or ``None``.
+    ///
+    /// With ``decisions=True`` each pixel also holds the pairwise orders its ranks read, each
+    /// ``(a, b, front, kind)``: ``a < b`` indices into ``entries``, ``front`` the one in front (or
+    /// ``None``), ``kind`` one of ``"paint"``, ``"tie"``, ``"depth"``, ``"majority"``,
+    /// ``"placed"``:
+    /// - ``pairs``: every pair as the pixel's rank read it (empty for one entry);
+    /// - ``sample_ranked``: whether the sub-samples were ranked;
+    /// - ``sample_pairs``: per sub-sample, every pair of the entries it ranked (if
+    ///   ``sample_ranked``, else of those it composited), a sub-sample having no majority.
+    ///
+    /// With ``reads=True`` each pixel also holds what the order and the resolves read of each
+    /// entry, by entry index (``diagnostics.rs``, ``Reads``); without it, none of these keys:
+    ///
+    /// - ``coverage8``: each entry's 8-bit coverage of the whole pixel (a path's exact area
+    ///   rounded once, never its sub-samples' bytes summed), what the fast and coverage resolves
+    ///   blend a unit of it alone with;
+    /// - ``depths``: each entry's depth at the 16 sub-samples as the order reads it (a stroke
+    ///   taking its own fill's depth where both cover and the fill is nearer);
+    /// - ``err``: each entry's depth error bound, as the order reads it;
+    /// - ``samples_all``: per sub-sample, every entry covering it, front first, as its rank
+    ///   orders them before any cull: ``samples`` and the entries the opaque drop removed;
+    /// - with ``decisions=True`` too, ``against``: ``(entry, other, depths, err)`` for every read
+    ///   of an entry's depths against another that is not its own row (on a plane both lie on);
+    /// - with ``decisions=True`` too, ``flat``: whether the resolve took the flat path (one depth
+    ///   row for every entry: paint order decides every pair, and ``relations`` is empty);
+    /// - with ``decisions=True`` too, ``relations``: every pair of entries ``a < b`` sharing a
+    ///   sub-sample, as ``(a, b, covered, a_nearer, b_nearer, ab_front, ab_behind, ab_strong,
+    ///   ba_front, ba_behind, ba_strong)``, each after ``a, b`` a 16-bit mask whose bit ``k`` is
+    ///   sub-sample ``k``: where both cover, where each is the nearer, and ``a`` against ``b`` and
+    ///   ``b`` against ``a`` in front, behind and strongly so, as the resolve read them before any
+    ///   rank or cull. ``pairs`` is decided from them; the sub-sample ranks and the cull read them.
+    ///
+    /// Composited again with the resolves' arithmetic (``diagnostics.rs``), each gives back the
+    /// pixel drawn.
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    #[pyo3(
+        name = "_resolve_trace",
+        signature = (x0, y0, x1, y1, *, decisions = false, reads = false)
+    )]
+    fn resolve_trace<'py>(
+        &self,
+        py: Python<'py>,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+        decisions: bool,
+        reads: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        use crate::diagnostics::Layer;
+        let side = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x0, y0, x1, y1) = (side(x0), side(y0), side(x1), side(y1));
+        let stream = &self.stream;
+        let found = py
+            .detach(|| {
+                if reads {
+                    stream.resolve_trace(x0, y0, x1, y1, decisions)
+                } else {
+                    stream.diagnostic_resolves(x0, y0, x1, y1, decisions)
+                }
+            })
+            .map_err(|e| draw_error(py, e))?;
+        let rgba = |[r, g, b, a]: [u8; 4]| (r, g, b, a);
+        let pair = |p: &crate::diagnostics::PairOrder| {
+            let kind = match p.how {
+                crate::order::Decided::Paint => "paint",
+                crate::order::Decided::Tie => "tie",
+                crate::order::Decided::Depth => "depth",
+                crate::order::Decided::Majority => "majority",
+                crate::order::Decided::Placed => "placed",
+            };
+            (p.a, p.b, p.front, kind)
+        };
+        let out = PyDict::new(py);
+        for ((x, y), p) in found {
+            let d = PyDict::new(py);
+            d.set_item(
+                "resolve",
+                ["background", "fast", "coverage", "sample"][p.resolve as usize],
+            )?;
+            d.set_item("background", rgba(p.background))?;
+            let entries: Vec<(u32, u32, &str, u32, u32, Rgba8, Vec<u8>)> = p
+                .entries
+                .iter()
+                .map(|e| {
+                    let layer = match e.layer {
+                        Layer::BackgroundStroke => "background_stroke",
+                        Layer::Fill => "fill",
+                        Layer::Stroke => "stroke",
+                        Layer::Surface => "surface",
+                        Layer::Mask => "mask",
+                    };
+                    let (object, part) = e.leaf;
+                    let coverage = e.coverage.to_vec();
+                    (
+                        object,
+                        part,
+                        layer,
+                        e.order,
+                        e.sub,
+                        rgba(e.colour),
+                        coverage,
+                    )
+                })
+                .collect();
+            d.set_item("entries", entries)?;
+            d.set_item("samples", p.samples)?;
+            let units: Vec<(Vec<usize>, Rgba8, u8)> = p
+                .units
+                .into_iter()
+                .map(|u| (u.members, rgba(u.colour), u.coverage))
+                .collect();
+            d.set_item("units", units)?;
+            d.set_item("emission", p.emission.map(|[r, g, b]| (r, g, b)))?;
+            if decisions {
+                let pairs: Vec<_> = p.pairs.iter().map(pair).collect();
+                d.set_item("pairs", pairs)?;
+                d.set_item("sample_ranked", p.sample_ranked)?;
+                let sample_pairs: Vec<Vec<_>> = p
+                    .sample_pairs
+                    .iter()
+                    .map(|k| k.iter().map(pair).collect())
+                    .collect();
+                d.set_item("sample_pairs", sample_pairs)?;
+            }
+            if let Some(r) = p.reads {
+                // Lists of ints, as JSON holds them, where a `Vec<u8>` would become bytes.
+                let coverage8: Vec<u32> = r.coverage8.iter().map(|c| *c as u32).collect();
+                d.set_item("coverage8", coverage8)?;
+                let depths: Vec<Vec<f64>> = r.depths.iter().map(|row| row.to_vec()).collect();
+                d.set_item("depths", depths)?;
+                d.set_item("err", r.err)?;
+                d.set_item("samples_all", r.samples_all)?;
+                if decisions {
+                    let against: Vec<(usize, usize, Vec<f64>, f64)> = r
+                        .against
+                        .iter()
+                        .map(|a| (a.entry, a.other, a.depths.to_vec(), a.err))
+                        .collect();
+                    d.set_item("against", against)?;
+                    d.set_item("flat", r.flat)?;
+                    let relations: Vec<_> = r
+                        .relations
+                        .iter()
+                        .map(|q| {
+                            let s = &q.shared;
+                            (
+                                q.a,
+                                q.b,
+                                s.covered,
+                                s.a_nearer,
+                                s.b_nearer,
+                                s.ab.front,
+                                s.ab.behind,
+                                s.ab.strong,
+                                s.ba.front,
+                                s.ba.behind,
+                                s.ba.strong,
+                            )
+                        })
+                        .collect();
+                    d.set_item("relations", relations)?;
+                }
+            }
+            out.set_item((x, y), d)?;
+        }
+        Ok(out)
     }
 }
 
@@ -886,11 +1506,226 @@ fn probe_fixtures() -> Vec<(&'static str, u32, u32, Vec<PyFrameDelta>)> {
         .collect()
 }
 
+/// Whether a normal `newell` (a Newell sum or a cross product, three floats) found from points
+/// spanning `extent` around an outline of `perimeter`, those points snapped to `grid` (`0.0`: not
+/// snapped), is long enough to point anywhere: the core's own test (`depth::points_somewhere`),
+/// which decides whether points have a plane. It exists for the depth verifier's contract test,
+/// which holds its own bound to the core's at the grids it sweeps; it draws nothing.
+#[pyfunction(name = "_points_somewhere")]
+fn points_somewhere(newell: [f64; 3], extent: f64, perimeter: f64, grid: f64) -> bool {
+    crate::depth::points_somewhere(newell, extent, perimeter, grid)
+}
+
+/// The plane `normal . p = offset` as the core rounds a world plane
+/// (`depth::WorldPlane::rounded`): each component of `normal`, and `offset`, rounded to the
+/// nearest multiple of 2^-20, halves away from zero, a negative zero made positive.
+#[pyfunction(name = "_rounded_plane")]
+fn rounded_plane(normal: [f64; 3], offset: f64) -> ((f64, f64, f64), f64) {
+    let plane = crate::depth::WorldPlane::rounded(normal, offset, 0.0);
+    let [a, b, c] = plane.normal;
+    ((a, b, c), plane.offset)
+}
+
+/// How far a record's points may lie off a plane of unit normal `normal` and still be on it, as
+/// the frame's plane registry takes it (`depth::Registry`), and whether the record is flat: the
+/// record offered alone to a registry for points snapped to `grid` (`0.0`: not snapped), as a
+/// frame offers it. `points` are its points placed in the world, as drawn; `places` its two
+/// placements, outer first, each three rows of four (the identity for none); `shape` its shape's
+/// own points. `planes` is a path's planarity code (`depth::Planarity::code`, as XF's `planes`
+/// carries it, or as decided from its points), `None` for a mesh triangle, whose `points` are its
+/// three corners and its plane the one through them (`depth::WorldPlane::of_triangle`).
+///
+/// The tolerance is `depth::snap_departure(grid, normal, places, shape)`, plus, for a flat
+/// record, `depth::departure(own, points)` of its own plane `own`: a path made flat (Newell's,
+/// the widest triangle's or an axis plane), or a mesh triangle, whose points do not lie on a
+/// line. A record with no plane of its own (points on a line, whatever its code, or a curve) has
+/// no departure part, and `False` for flat. A `ValueError` for a path a frame does not offer, on
+/// the plane nearest its points (code 3).
+#[pyfunction(name = "_registry_tolerance", signature = (points, normal, grid, places, shape, planes))]
+fn registry_tolerance(
+    points: Vec<[f64; 3]>,
+    normal: [f64; 3],
+    grid: f64,
+    places: [Affine; 2],
+    shape: Vec<[f64; 3]>,
+    planes: Option<u8>,
+) -> PyResult<(f64, bool)> {
+    let mut registry = crate::depth::Registry::of_grid(grid);
+    let (handle, flat) = offer(&mut registry, grid, &points, &places, &shape, planes)?;
+    Ok((registry.tolerance_along(handle, normal), flat))
+}
+
+/// Offers a record to `registry`, for points snapped to `grid`, as a frame offers it: a path of
+/// planarity code `planes`, or a mesh triangle (`None`) whose `points` are its three corners. Its
+/// handle and whether it is flat; a `ValueError` for a record a frame does not offer.
+fn offer(
+    registry: &mut crate::depth::Registry,
+    grid: f64,
+    points: &[[f64; 3]],
+    places: &[Affine; 2],
+    shape: &[[f64; 3]],
+    planes: Option<u8>,
+) -> PyResult<(u32, bool)> {
+    use crate::depth::{Planarity, WorldPlane};
+    if points.is_empty() {
+        return Err(PyValueError::new_err("a record has points"));
+    }
+    match planes {
+        Some(code) => {
+            let planarity = Planarity::of_code(code)
+                .ok_or_else(|| PyValueError::new_err(format!("no planarity has code {code}")))?;
+            if planarity == Planarity::Nearest {
+                return Err(PyValueError::new_err(
+                    "a path on the plane nearest its points is not offered",
+                ));
+            }
+            let (handle, flat, _) = registry.offer_path(points, planarity, places, shape);
+            Ok((handle, flat))
+        }
+        None => {
+            let corners: [[f64; 3]; 3] = points
+                .try_into()
+                .map_err(|_| PyValueError::new_err("a mesh triangle has three corners"))?;
+            let plane = WorldPlane::of_triangle(corners, grid);
+            Ok(registry.offer_triangle(plane, &corners, places, shape))
+        }
+    }
+}
+
+/// A record as `_registry_tolerance` takes one: its points placed in the world, its two
+/// placements, its shape's own points, and its planarity code (`None` for a mesh triangle).
+type Offered = (Vec<[f64; 3]>, [Affine; 2], Vec<[f64; 3]>, Option<u8>);
+
+/// Whether the frame's plane registry (`depth::Registry`) attaches a record with no plane of its
+/// own to the identity that flat records `members` settle into: a registry for points snapped to
+/// `grid` (`0.0`: not snapped) offered the record and each member, `(points, places, shape,
+/// planes)`, each as `_registry_tolerance` takes one, then settled once, as a frame settles it.
+/// A `ValueError` for a record or member a frame does not offer, a flat record, no members, a
+/// member with no plane of its own, or members settling into more than one identity.
+#[pyfunction(name = "_attaches", signature = (points, places, shape, planes, members, grid))]
+fn attaches(
+    points: Vec<[f64; 3]>,
+    places: [Affine; 2],
+    shape: Vec<[f64; 3]>,
+    planes: Option<u8>,
+    members: Vec<Offered>,
+    grid: f64,
+) -> PyResult<bool> {
+    let mut registry = crate::depth::Registry::of_grid(grid);
+    let (record, flat) = offer(&mut registry, grid, &points, &places, &shape, planes)?;
+    if flat {
+        return Err(PyValueError::new_err("the record is flat"));
+    }
+    let mut held = Vec::with_capacity(members.len());
+    for (points, places, shape, planes) in &members {
+        let (handle, flat) = offer(&mut registry, grid, points, places, shape, *planes)?;
+        if !flat {
+            return Err(PyValueError::new_err("a member has no plane of its own"));
+        }
+        held.push(handle);
+    }
+    let Some(&first) = held.first() else {
+        return Err(PyValueError::new_err("no members"));
+    };
+    registry.settle();
+    let identity = registry.identities(first);
+    if held.iter().any(|h| registry.identities(*h) != identity) {
+        return Err(PyValueError::new_err(
+            "the members settle into more than one identity",
+        ));
+    }
+    Ok(registry.attached(record))
+}
+
+/// Whether two records `a` and `b`, each `(points, places, shape, planes)` as `_registry_tolerance`
+/// takes a record, offered to one registry for points snapped to `grid`, are near-parallel
+/// (`depth::near_parallel`), and the ratio of their own planes' acute dihedral `θ` to `θ_A + θ_B`.
+/// `θ_R = 2 τ_R / L_R`: `τ_R` record R's tolerance along its own plane's unit normal `n_R`, `L_R`
+/// the extent of its points along `n_R × a`, `a` the unit axis along `n_A × n_B`. Near-parallel
+/// when `θ <= θ_A + θ_B`, `θ` rounded up and the sum down by bounds on their rounding. `(False,
+/// nan)` when either record is not flat; a `ValueError` for a record a frame does not offer.
+#[pyfunction(name = "_near_parallel", signature = (a, b, grid))]
+fn near_parallel(a: Offered, b: Offered, grid: f64) -> PyResult<(bool, f64)> {
+    let mut registry = crate::depth::Registry::of_grid(grid);
+    let mut handle = |(points, places, shape, planes): &Offered| {
+        offer(&mut registry, grid, points, places, shape, *planes).map(|(h, _)| h)
+    };
+    let (a, b) = (handle(&a)?, handle(&b)?);
+    Ok(match (registry.flat_record(a), registry.flat_record(b)) {
+        (Some(a), Some(b)) => {
+            let tilt = crate::depth::near_parallel(a, b);
+            (tilt.near, tilt.dihedral / tilt.room)
+        }
+        _ => (false, f64::NAN),
+    })
+}
+
+/// A stroke's share of its key at fixed points of its curve, as the core sets it on a path with
+/// no plane of its own (the part of `Fragment::own` its pixels' slides add to): offered as
+/// `_registry_tolerance` takes a record (a path's planarity code; a frame offers it with no plane
+/// of its own), its points at projected depths `depths` (the third coordinate `project` gives
+/// them, before the perspective) under a camera at `focal_distance`, exponential or not, whose
+/// axes are `axes` (rows: the screen's x and y and the sight axis the depth is read along, unit
+/// vectors in the placed points' coordinates; `Projection::rotation`'s rows for a projected path).
+/// `(w, s, across)`: `w` the snap's bound on how far it moved any point along the sight axis
+/// (`depth::snap_departure` along `axes[2]`), `s` the share (`project::depth_share`), and
+/// `across` its bounds along the other two, from which the core finds how far on screen the snap
+/// moved the curve's points. A `ValueError` for a record a frame does not offer, a mesh triangle,
+/// a flat record, or no depths.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction(
+    name = "_line_share",
+    signature = (points, places, shape, planes, grid, depths, focal_distance, exponential, axes)
+)]
+fn line_share(
+    points: Vec<[f64; 3]>,
+    places: [Affine; 2],
+    shape: Vec<[f64; 3]>,
+    planes: Option<u8>,
+    grid: f64,
+    depths: Vec<f64>,
+    focal_distance: f64,
+    exponential: bool,
+    axes: [[f64; 3]; 3],
+) -> PyResult<(f64, f64, (f64, f64))> {
+    if planes.is_none() {
+        return Err(PyValueError::new_err("a stroke is a path's"));
+    }
+    let mut registry = crate::depth::Registry::of_grid(grid);
+    let (_, flat) = offer(&mut registry, grid, &points, &places, &shape, planes)?;
+    if flat {
+        return Err(PyValueError::new_err("the record is flat"));
+    }
+    if depths.is_empty() {
+        return Err(PyValueError::new_err("no depths"));
+    }
+    let along = |k: usize| crate::depth::snap_departure(grid, axes[k], &places, &shape);
+    let w = along(2);
+    let s = crate::project::depth_share(focal_distance, exponential, depths, w);
+    Ok((w, s, (along(0), along(1))))
+}
+
+/// Whether two keys of strokes of paths with no plane of their own on no one identity, each
+/// `(d, e, s)` (the key, its error bound, its own share), are one depth: the core's term for them
+/// (`order::lines_term`).
+#[pyfunction(name = "_lines_tied", signature = (a, b))]
+fn lines_tied(a: (f64, f64, f64), b: (f64, f64, f64)) -> bool {
+    crate::order::lines_term(a, b)
+}
+
+/// Every call count by name since the last take, each set back to zero (`counters`).
+#[cfg(feature = "counters")]
+#[pyfunction(name = "_take_counts")]
+fn take_counts() -> Vec<(&'static str, u64)> {
+    crate::counters::take()
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("XF_VERSION", XF_VERSION)?;
     let features = PyDict::new(m.py());
     features.set_item("background_image", FEATURE_BACKGROUND_IMAGE)?;
+    features.set_item("pre_projected", FEATURE_PRE_PROJECTED)?;
     m.add("FEATURES", features)?;
     m.add("RESOLVES", ("background", "fast", "coverage", "sample"))?;
     m.add(
@@ -903,5 +1738,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyApplyStats>()?;
     m.add_function(wrap_pyfunction!(read_xf, m)?)?;
     m.add_function(wrap_pyfunction!(write_xf, m)?)?;
+    m.add_function(wrap_pyfunction!(points_somewhere, m)?)?;
+    m.add_function(wrap_pyfunction!(rounded_plane, m)?)?;
+    m.add_function(wrap_pyfunction!(registry_tolerance, m)?)?;
+    m.add_function(wrap_pyfunction!(attaches, m)?)?;
+    m.add_function(wrap_pyfunction!(near_parallel, m)?)?;
+    m.add_function(wrap_pyfunction!(line_share, m)?)?;
+    m.add_function(wrap_pyfunction!(lines_tied, m)?)?;
+    #[cfg(feature = "counters")]
+    m.add_function(wrap_pyfunction!(take_counts, m)?)?;
     Ok(())
 }

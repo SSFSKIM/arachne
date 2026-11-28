@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-from .collect import EXCLUDED, _blocks_in_text, collect, sample_indices
+from .collect import (
+    EXCLUDED,
+    DocsExample,
+    _blocks_in_text,
+    collect,
+    sample_indices,
+    three_d,
+)
 
 # Every ``.. arachne::`` block Sphinx renders, in docstrings and in docs/source.
 EXPECTED_BLOCKS = 461
 EXPECTED_STILL = 281
 EXPECTED_EXCLUDED = 2
+# The blocks whose scene is a ThreeDScene, the excluded hull among them.
+EXPECTED_THREE_D = 33
 
 
 def test_collector_finds_every_block():
@@ -89,3 +98,20 @@ def test_doctest_blocks_keep_only_their_code():
         "dot = Dot()\ndot.color\nclass Doctested(Scene):\n"
         "    def construct(self):\n        self.add(dot)\n"
     )
+
+
+def _example(scene: str, code: str) -> DocsExample:
+    return DocsExample(scene, scene, "doc", True, code)
+
+
+def test_a_three_d_example_is_one_whose_scene_is_a_three_d_scene():
+    assert three_d(_example("Direct", "class Direct(ThreeDScene): ...\n"))
+    assert three_d(_example("Special", "class Special(SpecialThreeDScene): ...\n"))
+    through = "class Base(ThreeDScene): ...\nclass Through(Base): ...\n"
+    assert three_d(_example("Through", through))
+    assert not three_d(_example("Flat", "class Flat(Scene): ...\n"))
+    assert not three_d(_example("Moving", "class Moving(MovingCameraScene): ...\n"))
+
+
+def test_the_three_d_examples_are_counted():
+    assert sum(three_d(example) for example in collect()) == EXPECTED_THREE_D

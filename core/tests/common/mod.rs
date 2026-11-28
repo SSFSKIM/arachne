@@ -19,6 +19,7 @@ pub fn flat_view(width: u32, height: u32, background: [f64; 4]) -> View {
         cairo_line_width_multiple: 0.01,
         use_z_index: true,
         light: LightModel::Ce,
+        input_grid: 0.0,
     }
 }
 
@@ -36,6 +37,8 @@ pub fn three_d_view(width: u32, height: u32) -> View {
             should_apply_shading: true,
         }),
         frame_center: [0.5, -0.25, 0.0],
+        // A camera whose centre never moved: CE's context froze the same centre.
+        mapping_centre: [0.5, -0.25, 0.0],
         ..flat_view(width, height, [0.0, 0.0, 0.0, 1.0])
     }
 }
@@ -187,6 +190,8 @@ pub fn sample_deltas() -> Vec<Delta> {
         grid: [2, 1],
         fill: per_face.key(),
         stroke: Some(face_strokes.key()),
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
     });
 
     let cloud_shape = Shape::new(ShapeData::Path {
@@ -349,8 +354,154 @@ pub fn sample_deltas() -> Vec<Delta> {
         grid: [2, 1],
         fill: per_face.key(),
         stroke: None,
+        face_ends: Vec::new(),
+        face_widths: Vec::new(),
     });
     third.set = vec![bare_faces];
 
     vec![first, second, third]
+}
+
+/// XF 1.1's canonical sample, separate so XF 1.0's samples retain their exact bytes.
+pub fn pre_projected_sample() -> Delta {
+    let mut d = Delta::new(Time { num: 2, den: 15 }, 3);
+    d.version = (1, 1);
+    let original = Shape::new(ShapeData::Path {
+        points: square_points(1.0),
+    });
+    let projected = Shape::new(ShapeData::Path {
+        points: vec![[1.25, -2.5, 0.125], [3.5, 4.75, -0.625]],
+    });
+    let stops = Stops::new(vec![
+        [0.125, 0.25, 0.375, 0.5],
+        [0.625, 0.75, 0.875, 1.0],
+        [0.9, 0.8, 0.7, 0.6],
+    ]);
+    let mut r = Record::new(RecordKind::Path, 11, 111);
+    r.geometry.shape_a = Some(original.key());
+    r.features = FEATURE_PRE_PROJECTED;
+    r.pre_projected = Some(PreProjected {
+        points: projected.key(),
+        gradient: Some([[-1.25, -2.5, -3.75], [4.125, 5.25, 6.5]]),
+        fill: Paint::One([0.15, 0.25, 0.35, 0.45]),
+        stroke: Paint::Two([[0.55, 0.65, 0.75, 0.85], [0.95, 0.05, 0.125, 0.375]]),
+        background_stroke: Paint::Table(stops.key()),
+    });
+    d.upload = vec![original, projected];
+    d.upload_paints = vec![stops];
+    d.set = vec![r];
+    d
+}
+
+/// XF 1.2's canonical sample: a view snapped to a grid and a record carrying its planes and normals,
+/// separate so the earlier samples retain their exact bytes.
+pub fn snapped_sample() -> Delta {
+    let mut d = Delta::new(Time { num: 4, den: 15 }, 5);
+    d.version = (1, 2);
+    let mut view = flat_view(32, 18, [0.0, 0.0, 0.0, 1.0]);
+    view.input_grid = 1.0 / 32768.0;
+    d.view = Some(view);
+    let shape = Shape::new(ShapeData::Path {
+        points: square_points(1.0),
+    });
+    let mut r = Record::new(RecordKind::Path, 12, 112);
+    r.geometry.shape_a = Some(shape.key());
+    r.paint.fill = Paint::One([0.2, 0.4, 0.6, 1.0]);
+    r.planes = Some(vec![1, 6, 0]);
+    r.normals = Some(vec![
+        [0.0, 0.6, 0.8],
+        [0.0, 0.0, 0.0],
+        [0.6, 0.0, -0.8],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+    ]);
+    d.upload = vec![shape];
+    d.set = vec![r];
+    d
+}
+
+/// XF 1.3's canonical sample: a face group whose faces hold runs of points and stroke widths of
+/// their own (a surface partly drawn), separate so the earlier samples retain their exact bytes.
+pub fn face_ends_sample() -> Delta {
+    let mut d = Delta::new(Time { num: 5, den: 15 }, 6);
+    d.version = (1, 3);
+    d.view = Some(three_d_view(32, 18));
+    let shape = Shape::new(ShapeData::Path {
+        points: [square_points(1.0), square_points(0.5)[..8].to_vec()].concat(),
+    });
+    let fills = Stops::new(vec![[0.2, 0.4, 0.6, 0.32], [0.6, 0.4, 0.2, 0.32]]);
+    let mut r = Record::new(RecordKind::FaceGroup, 13, 113);
+    r.geometry.shape_a = Some(shape.key());
+    r.paint.stroke_width = 2.0;
+    r.body = Body::FaceGroup(FaceGroup {
+        uv: vec![[0, 0], [1, 0]],
+        grid: [2, 1],
+        fill: fills.key(),
+        stroke: None,
+        face_ends: vec![16, 24],
+        face_widths: vec![2.0, 0.5],
+    });
+    d.upload = vec![shape];
+    d.upload_paints = vec![fills];
+    d.set = vec![r];
+    d
+}
+
+/// SHA-256 (FIPS 180-4), for pinning bytes without a dependency.
+pub fn sha256_hex(data: &[u8]) -> String {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let mut message = data.to_vec();
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for block in message.chunks(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes(block[i * 4..i * 4 + 4].try_into().unwrap());
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ (!e & g);
+            let t1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            (hh, g, f, e, d, c, b, a) = (g, f, e, d.wrapping_add(t1), c, b, a, t1.wrapping_add(t2));
+        }
+        for (x, y) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+            *x = x.wrapping_add(y);
+        }
+    }
+    h.iter().map(|x| format!("{x:08x}")).collect()
 }

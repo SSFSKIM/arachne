@@ -3,7 +3,7 @@
 use crate::xf::*;
 use numpy::{Element, PyArray1, PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList};
+use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 
 fn key<'py>(py: Python<'py>, key: Key) -> Bound<'py, PyBytes> {
     PyBytes::new(py, &key.0)
@@ -20,7 +20,7 @@ fn rows<'py, T: Element + Copy, const N: usize>(
     PyArray1::from_vec(py, values.iter().flatten().copied().collect()).reshape([values.len(), N])
 }
 
-fn order(entries: &[OrderEntry]) -> Vec<(&'static str, u32, u32)> {
+pub(super) fn order(entries: &[OrderEntry]) -> Vec<(&'static str, u32, u32)> {
     entries
         .iter()
         .map(|e| {
@@ -65,6 +65,9 @@ fn view<'py>(py: Python<'py>, v: &View) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("cairo_line_width_multiple", v.cairo_line_width_multiple)?;
     out.set_item("use_z_index", v.use_z_index)?;
     out.set_item("light_model", v.light.code_and_params())?;
+    if v.input_grid != 0.0 {
+        out.set_item("input_grid", v.input_grid)?;
+    }
     Ok(out)
 }
 
@@ -86,9 +89,24 @@ fn paints(out: &Bound<'_, PyDict>, p: &PaintB) -> PyResult<()> {
     out.set_item("background_stroke_width", p.background_stroke_width)
 }
 
+/// A source as Python reads it: a tuple of paths, each a tuple of (token, class).
+fn source<'py>(py: Python<'py>, paths: &[Vec<SourceNode>]) -> PyResult<Bound<'py, PyTuple>> {
+    let paths = paths
+        .iter()
+        .map(|path| PyTuple::new(py, path.iter().map(|n| (n.token, n.class.as_str()))))
+        .collect::<PyResult<Vec<_>>>()?;
+    PyTuple::new(py, paths)
+}
+
 fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     out.set_item("features", r.features)?;
+    if !r.source.is_empty() {
+        out.set_item("source", source(py, &r.source)?)?;
+    }
+    if r.facing_group != 0 {
+        out.set_item("facing_group", r.facing_group)?;
+    }
     if let RecordKind::Unknown(_) = r.kind {
         if let Body::Opaque(payload) = &r.body {
             out.set_item("payload", PyBytes::new(py, payload))?;
@@ -163,6 +181,33 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
     if let Some(k) = r.fill_image {
         out.set_item("fill_image", key(py, k))?;
     }
+    if let Some(joins) = &r.joins {
+        let bytes: Vec<u32> = joins.iter().map(|b| u32::from(*b)).collect();
+        out.set_item("joins", PyTuple::new(py, bytes)?)?;
+    }
+    if let Some(planes) = &r.planes {
+        let codes: Vec<u32> = planes.iter().map(|c| u32::from(*c)).collect();
+        out.set_item("planes", PyTuple::new(py, codes)?)?;
+    }
+    if let Some(normals) = &r.normals {
+        let rows = normals
+            .iter()
+            .map(|n| PyTuple::new(py, n))
+            .collect::<PyResult<Vec<_>>>()?;
+        out.set_item("normals", PyTuple::new(py, rows)?)?;
+    }
+    if let Some(p) = &r.pre_projected {
+        let projected = PyDict::new(py);
+        projected.set_item("points", key(py, p.points))?;
+        match p.gradient {
+            Some([a, b]) => projected.set_item("gradient", (a[0], a[1], a[2], b[0], b[1], b[2]))?,
+            None => projected.set_item("gradient", py.None())?,
+        }
+        projected.set_item("fill", paint(py, &p.fill)?)?;
+        projected.set_item("stroke", paint(py, &p.stroke)?)?;
+        projected.set_item("background_stroke", paint(py, &p.background_stroke)?)?;
+        out.set_item("pre_projected", projected)?;
+    }
     match &r.body {
         Body::None => {}
         Body::FaceGroup(f) => {
@@ -171,6 +216,12 @@ fn record<'py>(py: Python<'py>, r: &Record) -> PyResult<Bound<'py, PyDict>> {
             out.set_item("face_fill", key(py, f.fill))?;
             if let Some(k) = f.stroke {
                 out.set_item("face_stroke", key(py, k))?;
+            }
+            if !f.face_ends.is_empty() {
+                out.set_item("face_ends", PyTuple::new(py, &f.face_ends)?)?;
+            }
+            if !f.face_widths.is_empty() {
+                out.set_item("face_widths", PyTuple::new(py, &f.face_widths)?)?;
             }
         }
         Body::Points(p) => {
@@ -289,5 +340,10 @@ pub(super) fn delta<'py>(py: Python<'py>, d: &Delta) -> PyResult<Bound<'py, PyDi
         Some(entries) => out.set_item("order", order(entries))?,
         None => out.set_item("order", py.None())?,
     }
+    let held = PyList::empty(py);
+    for row in &d.source {
+        held.append((row.slot, source(py, &row.source)?, row.facing_group))?;
+    }
+    out.set_item("source", held)?;
     Ok(out)
 }

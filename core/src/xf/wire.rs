@@ -3,6 +3,7 @@
 //! `core/XF.md` describes the layout field by field.
 
 use super::*;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
@@ -179,6 +180,9 @@ fn encode_view(v: &View) -> Vec<u8> {
         w.u8(code);
         w.count(params.len());
         w.f64s(&params);
+        if v.input_grid != 0.0 {
+            w.f64(v.input_grid);
+        }
     })
 }
 
@@ -246,6 +250,12 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             w.0.extend_from_slice(rest);
             return;
         }
+
+        assert_eq!(
+            r.features & FEATURE_PRE_PROJECTED != 0,
+            r.pre_projected.is_some(),
+            "pre_projected feature bit and tail field disagree"
+        );
 
         let g = &r.geometry;
         w.u8(g.shape_a.is_some() as u8
@@ -381,14 +391,93 @@ pub fn encode_record(r: &Record) -> Vec<u8> {
             }
             (kind, body) => panic!("a {} record cannot carry {body:?}", kind.name()),
         }
+        if let Some(p) = &r.pre_projected {
+            w.key(&p.points);
+            w.bool(p.gradient.is_some());
+            if let Some([a, b]) = &p.gradient {
+                w.f64s(a);
+                w.f64s(b);
+            }
+            write_paint(w, &p.fill);
+            write_paint(w, &p.stroke);
+            write_paint(w, &p.background_stroke);
+        }
+        // XF 1.2: planes, then normals, both written when either is carried (an empty list
+        // stands for one not carried), so a newer minor's fields follow at a known place. XF 1.3: a
+        // face group's face lists follow them, written when carried or when joins follow; XF 1.4:
+        // then the record's joins, written when carried.
+        let faces = match &r.body {
+            Body::FaceGroup(f) if f.carries_face_lists() || r.joins.is_some() => Some(f),
+            _ => None,
+        };
+        if r.planes.is_some() || r.normals.is_some() || faces.is_some() || r.joins.is_some() {
+            let planes = r.planes.as_deref().unwrap_or_default();
+            w.count(planes.len());
+            planes.iter().for_each(|code| w.u8(*code));
+            let normals = r.normals.as_deref().unwrap_or_default();
+            w.count(normals.len());
+            normals.iter().for_each(|n| w.f64s(n));
+        }
+        // XF 1.3: a face group's face ends, then its face widths, both written when either is
+        // carried (an empty list stands for one not carried).
+        if let Some(f) = faces {
+            w.count(f.face_ends.len());
+            f.face_ends.iter().for_each(|end| w.u32(*end));
+            w.count(f.face_widths.len());
+            w.f64s(&f.face_widths);
+        }
+        if let Some(joins) = &r.joins {
+            w.count(joins.len());
+            joins.iter().for_each(|b| w.u8(*b));
+        }
     })
 }
 
-/// A delta's bytes.
+/// The lowest supported version that carries this delta's content. Foreign and future version
+/// declarations are retained: this writer cannot decide what their content requires. Re-encoding
+/// a delta decoded from a newer minor keeps its version but not what this reader skipped of it
+/// (a record's tail past what it knows, the delta's past its XF 1.5 section): those bytes were
+/// dropped on read.
+pub fn encoded_version(d: &Delta) -> (u16, u16) {
+    if d.version.0 != XF_VERSION.0 || d.version.1 > XF_VERSION.1 {
+        return d.version;
+    }
+    let sub_views = d.set.iter().filter_map(|r| match &r.body {
+        Body::Image(ImageSource::SubFrame { view, .. }) => Some(&**view),
+        _ => None,
+    });
+    let snapped = d.view.iter().chain(sub_views).any(|v| v.input_grid != 0.0)
+        || d.set
+            .iter()
+            .any(|r| r.planes.is_some() || r.normals.is_some());
+    let face_lists = d
+        .set
+        .iter()
+        .any(|r| matches!(&r.body, Body::FaceGroup(f) if f.carries_face_lists()));
+    let minor = if carries_source(d) {
+        5
+    } else if d.set.iter().any(|r| r.joins.is_some()) {
+        4
+    } else if face_lists {
+        3
+    } else if snapped {
+        2
+    } else {
+        u16::from(
+            d.set
+                .iter()
+                .any(|r| r.features & FEATURE_PRE_PROJECTED != 0),
+        )
+    };
+    (1, minor)
+}
+
+/// A delta's bytes, at the lowest version that carries its content.
 pub fn encode_delta(d: &Delta) -> Vec<u8> {
     encoded(|w| {
-        w.u16(d.version.0);
-        w.u16(d.version.1);
+        let version = encoded_version(d);
+        w.u16(version.0);
+        w.u16(version.1);
         w.i64(d.t.num);
         w.i64(d.t.den);
         w.u64(d.seq);
@@ -420,15 +509,94 @@ pub fn encode_delta(d: &Delta) -> Vec<u8> {
         if let Some(order) = &d.order {
             write_order(w, order);
         }
+        if carries_source(d) {
+            write_source(w, d);
+        }
     })
 }
 
-/// A file of deltas: the magic, this build's version, then each delta preceded by its length.
+/// Whether the delta holds a row ([`source_rows`]).
+fn carries_source(d: &Delta) -> bool {
+    !source_rows(d).is_empty()
+}
+
+/// One row of XF 1.5's section: a slot's source and facing group.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Row<'a> {
+    pub slot: u32,
+    pub facing_group: u32,
+    pub source: &'a [Vec<SourceNode>],
+}
+
+/// The rows the delta's section holds, in the order they are written: one for each record the
+/// delta sets carrying a source or a facing group, in the order it sets them (of a slot set more
+/// than once, its last record's alone), then one for each held row (one for a slot the delta also
+/// sets is that record's, in place of the record's own). What the writer writes and what `apply`
+/// checks.
+pub(crate) fn source_rows(d: &Delta) -> Vec<Row<'_>> {
+    let set = &d.set;
+    let last: HashMap<u32, usize> = set.iter().enumerate().map(|(i, r)| (r.slot, i)).collect();
+    // A row the delta gives a slot it sets is that record's, in its place.
+    let given: HashSet<u32> = d.source.iter().map(|h| h.slot).collect();
+    set.iter()
+        .enumerate()
+        .filter(|(i, r)| r.carries_source() && last[&r.slot] == *i && !given.contains(&r.slot))
+        .map(|(_, r)| Row {
+            slot: r.slot,
+            facing_group: r.facing_group,
+            source: &r.source,
+        })
+        .chain(d.source.iter().map(|h| Row {
+            slot: h.slot,
+            facing_group: h.facing_group,
+            source: &h.source,
+        }))
+        .collect()
+}
+
+/// XF 1.5's section, after the order: the class names its rows use, each once, in the order the
+/// rows first use them; then its rows ([`source_rows`]).
+fn write_source(w: &mut W, d: &Delta) {
+    let rows: Vec<(u32, u32, &[Vec<SourceNode>])> = source_rows(d)
+        .into_iter()
+        .map(|r| (r.slot, r.facing_group, r.source))
+        .collect();
+    let mut classes: Vec<&str> = Vec::new();
+    let mut index: HashMap<&str, u32> = HashMap::new();
+    for node in rows
+        .iter()
+        .flat_map(|(_, _, source)| source.iter().flatten())
+    {
+        index.entry(node.class.as_str()).or_insert_with(|| {
+            classes.push(node.class.as_str());
+            u32::try_from(classes.len() - 1).expect("an XF count fits in u32")
+        });
+    }
+    w.count(classes.len());
+    classes.iter().for_each(|c| w.str(c));
+    w.count(rows.len());
+    for (slot, facing_group, source) in rows {
+        w.u32(slot);
+        w.u32(facing_group);
+        w.count(source.len());
+        for path in source {
+            assert!(!path.is_empty(), "a source path names at least one object");
+            w.count(path.len());
+            for node in path {
+                w.u32(node.token);
+                w.u32(index[node.class.as_str()]);
+            }
+        }
+    }
+}
+
+/// A file of deltas: the magic, the version its deltas require, then each length-prefixed delta.
 pub fn encode_file(deltas: &[Delta]) -> Vec<u8> {
     encoded(|w| {
         w.0.extend_from_slice(&MAGIC);
-        w.u16(XF_VERSION.0);
-        w.u16(XF_VERSION.1);
+        let version = deltas.iter().map(encoded_version).max().unwrap_or((1, 0));
+        w.u16(version.0);
+        w.u16(version.1);
         w.count(deltas.len());
         deltas.iter().for_each(|d| w.item(&encode_delta(d)));
     })
@@ -594,6 +762,8 @@ fn decode_view(r: &mut R) -> Result<View> {
     let n = r.count(8)?;
     let params = (0..n).map(|_| r.f64()).collect::<Result<Vec<_>>>()?;
     let light = LightModel::from_code(code, params);
+    // XF 1.2: the input grid, when the view carries one.
+    let input_grid = if r.at < r.b.len() { r.f64()? } else { 0.0 };
     Ok(View {
         pixel_width,
         pixel_height,
@@ -606,6 +776,7 @@ fn decode_view(r: &mut R) -> Result<View> {
         cairo_line_width_multiple,
         use_z_index,
         light,
+        input_grid,
     })
 }
 
@@ -793,6 +964,8 @@ fn decode_record(r: &mut R) -> Result<Record> {
                 grid,
                 fill,
                 stroke,
+                face_ends: Vec::new(),
+                face_widths: Vec::new(),
             })
         }
         RecordKind::Points => Body::Points(Points {
@@ -833,6 +1006,54 @@ fn decode_record(r: &mut R) -> Result<Record> {
         }
         RecordKind::Unknown(_) => unreachable!("returned above"),
     };
+    if rec.features & FEATURE_PRE_PROJECTED != 0 {
+        if !matches!(
+            kind,
+            RecordKind::Path | RecordKind::Points | RecordKind::Image
+        ) {
+            return Err(XfError::Invalid(format!(
+                "pre_projected is not valid on {} records",
+                kind.name()
+            )));
+        }
+        rec.pre_projected = Some(PreProjected {
+            points: r.key()?,
+            gradient: if r.bool()? {
+                Some([r.f64s()?, r.f64s()?])
+            } else {
+                None
+            },
+            fill: read_paint(r)?,
+            stroke: read_paint(r)?,
+            background_stroke: read_paint(r)?,
+        });
+    }
+    // XF 1.2: the record's planes, then its normals, when it carries them (an empty list: not
+    // carried).
+    if r.at < r.b.len() {
+        let n = r.count(1)?;
+        let planes = (0..n).map(|_| r.u8()).collect::<Result<Vec<_>>>()?;
+        rec.planes = (!planes.is_empty()).then_some(planes);
+    }
+    if r.at < r.b.len() {
+        let n = r.count(24)?;
+        let normals = (0..n).map(|_| r.f64s()).collect::<Result<Vec<_>>>()?;
+        rec.normals = (!normals.is_empty()).then_some(normals);
+    }
+    // XF 1.3: a face group's face ends, then its face widths (an empty list: not carried).
+    if r.at < r.b.len()
+        && let Body::FaceGroup(f) = &mut rec.body
+    {
+        let n = r.count(4)?;
+        f.face_ends = (0..n).map(|_| r.u32()).collect::<Result<Vec<_>>>()?;
+        let n = r.count(8)?;
+        f.face_widths = (0..n).map(|_| r.f64()).collect::<Result<Vec<_>>>()?;
+    }
+    // XF 1.4: the record's joins, when it carries them.
+    if r.at < r.b.len() {
+        let n = r.count(1)?;
+        rec.joins = Some((0..n).map(|_| r.u8()).collect::<Result<Vec<_>>>()?);
+    }
     // Whatever follows belongs to a newer minor version: skipped.
     Ok(rec)
 }
@@ -893,7 +1114,96 @@ pub fn decode_delta(bytes: &[u8]) -> Result<Delta> {
     if r.bool()? {
         d.order = Some(read_order(&mut r)?);
     }
+    // XF 1.5: the records' sources, when the delta carries them.
+    if r.at < r.b.len() {
+        read_source(&mut r, &mut d)?;
+    }
+    // Whatever follows belongs to a newer minor version: skipped.
     Ok(d)
+}
+
+/// XF 1.5's section: each row's source and facing group set on the last record of its slot the
+/// delta sets, or, for a slot it neither sets nor removes, a held record's new one; the whole
+/// section read and checked before the delta is returned.
+fn read_source(r: &mut R, d: &mut Delta) -> Result<()> {
+    let refuse =
+        |code: &str, why: String| XfError::Invalid(format!("a delta's source: {code}: {why}"));
+    let n = r.count(4)?;
+    let mut classes = Vec::with_capacity(n);
+    let mut named = HashSet::new();
+    for _ in 0..n {
+        let class = r.str()?;
+        if !named.insert(class.clone()) {
+            let why = format!("the class {class:?} is named twice");
+            return Err(refuse("class_named_twice", why));
+        }
+        classes.push(class);
+    }
+    let set: HashMap<u32, usize> = d
+        .set
+        .iter()
+        .enumerate()
+        .map(|(i, rec)| (rec.slot, i))
+        .collect();
+    let mut rowed = HashSet::new();
+    let rows = r.count(12)?;
+    for _ in 0..rows {
+        let slot = r.u32()?;
+        let facing_group = r.u32()?;
+        let paths = r.count(4)?;
+        let mut read = Vec::with_capacity(paths);
+        for _ in 0..paths {
+            let nodes = r.count(8)?;
+            let mut path = Vec::with_capacity(nodes);
+            for _ in 0..nodes {
+                path.push((r.u32()?, r.u32()?));
+            }
+            read.push(path);
+        }
+        // The whole row is read; its refusal is the first in the stated order.
+        if !rowed.insert(slot) {
+            let why = format!("slot {slot} is named by an earlier row");
+            return Err(refuse("slot_named_twice", why));
+        }
+        if d.remove.contains(&slot) {
+            let why = format!("slot {slot} is removed by the delta");
+            return Err(refuse("slot_removed", why));
+        }
+        if read.is_empty() && facing_group == 0 {
+            let why = format!("the row of slot {slot} carries nothing");
+            return Err(refuse("row_empty", why));
+        }
+        if read.iter().any(Vec::is_empty) {
+            let why = format!("slot {slot} has a path of no objects");
+            return Err(refuse("path_empty", why));
+        }
+        let mut source = Vec::with_capacity(read.len());
+        for path in read {
+            let mut nodes = Vec::with_capacity(path.len());
+            for (token, at) in path {
+                let Some(class) = classes.get(at as usize) else {
+                    let why = format!("slot {slot} names class {at} of {}", classes.len());
+                    return Err(refuse("class_out_of_range", why));
+                };
+                nodes.push(SourceNode {
+                    token,
+                    class: class.clone(),
+                });
+            }
+            source.push(nodes);
+        }
+        if let Some(&i) = set.get(&slot) {
+            d.set[i].source = source;
+            d.set[i].facing_group = facing_group;
+        } else {
+            d.source.push(SourceRow {
+                slot,
+                facing_group,
+                source,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Reads a file of deltas.

@@ -21,8 +21,11 @@ Nothing here imports the core.
 
 from __future__ import annotations
 
-__all__ = ["FrameStream", "Unable"]
+__all__ = ["FrameStream", "Unable", "library_class"]
 
+import functools
+import sys
+import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -115,6 +118,41 @@ MOBJECT_READS = (
 #: CE's default tolerance for closing a subpath (XF assumes it).
 _TOLERANCE = 1e-6
 
+#: A record's source (XF 1.5): a path per way its object is contained, each
+#: ``(token, class)`` pairs, the object first and its outermost container last.
+Source = tuple[tuple[tuple[int, str], ...], ...]
+#: A slot's record as made, what was added to it, the record sent, and the
+#: record sent before it for the same record as made (its source moved, its
+#: drawing not), else ``None``.
+_Sent = tuple[Record, tuple[Source, int], Record, Record | None]
+
+#: The library whose classes name a record's objects.
+_LIBRARY = "arachne"
+
+
+@functools.cache
+def library_class(kind: type) -> str:
+    """The fully qualified name of the nearest class in ``kind``'s method
+    resolution order that the library defines and names (a class of one of
+    its modules, found there by its qualified name): a scene's own subclass
+    is named by the library class it derives from, so no name of the scene's
+    own reaches the stream.
+    """
+    for base in kind.__mro__:
+        if _in_library(base):
+            return f"{base.__module__}.{base.__qualname__}"
+    raise Unable(f"render.unable: a {kind.__name__} derives from no library class")
+
+
+def _in_library(kind: type) -> bool:
+    module = kind.__module__
+    if module != _LIBRARY and not module.startswith(_LIBRARY + "."):
+        return False
+    found: Any = sys.modules.get(module)
+    for name in kind.__qualname__.split("."):
+        found = getattr(found, name, None)
+    return found is kind
+
 
 def _camera_kind(camera: Camera) -> str:
     from arachne.camera.camera import Camera
@@ -134,6 +172,37 @@ def _camera_kind(camera: Camera) -> str:
 
 def _floats(value: Any) -> tuple[float, ...]:
     return tuple(float(x) for x in np.asarray(value, dtype=float).reshape(-1))
+
+
+def view_values(camera: Any, kind: str) -> dict[str, Any]:
+    """The camera's own values a view of ``kind`` states: all of it but the
+    background and the mapping centre (which its array and context hold).
+    """
+    values: dict[str, Any] = {
+        "pixel_width": int(camera.pixel_width),
+        "pixel_height": int(camera.pixel_height),
+        "frame_width": float(camera.frame_width),
+        "frame_height": float(camera.frame_height),
+        "frame_center": _floats(camera.frame_center),
+        "cairo_line_width_multiple": float(camera.cairo_line_width_multiple),
+        "use_z_index": bool(camera.use_z_index),
+    }
+    if kind == "three_d":
+        # The trackers, as the engine's getters read them: a getter the
+        # scene's code overrides is its camera's, run by its own capture
+        # alone (what it placed is in the records), never here.
+        values.update(
+            phi=float(camera.phi_tracker.get_value()),
+            theta=float(camera.theta_tracker.get_value()),
+            gamma=float(camera.gamma_tracker.get_value()),
+            focal_distance=float(camera.focal_distance_tracker.get_value()),
+            zoom=float(camera.zoom_tracker.get_value()),
+            exponential_projection=bool(camera.exponential_projection),
+            light_source=_floats(camera.light_source.points[0]),
+            shading_factor=float(camera.shading_factor),
+            should_apply_shading=bool(camera.should_apply_shading),
+        )
+    return values
 
 
 def _mapping_centre(camera: Any) -> tuple[float, ...]:
@@ -217,6 +286,8 @@ class FrameStream:
         self._seq = 0
         #: The blend records of the frame being extracted, by leaf id.
         self._blends: dict[int, Record] = {}
+        #: The scene's mobjects at the frame being extracted.
+        self._roots: list[Any] = []
         #: Each display of the last frame's MultiCamera, with the sub-frame of
         #: its last capture: what CE leaves in the display's camera.
         self.last_sub_frames: list[tuple[Any, Any]] = []
@@ -224,6 +295,17 @@ class FrameStream:
         #: projection's (CE's cached-context offset).
         self.mapping_offset_frames = 0
         self.frames = 0
+        #: Each object's source token, by its id, while the object lives.
+        self._tokens: dict[int, tuple[weakref.ref[Any], int]] = {}
+        self._next_token = 1
+        #: The containment of the frame being extracted: by an object's id,
+        #: the objects whose submobjects hold it.
+        self._parents: dict[int, list[Any]] = {}
+        #: The frame's sources and facing groups, by object id, once found.
+        self._sources: dict[int, Source] = {}
+        self._groups: dict[tuple[int, int], int] = {}
+        #: What each slot was sent (:data:`_Sent`).
+        self._sent: dict[int, _Sent] = {}
 
     # Slots
 
@@ -240,6 +322,135 @@ class FrameStream:
         objects.append((slot, origin.id, "" if line is None else str(line)))
         return slot
 
+    # Sources (XF 1.5): what each record was drawn from, which nothing drawn
+    # reads.
+
+    def _token(self, mob: Any) -> int:
+        """``mob``'s token: given when first met, kept while it lives."""
+        key = id(mob)
+        held = self._tokens.get(key)
+        if held is not None and held[0]() is mob:
+            return held[1]
+        token = self._next_token
+        self._next_token += 1
+        tokens = self._tokens
+
+        def gone(_: Any) -> None:
+            if tokens.get(key, (None, 0))[1] == token:
+                del tokens[key]
+
+        tokens[key] = (weakref.ref(mob, gone), token)
+        return token
+
+    def _contain(self, owners: Sequence[Any]) -> None:
+        """Note the containment of a frame drawn from the families of
+        ``owners`` (the scene's mobjects, and the lists the frame is drawn
+        from), each object's token given in the order the families are met.
+        """
+        parents: dict[int, list[Any]] = {}
+        seen: set[int] = set()
+        stack = list(reversed(owners))
+        while stack:
+            mob = stack.pop()
+            if id(mob) in seen:
+                continue
+            seen |= {id(mob)}
+            self._token(mob)
+            children = list(mob.submobjects)
+            for child in children:
+                found = parents.setdefault(id(child), [])
+                if not any(parent is mob for parent in found):
+                    found.append(mob)
+            stack.extend(reversed(children))
+        self._parents = parents
+        self._sources = {}
+        self._groups = {}
+
+    def _source(self, mob: Any) -> Source:
+        """``mob``'s source: ``mob``, then each chain of the frame's objects
+        containing it, outermost last; a path per chain.
+        """
+        found = self._sources.get(id(mob))
+        if found is None:
+            kind: type = type(mob)
+            node = (self._token(mob), library_class(kind))
+            paths: list[tuple[tuple[int, str], ...]] = []
+            for parent in self._parents.get(id(mob), ()):
+                for path in self._source(parent):
+                    if (node, *path) not in paths:
+                        paths.append((node, *path))
+            found = tuple(paths) if paths else ((node,),)
+            self._sources[id(mob)] = found
+        return found
+
+    def _facing_group(self, mob: Any, orientation: Mapping[Any, Any]) -> int:
+        """The label ``mob`` belongs to, kept facing the camera: of the
+        objects connected to it through containment that ``orientation``
+        keeps facing it by one centre function (a family registered at once),
+        the least token. A family registered apart is another label, though
+        it shares the function; one registered again splits from its label.
+        """
+        func = orientation.get(mob)
+        if func is None:
+            return 0
+        found = self._groups.get((id(orientation), id(mob)))
+        if found is not None:
+            return found
+        label = [mob]
+        seen = {id(mob)}
+        at = 0
+        while at < len(label):
+            each = label[at]
+            at += 1
+            for near in (*self._parents.get(id(each), ()), *each.submobjects):
+                if id(near) not in seen and orientation.get(near) is func:
+                    seen |= {id(near)}
+                    label.append(near)
+        group = min(self._token(each) for each in label)
+        for each in label:
+            self._groups[(id(orientation), id(each))] = group
+        return group
+
+    def _sourced(
+        self,
+        slot: int,
+        record: Record,
+        mob: Any,
+        facing: Any,
+        orientation: Mapping[Any, Any] | None,
+    ) -> Record:
+        """``record`` as sent: with the source of ``mob``, the object its
+        slot draws, and where the record is kept facing the camera, the label
+        of ``facing`` (the object whose depth it states) under
+        ``orientation``, the camera's. The record sent stays the same object
+        while ``record`` and what was added to it do; when only what was
+        added moves, the record it replaces is kept, so that its new source
+        is sent alone (:meth:`_delta`) and no record is set again.
+        """
+        group = 0
+        if orientation and record.fields.get("fixed_orientation_centre") is not None:
+            group = self._facing_group(facing, orientation)
+        added = (self._source(mob), group)
+        held = self._sent.get(slot)
+        if held is not None and held[0] is record and held[1] == added:
+            return held[2]
+        fields = dict(record.fields)
+        fields["source"] = added[0]
+        if group:
+            fields["facing_group"] = group
+        sent = Record(record.kind, fields)
+        replaced = held[2] if held is not None and held[0] is record else None
+        self._sent[slot] = (record, added, sent, replaced)
+        return sent
+
+    def _redrawn_as(self, slot: int, record: Record, held: Record) -> None:
+        """``record``, sent for ``slot``, draws as ``held``, the record the
+        slot holds, does: its new source is sent alone (:meth:`_delta`).
+        """
+        made, added, sent, _ = self._sent[slot]
+        assert sent is record
+        self._sent[slot] = (made, added, sent, held)
+
     # Frames
 
     def frame(
@@ -249,11 +460,15 @@ class FrameStream:
         *,
         t: Fraction = Fraction(0),
         terms: Mapping[int, Term] | None = None,
+        roots: Sequence[Mobject] = (),
     ) -> Delta:
         """The delta of the frame the camera draws from ``groups`` (each a
         layer and the list one capture of the camera is handed, in order), as
         the mobjects and the camera hold it now. ``terms`` gives, by mobject
-        id, the leaves a straight-path blend states.
+        id, the leaves a straight-path blend states. ``roots`` are the
+        scene's mobjects: a surface in their families draws its faces as one
+        face group though a list holds its faces alone (a play's static list
+        is flattened to the mobjects with points).
         """
         kind = _camera_kind(camera)
         for attr, default in (
@@ -264,6 +479,8 @@ class FrameStream:
             if getattr(camera, attr) != default:
                 raise Unable(f"render.unable: the camera's {attr} is not {default}")
         self._blends = {}
+        self._roots = list(roots)
+        self._contain([*self._roots, *(m for _, listed in groups for m in listed)])
         objects: list[tuple[int, str, str]] = []
         uploads: dict[bytes, Any] = {}
         records: dict[int, Record] = {}
@@ -371,6 +588,7 @@ class FrameStream:
         from arachne.mobject.types.vectorized_mobject import VMobject
 
         faces = self._faces(mobjects, leaves)
+        orientation = getattr(camera, "fixed_orientation_mobjects", None)
         for leaf in leaves:
             kind = camera.type_or_raise(leaf)
             if kind is VMobject:
@@ -379,7 +597,14 @@ class FrameStream:
                     surface, index = face
                     slot = self._slot(surface, objects)
                     if slot not in records:
-                        records[slot] = self._face_group(camera, surface, uploads)
+                        # Its depth is its first face's.
+                        records[slot] = self._sourced(
+                            slot,
+                            self._face_group(camera, surface, uploads),
+                            surface,
+                            _uv_faces(surface)[0],
+                            orientation,
+                        )
                     order.append((layer, slot, index))
                     continue
                 slot = self._slot(leaf, objects)
@@ -397,9 +622,16 @@ class FrameStream:
                             self._blends[id(leaf)] = record
                 if record is None:
                     record = self._leaf_record(camera, leaf, "path", uploads)
+                record = self._sourced(slot, record, leaf, leaf, orientation)
             elif kind is PMobject:
                 slot = self._slot(leaf, objects)
-                record = self._leaf_record(camera, leaf, "points", uploads)
+                record = self._sourced(
+                    slot,
+                    self._leaf_record(camera, leaf, "points", uploads),
+                    leaf,
+                    leaf,
+                    orientation,
+                )
             elif kind is AbstractImageMobject:
                 slot = self._slot(leaf, objects)
                 if isinstance(leaf, ImageMobjectFromCamera) and id(leaf) in sub_frames:
@@ -408,15 +640,25 @@ class FrameStream:
                         record is None
                         or record.fields.get("sub_frame") is not sub_frames[id(leaf)]
                     ):
-                        record = self._display_record(
-                            camera, leaf, sub_frames[id(leaf)]
+                        record = self._sourced(
+                            slot,
+                            self._display_record(camera, leaf, sub_frames[id(leaf)]),
+                            leaf,
+                            leaf,
+                            orientation,
                         )
                 else:
                     if isinstance(leaf, ImageMobjectFromCamera):
                         # Its pixels are its camera's, which its state does
                         # not hold: never reused.
                         self._cache.pop(id(leaf), None)
-                    record = self._leaf_record(camera, leaf, "image", uploads)
+                    record = self._sourced(
+                        slot,
+                        self._leaf_record(camera, leaf, "image", uploads),
+                        leaf,
+                        leaf,
+                        orientation,
+                    )
             else:
                 continue  # CE draws nothing for a plain Mobject
             held = records.get(slot)
@@ -614,7 +856,9 @@ class FrameStream:
         self, mobjects: Sequence[Mobject], leaves: list[Mobject]
     ) -> dict[int, tuple[Any, int]]:
         """The leaves that are faces of a surface drawn as one face group,
-        each with its surface and its index there.
+        each with its surface and its index among the surface's uv faces.
+        The surface is looked for in the scene's families as well as in
+        ``mobjects``: a flattened list holds its faces without it.
         """
         if not any(hasattr(leaf, "u_index") for leaf in leaves):
             return {}
@@ -622,10 +866,10 @@ class FrameStream:
         from arachne.utils.family import extract_mobject_family_members
 
         found: dict[int, tuple[Any, int]] = {}
-        for owner in extract_mobject_family_members(list(mobjects)):
-            if not isinstance(owner, Surface) or id(owner) in found:
+        for owner in extract_mobject_family_members([*self._roots, *mobjects]):
+            if not isinstance(owner, Surface):
                 continue
-            faces = list(owner.submobjects)
+            faces = _uv_faces(owner)
             if _one_group(faces):
                 for index, face in enumerate(faces):
                     found[id(face)] = (owner, index)
@@ -636,7 +880,7 @@ class FrameStream:
     ) -> Record:
         from arachne.timeline.record import NodeState
 
-        faces = list(surface.submobjects)
+        faces = _uv_faces(surface)
         cached = self._cache.get(id(surface))
         if (
             cached is None
@@ -671,6 +915,12 @@ class FrameStream:
             fields["face_stroke"] = strokes.key
             fields["uv"] = np.array(
                 [[face.u_index, face.v_index] for face in faces], dtype=np.uint32
+            )
+            fields.update(
+                _face_lists(
+                    [len(face.points) for face in faces],
+                    [float(face.get_stroke_width()) for face in faces],
+                )
             )
             resolution = surface.resolution
             u_res, v_res = (
@@ -723,32 +973,12 @@ class FrameStream:
             background = np.asarray(camera.background)
         shape = Shape("image", background)
         uploads[shape.key] = shape
-        mapping = _mapping_centre(camera)
-        view: dict[str, Any] = {
-            "pixel_width": int(camera.pixel_width),
-            "pixel_height": int(camera.pixel_height),
-            "frame_width": float(camera.frame_width),
-            "frame_height": float(camera.frame_height),
-            "frame_center": _floats(camera.frame_center),
-            "mapping_centre": mapping,
+        return {
+            **view_values(camera, kind),
+            "mapping_centre": _mapping_centre(camera),
             "background": shape.key,
             "camera": kind,
-            "cairo_line_width_multiple": float(camera.cairo_line_width_multiple),
-            "use_z_index": bool(camera.use_z_index),
         }
-        if kind == "three_d":
-            view.update(
-                phi=float(camera.get_phi()),
-                theta=float(camera.get_theta()),
-                gamma=float(camera.get_gamma()),
-                focal_distance=float(camera.get_focal_distance()),
-                zoom=float(camera.get_zoom()),
-                exponential_projection=bool(camera.exponential_projection),
-                light_source=_floats(camera.light_source.points[0]),
-                shading_factor=float(camera.shading_factor),
-                should_apply_shading=bool(camera.should_apply_shading),
-            )
-        return view
 
     def _freeze(
         self,
@@ -801,7 +1031,20 @@ class FrameStream:
                 else:
                     delta.upload_paints.append(item)
         for slot, record in records.items():
-            if self._held.get(slot) is not record:
+            held = self._held.get(slot)
+            if held is record:
+                continue
+            sent = self._sent.get(slot)
+            if (
+                held is not None
+                and sent is not None
+                and sent[2] is record
+                and sent[3] is held
+            ):
+                # Its drawing is the held record's: its new source alone.
+                group = record.fields.get("facing_group", 0)
+                delta.source.append((slot, record.fields["source"], group))
+            else:
                 delta.set.append((slot, record))
         delta.remove = [slot for slot in self._held if slot not in records]
         delta.release = [key for key in self._held_keys if key not in used]
@@ -880,21 +1123,49 @@ def _depth_fields(extras: tuple[Any, ...]) -> dict[str, Any]:
     return fields
 
 
-def _one_group(faces: list[Any]) -> bool:
-    """Whether ``faces`` draw as one face group: uv faces of one kind and
-    point count, one style but their fill and stroke colours, each one stop.
+def _uv_faces(surface: Any) -> list[Any]:
+    """The submobjects of ``surface`` that are its uv faces: a solid's other
+    parts (caps, points, a child cone) are drawn as records of their own.
     """
     from arachne.mobject.three_d.three_dimensions import ThreeDVMobject
 
+    return [
+        face
+        for face in surface.submobjects
+        if type(face) is ThreeDVMobject and hasattr(face, "u_index")
+    ]
+
+
+def _face_lists(counts: list[int], widths: list[float]) -> dict[str, np.ndarray]:
+    """What a face group carries of its faces, of ``counts`` points and
+    stroke ``widths``, beyond their colours, where they differ: each face's
+    end in the group's points (``face_ends``), and its stroke width
+    (``face_widths``). Faces alike in either carry nothing of it, as before
+    either was carried: equal runs, each at the record's (the first face's)
+    width.
+    """
+    found: dict[str, np.ndarray] = {}
+    if len(set(counts)) > 1:
+        found["face_ends"] = np.cumsum(counts, dtype=np.uint32)
+    if len(set(widths)) > 1:
+        found["face_widths"] = np.array(widths, dtype=np.float64)
+    return found
+
+
+def _one_group(faces: list[Any]) -> bool:
+    """Whether the uv faces ``faces`` draw as one face group: one style but
+    what each face carries of its own (its points, however many, its fill
+    and stroke colours, each one stop, and its stroke width). A face holds
+    points, though as few as four at one spot: a surface partly drawn
+    (``Create``) holds faces of different lengths, and one written
+    (``Write``) strokes each face at its own phase's width, and neither
+    makes a face anything but a face of its surface.
+    """
     if not faces:
         return False
-    first = faces[0]
-    count = len(first.points)
     reference = None
     for face in faces:
-        if type(face) is not ThreeDVMobject or not hasattr(face, "u_index"):
-            return False
-        if len(face.points) != count or count == 0:
+        if len(face.points) == 0 or not _non_negative(face.get_stroke_width()):
             return False
         if len(face.get_fill_rgbas()) != 1 or len(face.get_stroke_rgbas()) != 1:
             return False
@@ -903,7 +1174,6 @@ def _one_group(faces: list[Any]) -> bool:
         ):
             return False
         style = (
-            face.get_stroke_width(),
             face.get_stroke_width(True),
             face.joint_type,
             face.cap_style,

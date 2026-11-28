@@ -29,6 +29,7 @@ from __future__ import annotations
 
 __all__ = ["CameraExtras", "Drawing", "LiveFrames", "camera_nodes", "static_list"]
 
+import contextlib
 import operator
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -114,8 +115,8 @@ class CameraExtras:
         what it already holds. ``None`` for an object that is not a camera.
         Without ``evaluate``, for a state no frame draws, no centre function
         is called: each fixed-orientation mobject's centre is the one
-        ``previous`` recorded, and one it recorded none of is left
-        unoriented.
+        ``previous`` recorded for its family (the mobjects sharing its centre
+        function), and a family it recorded none of is left unoriented.
         """
         from arachne.camera.camera import Camera
         from arachne.camera.three_d_camera import ThreeDCamera
@@ -147,9 +148,13 @@ class CameraExtras:
             displays = previous.displays
         if previous.fixed_in_frame == fixed:
             fixed = previous.fixed_in_frame
-        if len(previous.centers) == len(centers) and all(
-            a is c and np.array_equal(b, d)
-            for (a, b), (c, d) in zip(previous.centers, centers, strict=True)
+        if (
+            len(previous.centers) == len(centers)
+            and all(
+                a is c and np.array_equal(b, d)
+                for (a, b), (c, d) in zip(previous.centers, centers, strict=True)
+            )
+            and _families(previous.centers) == _families(centers)
         ):
             centers = previous.centers
         if (
@@ -191,6 +196,7 @@ class CameraExtras:
                 a is c and np.array_equal(b, d)
                 for (a, b), (c, d) in zip(self.centers, other.centers, strict=True)
             )
+            and _families(self.centers) == _families(other.centers)
             and self.background is other.background
         )
 
@@ -207,8 +213,14 @@ class CameraExtras:
             )
         if isinstance(camera, ThreeDCamera):
             camera.fixed_in_frame_mobjects = set(self.fixed_in_frame)
+            # One function per registration family, as the camera registered
+            # it: _centers evaluated each family's centre function once and
+            # gave its members one array, so the array's identity is the
+            # family's, and the lowering groups a label by function identity.
+            constants: dict[int, Callable[[], np.ndarray]] = {}
             camera.fixed_orientation_mobjects = {
-                mob: _constant(value) for mob, value in self.centers
+                mob: constants.setdefault(id(value), _constant(value))
+                for mob, value in self.centers
             }
         if self.displays is not None:
             camera.image_mobjects_from_cameras = list(self.displays)  # type: ignore[attr-defined]
@@ -294,12 +306,38 @@ def _recorded_centers(
     orientations: dict[Mobject, Callable[[], Any]], previous: CameraExtras | None
 ) -> tuple[tuple[Mobject, np.ndarray], ...]:
     """The centres ``previous`` recorded for the fixed-orientation mobjects
-    of ``orientations``, calling no centre function: those it recorded none
-    of are left out.
+    of ``orientations``, calling no centre function, one array per centre
+    function as :func:`_centers` gives them: each family (the mobjects
+    sharing a function) takes the centre recorded for its first member that
+    has one, and a family none of whose members has one is left out.
     """
     recorded = {id(mob): value for mob, value in previous.centers} if previous else {}
+    values: dict[int, np.ndarray] = {}
+    taken: set[int] = set()
+    for mob, center_func in orientations.items():
+        if id(center_func) in values or id(mob) not in recorded:
+            continue
+        value = recorded[id(mob)]
+        if id(value) in taken:
+            # Another family has it: an array of its own keeps the two apart.
+            value = value.copy()
+            value.flags.writeable = False
+        taken.add(id(value))
+        values[id(center_func)] = value
     return tuple(
-        (mob, recorded[id(mob)]) for mob in orientations if id(mob) in recorded
+        (mob, values[id(center_func)])
+        for mob, center_func in orientations.items()
+        if id(center_func) in values
+    )
+
+
+def _families(centers: tuple[tuple[Mobject, np.ndarray], ...]) -> tuple[int, ...]:
+    """Which of ``centers`` are one registration family: for each, the index
+    of the first holding its array (one array per centre function).
+    """
+    first: dict[int, int] = {}
+    return tuple(
+        first.setdefault(id(value), index) for index, (_, value) in enumerate(centers)
     )
 
 
@@ -559,17 +597,29 @@ class Drawing:
             static_layer = config.static_layer
         if draw_path is None:
             draw_path = config.draw_path
-        from arachne.frame_ir.painter import camera_path, painter_for
+        from arachne.frame_ir.painter import camera_path, captured, painter_for
 
         self.record = record
         self.static_layer = static_layer
-        # A camera the scene's code changed draws on Cairo (render.fallback).
-        draw_path = camera_path(record._scene.renderer.camera, draw_path)
+        camera = record._scene.renderer.camera
+        #: The draw path the frames were asked for on (the scene's route,
+        #: ``painter.camera_path``, is kept by it).
+        self._asked = draw_path
+        # A camera the scene's code changed in a way XF cannot carry draws on
+        # Cairo (render.fallback).
+        draw_path = camera_path(camera, draw_path)
         self.draw_path = draw_path
-        #: The painters of the draw path (``None`` on ``cairo``): one for
-        #: frames, one for the plays' static pictures.
-        self.painter = painter_for(record, draw_path)
-        self.static_painter = painter_for(record, draw_path, "static")
+        #: Whether frames are described from the camera's own captures: a
+        #: camera the scene's code changed draws as on Cairo, each capture
+        #: described by what it produced (``arachne.frame_ir.live``), so its
+        #: code runs as often as CE runs it.
+        self.captured = captured(camera, draw_path)
+        #: The painters of the draw path (``None`` on ``cairo``, and where
+        #: frames are described from the camera's captures): one for frames,
+        #: one for the plays' static pictures.
+        painted = "cairo" if self.captured else draw_path
+        self.painter = painter_for(record, painted)
+        self.static_painter = painter_for(record, painted, "static")
         #: The painter that drew last, which settles the cameras on exit.
         self._painted_by: Any = None
         self.camera: Camera = record._scene.renderer.camera
@@ -677,19 +727,55 @@ class Drawing:
         if not play.static:
             return None
         capture = self.record._captures[play.static_seq]
-        self.show(capture, play.static)
+        # The scene's mobjects too: the static list is flattened to leaves,
+        # and a face's surface is found among their families.
+        self.show(capture, [*capture.draw_list(), *play.static])
         camera = self.camera
         if self.static_painter is not None:
             pixels = self.static_painter.paint(
-                camera, [("static", list(play.static))], t=capture.instant
+                camera,
+                [("static", list(play.static))],
+                t=capture.instant,
+                roots=capture.draw_list(),
             )
             self._painted_by = self.static_painter
             camera.set_pixel_array(pixels)
             return pixels
         camera.reset()
-        camera.capture_mobjects(list(play.static))
+        with self._captures(
+            capture.instant, ("static", play.index), capture, reset=True
+        ):
+            camera.capture_mobjects(list(play.static))
         self._pictures[play.index] = self._painted(play, capture)
-        return camera.pixel_array.copy()
+        kept = camera.pixel_array.copy()
+        if self.captured:
+            from arachne.frame_ir.live import keep_static_picture
+
+            keep_static_picture(camera, kept)
+        return kept
+
+    def _captures(
+        self, t: Fraction, play: Any, capture: Capture, *, reset: bool = False
+    ) -> contextlib.AbstractContextManager[Any]:
+        """Within: the camera's captures are frames at the scene's instant
+        ``t`` of the play ``play`` (its index; ``("static", index)`` for its
+        static picture; ``"final"``) of the scene as ``capture`` holds it,
+        described from what the camera produced, where this drawing's frames
+        are (:attr:`captured`); else nothing changes. ``reset``: the camera
+        was reset just before (``live``).
+        """
+        if not self.captured:
+            return contextlib.nullcontext()
+        from arachne.frame_ir.live import live
+
+        return live(
+            self.camera,
+            t,
+            self.draw_path,
+            play,
+            reset=reset,
+            roots=capture.draw_list(),
+        )
 
     def _painted(self, play: PlayRecord, capture: Capture) -> _Picture:
         """What the play's static picture paints, its static mobjects shown at
@@ -721,20 +807,51 @@ class Drawing:
         captures); ``instant`` is the instant the frame shows then, which a
         described frame is labelled with (by default the capture's).
         """
+        pixels = self._sample(play, capture, static, prepare, instant)
+        self._deliver()
+        return pixels
+
+    def _deliver(self) -> None:
+        """A frame of the scene has been delivered, by this drawing's painter:
+        its frames stay on the path they took (``painter.deliver``). A frame
+        described from the camera's captures was delivered by the live
+        painter that drew it (``live.LivePainter.around``).
+        """
+        from arachne.frame_ir.painter import deliver, painter_kind
+
+        if not self.captured:
+            deliver(self.camera, self._asked, painter_kind(self.draw_path))
+
+    def _sample(
+        self,
+        play: PlayRecord,
+        capture: Capture,
+        static: PixelArray | None,
+        prepare: Callable[[Drawing], None] | None,
+        instant: Fraction | None,
+    ) -> PixelArray:
         targets = list(capture.moving) or capture.draw_list()
         if self.painter is not None:
             return self._paint(play, capture, targets, prepare, instant)
-        if self.static_layer and self._picture_holds(play, capture):
-            self.show(capture, targets)
-            if prepare is not None:
-                prepare(self)
-            if static is not None:
-                self.camera.set_frame_to_background(static)
+        shown = capture.instant if instant is None else instant
+        with self._captures(shown, play.index, capture):
+            if self.static_layer and self._picture_holds(play, capture):
+                # A frame described from the camera's captures finds a drawn
+                # face's surface among the scene's roots: they hold their
+                # state at this capture, whichever drawing kept the picture.
+                self.show(
+                    capture,
+                    [*capture.draw_list(), *targets] if self.captured else targets,
+                )
+                if prepare is not None:
+                    prepare(self)
+                if static is not None:
+                    self.camera.set_frame_to_background(static)
+                else:
+                    self.camera.reset()
             else:
-                self.camera.reset()
-        else:
-            self._draw_static(play, capture, static, targets, prepare)
-        self.camera.capture_mobjects(targets)
+                self._draw_static(play, capture, static, targets, prepare)
+            self.camera.capture_mobjects(targets)
         return self.camera.pixel_array.copy()
 
     def restored(
@@ -792,6 +909,7 @@ class Drawing:
             [("static", listed), ("moving", targets)],
             t=capture.instant if instant is None else instant,
             terms=terms,
+            roots=capture.draw_list(),
         )
         self._painted_by = painter
         camera.set_pixel_array(pixels)
@@ -968,10 +1086,13 @@ class Drawing:
             )
             self._painted_by = self.painter
             self.camera.set_pixel_array(pixels)
-            return pixels
-        self.camera.reset()
-        self.camera.capture_mobjects(targets)
-        return self.camera.pixel_array.copy()
+        else:
+            self.camera.reset()
+            with self._captures(capture.instant, "final", capture, reset=True):
+                self.camera.capture_mobjects(targets)
+            pixels = self.camera.pixel_array.copy()
+        self._deliver()
+        return pixels
 
 
 class LiveFrames:
@@ -1007,6 +1128,8 @@ class LiveFrames:
         self._static: PixelArray | None = None
         self._pending: tuple[Fraction, Fraction] | None = None
         self._open = False
+        #: The index of the play whose frames are drawn.
+        self._play: int | None = None
 
     def begin(self, play: PlayRecord) -> None:
         """The play's animations have begun. A frozen frame's static picture
@@ -1015,15 +1138,30 @@ class LiveFrames:
         background after the play. With ``static_layer`` off, none is.
         """
         self._open = True
+        self._play = play.index
         self._pending = None
         self._static = None
         if play.held and play.static and self.static_layer:
-            from arachne.frame_ir.live import live
+            from arachne.frame_ir.live import keep_static_picture, live
 
+            # Reset before the frame's route is read off the camera, as its
+            # code has always seen it; the live scope is told of the reset,
+            # so the capture is known to begin on the camera's background.
             self.camera.reset()
-            with live(self.camera, play.start):
+            from arachne.utils.iterables import list_update
+
+            scene = self.scene
+            roots = list_update(scene.mobjects, scene.foreground_mobjects)
+            with live(
+                self.camera,
+                play.start,
+                play=("static", play.index),
+                reset=True,
+                roots=roots,
+            ):
                 self.camera.capture_mobjects(list(play.static))
             self._static = self.camera.pixel_array.copy()
+            keep_static_picture(self.camera, self._static)
 
     def pending(self, instant: Fraction, until: Fraction) -> None:
         """The scene holds ``instant``, which answers up to ``until``."""
@@ -1050,7 +1188,7 @@ class LiveFrames:
         camera = self.camera
         from arachne.frame_ir.live import live
 
-        with live(camera, instant):
+        with live(camera, instant, play=self._play, roots=roots):
             if self._static is not None:
                 camera.set_frame_to_background(self._static)
             else:

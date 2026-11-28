@@ -14,6 +14,7 @@ from __future__ import annotations
 
 __all__ = [
     "FEATURE_BACKGROUND_IMAGE",
+    "FEATURE_PRE_PROJECTED",
     "LAYERS",
     "XF_VERSION",
     "Delta",
@@ -34,10 +35,20 @@ from typing import Any
 
 import numpy as np
 
-#: The XF version this module writes.
-XF_VERSION = (1, 0)
+#: The newest XF version this module knows. A delta is written at the lowest
+#: version its content needs: 1.1 when it carries a pre-projected record, 1.2
+#: when it carries snapped geometry (an input grid, a record's planes), 1.3
+#: when a face group carries its faces' ends or stroke widths, 1.4 when a
+#: record carries its joins, 1.5 when a record carries its ``source`` (the
+#: objects it was drawn from) or its ``facing_group``, which nothing drawn
+#: reads.
+XF_VERSION = (1, 5)
 #: The record's paint is CE's background-image fill (Cairo only).
 FEATURE_BACKGROUND_IMAGE = 1
+#: The record carries what a camera of the scene's own made of it
+#: (``pre_projected``: its pre-display points, gradient ends and colours), so
+#: a drawer places it with the frame mapping alone (XF 1.1).
+FEATURE_PRE_PROJECTED = 2
 #: The layers an order entry names, in XF's codes' order.
 LAYERS = ("static", "moving", "overlay")
 
@@ -117,11 +128,17 @@ class PaintTable:
         self.key = paint_key(rows) if key is None else key
 
 
+#: A face group's lists that, empty, are not carried (``core/XF.md``): a
+#: record holds none empty, so each reader finds the list absent.
+EMPTY_IS_ABSENT = ("face_ends", "face_widths")
+
+
 class Record:
     """One drawn object: a kind and XF's fields, by the names the core's
     binding takes. Never changed once made; a frame that draws an object
     differently makes a new record. ``keys`` are the shapes and paint tables
-    it refers to (``sub_frame`` views' backgrounds included).
+    it refers to (``sub_frame`` views' backgrounds included). A list of
+    :data:`EMPTY_IS_ABSENT` given empty is left out.
     """
 
     __slots__ = ("fields", "keys", "kind")
@@ -129,10 +146,25 @@ class Record:
     def __init__(self, kind: str, fields: Mapping[str, Any]) -> None:
         self.kind = kind
         self.fields: dict[str, Any] = dict(fields)
+        for name in EMPTY_IS_ABSENT:
+            value = self.fields.get(name)
+            if value is not None and len(value) == 0:
+                del self.fields[name]
         self.keys = tuple(_references(self.fields))
 
     def __repr__(self) -> str:
         return f"Record({self.kind}, {sorted(self.fields)})"
+
+    def with_source(self, source: Any, facing_group: int) -> Record:
+        """This record with another source and facing group (XF 1.5): a held
+        record's, given a row of :attr:`Delta.source`.
+        """
+        fields = dict(self.fields)
+        fields["source"] = source
+        fields.pop("facing_group", None)
+        if facing_group:
+            fields["facing_group"] = facing_group
+        return Record(self.kind, fields)
 
 
 def _references(fields: Mapping[str, Any]) -> Iterable[bytes]:
@@ -154,6 +186,16 @@ def _references(fields: Mapping[str, Any]) -> Iterable[bytes]:
     sub_frame = fields.get("sub_frame")
     if sub_frame is not None and isinstance(sub_frame[1].get("background"), bytes):
         yield sub_frame[1]["background"]
+    pre = fields.get("pre_projected")
+    if pre is not None:
+        yield pre["points"]
+        for name in _PAINTS:
+            if isinstance(pre.get(name), bytes):
+                yield pre[name]
+
+
+#: The paints a record states, by their field names.
+_PAINTS = ("fill", "stroke", "background_stroke")
 
 
 @dataclass
@@ -170,6 +212,9 @@ class Delta:
     set: list[tuple[int, Record]] = field(default_factory=list)
     remove: list[int] = field(default_factory=list)
     order: list[tuple[str, int, int]] | None = None
+    #: Held records' new sources (XF 1.5), their drawing unchanged: (slot,
+    #: source, facing group) for slots the delta neither sets nor removes.
+    source: list[tuple[int, Any, int]] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -182,6 +227,7 @@ class Delta:
             or self.set
             or self.remove
             or self.order is not None
+            or self.source
         )
 
     def to_core(self) -> Any:
@@ -210,6 +256,8 @@ class Delta:
             core.remove(slot)
         if self.order is not None:
             core.set_order(self.order)
+        for slot, source, facing_group in self.source:
+            core.set_source(slot, source=source, facing_group=facing_group)
         return core
 
     @classmethod
@@ -244,6 +292,7 @@ class Delta:
         delta.remove = list(contents["remove"])
         if contents["order"] is not None:
             delta.order = [tuple(entry) for entry in contents["order"]]
+        delta.source = [(slot, path, group) for slot, path, group in contents["source"]]
         return delta
 
 
@@ -267,11 +316,22 @@ def _core_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
     found = dict(fields)
     if "corners" in found:
         found["corners"] = np.reshape(found["corners"], (4, 3)).tolist()
+    # The fields that carry a feature set its bit themselves.
+    features = int(found.pop("features", 0))
     if found.get("fill_image") is not None:
-        found.pop("features", None)  # the key sets its bit
-    for name in ("fill", "stroke", "background_stroke"):
+        features &= ~FEATURE_BACKGROUND_IMAGE
+    if found.get("pre_projected") is not None:
+        features &= ~FEATURE_PRE_PROJECTED
+    if features:
+        found["features"] = features
+    for name in _PAINTS:
         if isinstance(found.get(name), np.ndarray):
             found[name] = found[name].tolist()
+    pre = found.get("pre_projected")
+    if pre is not None:
+        found["pre_projected"] = {
+            k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in pre.items()
+        }
     paint_b = found.get("paint_b")
     if paint_b is not None:
         found["paint_b"] = {
@@ -311,6 +371,8 @@ class StreamState:
             self.records[slot] = record
         for slot in delta.remove:
             self.records.pop(slot, None)
+        for slot, source, group in delta.source:
+            self.records[slot] = self.records[slot].with_source(source, group)
         for key in delta.release:
             self.shapes.pop(key, None)
             self.paints.pop(key, None)

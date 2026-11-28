@@ -7,8 +7,10 @@
 mod common;
 
 use arachne_core::composite::{
-    Resolve, SAMPLES, blend, premultiply, sample_point, srgb_decode, srgb_encode,
+    COVERAGE_TO_SAMPLE_LSB, Partial, Resolve, SAMPLES, blend, coverage_to_sample_bound,
+    premultiply, sample_point, srgb_decode, srgb_encode,
 };
+use arachne_core::order::Decided;
 use arachne_core::project::{FrameMap, Projection};
 use arachne_core::shade::{ce_shaded_rgb, ce_unit_normal};
 use arachne_core::stream::{DrawError, Stream, StreamError};
@@ -151,17 +153,39 @@ fn intersecting_surfaces_resolve_by_depth_at_every_sub_sample() {
             }
             // Where the front surface differs between the pixel's own sub-samples, the depth order
             // is not one order across it: the sample resolve. (A crossing that passes between the
-            // sub-samples leaves one order at all of them, and the coverage resolve agrees.)
+            // sub-samples leaves one order at all of them, and the coverage resolve agrees.) Depth
+            // orders two triangles only at the sub-samples both cover, so where one surface's
+            // triangle edge splits the pixel along the intersection, each pair of triangles keeps
+            // one order and the coverage resolve composites that order: within its bound of the
+            // sample resolve's average of the front surface at each sub-sample (one partial mask
+            // over the other surface, the constant's scope).
             let at_samples: Vec<Option<usize>> = (0..SAMPLES)
                 .map(|s| front_at(&meshes, sample_point(x, y, s)))
                 .collect();
             if both_cover && at_samples.contains(&Some(0)) && at_samples.contains(&Some(1)) {
                 crossings += 1;
-                assert_eq!(
-                    class(&drawn.resolves, x, y),
-                    Resolve::Sample as u8,
-                    "pixel {x},{y} straddles the intersection"
-                );
+                let resolve = class(&drawn.resolves, x, y);
+                if resolve == Resolve::Coverage as u8 {
+                    let mut sum = [0u32; 4];
+                    for m in at_samples.iter().flatten() {
+                        for (s, c) in sum.iter_mut().zip(meshes[*m].1) {
+                            *s += c as u32;
+                        }
+                    }
+                    let average = sum.map(|v| ((v + 8) / 16) as u8);
+                    for k in 0..4 {
+                        assert!(
+                            got[k].abs_diff(average[k]) <= COVERAGE_TO_SAMPLE_LSB,
+                            "pixel {x},{y}: {got:?} against {average:?}"
+                        );
+                    }
+                } else {
+                    assert_eq!(
+                        resolve,
+                        Resolve::Sample as u8,
+                        "pixel {x},{y} straddles the intersection"
+                    );
+                }
             }
         }
     }
@@ -187,10 +211,11 @@ fn layers() -> Vec<(Shape, Record)> {
 }
 
 #[test]
-fn translucent_surfaces_composite_in_depth_order_whatever_the_draw_order() {
+fn translucent_surfaces_composite_in_depth_order_where_they_overlap_and_in_paint_order_beside() {
     let view = close_view();
     let items = layers();
     let mut frames = Vec::new();
+    let mut reports = Vec::new();
     for order in [
         [1, 2, 3],
         [1, 3, 2],
@@ -199,13 +224,76 @@ fn translucent_surfaces_composite_in_depth_order_whatever_the_draw_order() {
         [3, 1, 2],
         [3, 2, 1],
     ] {
-        frames.push(
-            stream_of(view.clone(), &items, &order)
-                .draw(W, H, 1)
-                .unwrap(),
-        );
+        let s = stream_of(view.clone(), &items, &order);
+        frames.push(s.draw(W, H, 1).unwrap());
+        reports.push((order, s.contributors(0, 0, W, H).unwrap()));
     }
-    assert!(frames.iter().all(|f| *f == frames[0]));
+    // Depth orders two layers only at the sub-samples both cover. Where every pair of a pixel's
+    // layers shares one, each sub-sample composites the same whatever the draw order, and so does
+    // the pixel, within the bound the coverage resolve keeps of the sample resolve: one layer's
+    // triangle beside another layer's shares no sub-sample with it, so draw order places the two,
+    // and with them whether the pixel takes the coverage resolve or the sample resolve. Where a
+    // pair of layers shares none (the edge of one beside the other), that pair keeps the draw
+    // order, the later above, unless a third layer shares sub-samples with both: its depth order
+    // against each then places the two (a layer behind it at one sub-sample is behind what is in
+    // front of it at another).
+    let (mut overlapped, mut beside, mut kept) = (0, 0, 0);
+    for y in 0..H {
+        for x in 0..W {
+            let Some(p) = reports[0].1.get(&(x, y)) else {
+                continue;
+            };
+            if !p.decided.iter().any(|(_, _, d)| *d == Decided::Paint) {
+                overlapped += 1;
+                // The coverage resolve holds one layer's partial mask under at most the others.
+                let bound = coverage_to_sample_bound(Partial::Mask, p.leaves.len() as u32 - 1);
+                let first = px(&frames[0], x, y);
+                for f in &frames {
+                    let got = px(f, x, y);
+                    assert!(
+                        (0..4).all(|k| got[k].abs_diff(first[k]) <= bound),
+                        "pixel {x},{y}: {got:?} against {first:?}"
+                    );
+                }
+                continue;
+            }
+            beside += 1;
+            for (order, report) in &reports {
+                let p = &report[&(x, y)];
+                let drawn = |leaf: usize| {
+                    order
+                        .iter()
+                        .position(|slot| 100 + slot == p.leaves[leaf].object)
+                        .unwrap()
+                };
+                let rule = |a: usize, b: usize| {
+                    p.decided
+                        .iter()
+                        .find(|(i, j, _)| (*i, *j) == (a.min(b), a.max(b)))
+                        .map(|(_, _, d)| *d)
+                };
+                for (a, b, d) in &p.decided {
+                    let chained = (0..p.leaves.len()).any(|c| {
+                        ![*a, *b].contains(&c)
+                            && rule(*a, c) != Some(Decided::Paint)
+                            && rule(c, *b) != Some(Decided::Paint)
+                    });
+                    if *d == Decided::Paint && !chained {
+                        kept += 1;
+                        assert!(
+                            drawn(*a) < drawn(*b),
+                            "pixel {x},{y}, order {order:?}: {:?}",
+                            p.decided
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        overlapped > 300 && beside > 0 && kept > 0,
+        "{overlapped} {beside} {kept}"
+    );
     // A pixel inside all three: the camera (looking down from +z) sees z = 0.3 in front.
     let inside: Vec<Vec<(u32, u32)>> = [-0.3, 0.0, 0.3]
         .iter()
@@ -938,6 +1026,93 @@ fn points_at_one_depth_tie_by_draw_order_whether_or_not_fixed_in_orientation() {
                     failures.push(format!("z {z}, {name}, order {order:?}: {got:?}"));
                 }
             }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Whether Cairo paints nothing from a source of alpha `d` (straight, before clamping): its 16-bit
+/// alpha (`_cairo_color_double_to_short`, `d * 65535 + 0.5` truncated) is at most 0xff
+/// (`CAIRO_ALPHA_SHORT_IS_CLEAR`), its 8-bit alpha zero.
+fn cairo_clear(d: f64) -> bool {
+    ((d.clamp(0.0, 1.0) * 65535.0 + 0.5) as u32) <= 0xff
+}
+
+#[test]
+fn a_mesh_triangle_cairo_paints_nothing_of_changes_no_pixel_and_no_resolve() {
+    // The rule's boundary: the largest alpha it drops and the smallest it keeps.
+    let mut dropped: f64 = 255.5 / 65535.0;
+    while !cairo_clear(dropped) {
+        dropped = dropped.next_down();
+    }
+    while cairo_clear(dropped.next_up()) {
+        dropped = dropped.next_up();
+    }
+    let kept = dropped.next_up();
+    assert!(cairo_clear(dropped) && !cairo_clear(kept));
+    assert!((kept - 255.5 / 65535.0).abs() < 1e-15, "{kept}");
+
+    let level = quad(square_at(0.0, 3.0));
+    let tilted = quad([
+        [-3.0, -2.5, -1.2],
+        [3.0, -2.5, 1.2],
+        [3.0, 2.5, 1.2],
+        [-3.0, 2.5, -1.2],
+    ]);
+    // Crosses both quads, in front of each over part of the frame and behind elsewhere.
+    let ghost = Shape::new(ShapeData::Mesh {
+        positions: vec![[-4.0, -3.0, -1.5], [4.0, -2.0, 1.5], [-1.0, 3.5, 0.8]],
+        triangles: vec![[0, 1, 2]],
+        normals: None,
+    });
+    let view = close_view();
+    let scene = |extra: Option<(f64, f64)>, lit: bool| {
+        let mut items = vec![
+            (
+                level.clone(),
+                mesh_record(1, &level, [0.9, 0.1, 0.1, 1.0], Space::World),
+            ),
+            (
+                tilted.clone(),
+                mesh_record(2, &tilted, [0.1, 0.2, 0.9, 0.5], Space::World),
+            ),
+        ];
+        let mut order = vec![1, 2];
+        if let Some((alpha, opacity)) = extra {
+            let mut r = mesh_record(3, &ghost, [0.8, 0.9, 0.3, alpha], Space::World);
+            r.opacity = opacity;
+            r.depth.shade_in_3d = lit;
+            items.push((ghost.clone(), r));
+            order.push(3);
+        }
+        stream_of(view.clone(), &items, &order)
+            .render(W, H, 1)
+            .unwrap()
+    };
+    let without = scene(None, false);
+    let mut failures = Vec::new();
+    for lit in [false, true] {
+        // Alpha zero, by the fill and by the group opacity, and the largest the rule drops.
+        for (alpha, opacity) in [(0.0, 1.0), (1.0, 0.0), (dropped, 1.0), (1.0, dropped)] {
+            let with = scene(Some((alpha, opacity)), lit);
+            let (mut reclassed, mut recoloured) = (0, 0);
+            for y in 0..H {
+                for x in 0..W {
+                    reclassed +=
+                        (class(&with.resolves, x, y) != class(&without.resolves, x, y)) as u32;
+                    recoloured += (px(&with.rgba, x, y) != px(&without.rgba, x, y)) as u32;
+                }
+            }
+            if reclassed + recoloured > 0 || with.counts != without.counts {
+                failures.push(format!(
+                    "alpha {alpha} at opacity {opacity} (lit {lit}): {reclassed} pixels change \
+                     resolve, {recoloured} colour"
+                ));
+            }
+        }
+        // The smallest alpha it keeps is drawn: its fragments take part in the resolve.
+        if scene(Some((kept, 1.0)), lit).resolves == without.resolves {
+            failures.push(format!("alpha {kept} (lit {lit}) drew nothing"));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

@@ -32,7 +32,72 @@ def background_delta(width: int, height: int, rgba) -> ac.FrameDelta:
 
 
 def test_the_version_is_xf_1():
-    assert ac.XF_VERSION == (1, 0)
+    assert ac.XF_VERSION == (1, 5)
+
+
+GLYPH_SOURCE = (
+    ((7, "arachne.mobject.text.tex_mobject.SingleStringMathTex"), (3, "a.Gröup€")),
+    ((7, "arachne.mobject.text.tex_mobject.SingleStringMathTex"), (5, "a.Shared")),
+)
+
+
+def test_a_record_s_source_and_facing_group_are_xf_1_5_and_read_back():
+    delta = ac.FrameDelta()
+    delta.set_view(pixel_width=4, pixel_height=4, **FRAME)
+    delta.set_record("path", slot=1, object=1, source=GLYPH_SOURCE, facing_group=3)
+    delta.set_record("path", slot=2, object=2, facing_group=9)
+    delta.set_record("path", slot=3, object=3)
+    assert delta.version == (1, 5)
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.version == (1, 5)
+    (_, _, _, one), (_, _, _, two), (_, _, _, three) = back.contents()["set"]
+    assert one["source"] == GLYPH_SOURCE
+    assert one["facing_group"] == 3
+    assert "source" not in two
+    assert two["facing_group"] == 9
+    assert "source" not in three
+    assert "facing_group" not in three
+    # Given empty, or a facing group of 0, neither is carried: the delta stays at its minor.
+    bare = ac.FrameDelta()
+    bare.set_record("path", slot=1, object=1, source=(), facing_group=0)
+    assert bare.version == (1, 0)
+    assert "source" not in bare.contents()["set"][0][3]
+
+
+def test_a_source_path_names_at_least_one_object_and_tokens_are_u32():
+    delta = ac.FrameDelta()
+    with pytest.raises(ac.XfError, match="path_empty"):
+        delta.set_record("path", slot=1, object=1, source=((),))
+    with pytest.raises((TypeError, OverflowError)):
+        delta.set_record("path", slot=1, object=1, source=(((-1, "a.B"),),))
+    with pytest.raises((TypeError, OverflowError)):
+        delta.set_record("path", slot=1, object=1, facing_group=2**32)
+    assert delta.contents()["set"] == []
+
+
+def test_a_held_record_s_new_source_is_a_row_of_its_own_and_read_back():
+    delta = ac.FrameDelta()
+    delta.set_source(4, source=GLYPH_SOURCE, facing_group=3)
+    delta.set_source(5, facing_group=9)
+    assert delta.version == (1, 5)
+    assert not delta.is_empty
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.contents()["source"] == [(4, GLYPH_SOURCE, 3), (5, (), 9)]
+    assert back.contents()["set"] == []
+    with pytest.raises(ac.XfError, match="path_empty"):
+        delta.set_source(6, source=((),))
+    with pytest.raises(ac.XfError, match="row_empty"):
+        delta.set_source(6)
+    assert len(delta.contents()["source"]) == 2
+
+
+def test_a_record_s_joins_are_carried_and_read_back():
+    delta = ac.FrameDelta()
+    delta.set_view(pixel_width=4, pixel_height=4, **FRAME)
+    delta.set_record("path", slot=1, object=1, joins=(0, 1, 3))
+    assert delta.version == (1, 4)
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.contents()["set"][0][3]["joins"] == (0, 1, 3)
 
 
 def test_mapping_centre_defaults_to_the_live_frame_center():
@@ -57,7 +122,7 @@ def test_background_image_fill_sets_its_feature_and_is_cairo_only():
     shape = delta.upload_path(square())
     image = delta.upload_image(np.ones((4, 4, 4), dtype=np.uint8))
     delta.set_record("path", 3, 33, shape=shape, fill=(1, 0, 0, 1), fill_image=image)
-    assert ac.FEATURES == {"background_image": 1}
+    assert ac.FEATURES == {"background_image": 1, "pre_projected": 2}
     stream = ac.Stream()
     stream.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
     assert stream.draw(4, 4).shape == (4, 4, 4)  # Not in the order yet.
@@ -170,6 +235,54 @@ def test_a_path_draws_its_fill_and_stroke():
     side = int((-1.0 + FRAME["frame_width"] / 2) * width / FRAME["frame_width"])
     assert rgba[height // 2, side, 2] > 0
     assert (resolves == ac.RESOLVES.index("coverage")).sum() > 0
+
+
+def shaded_stroke_frame(alpha: float | None) -> np.ndarray:
+    """A bent square stroked at ``alpha`` and shaded as CE shades it: lit at its start
+    and end corners into two stops of different colours, both at ``alpha``. ``None``
+    draws only the background.
+    """
+    width, height = 64, 36
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(
+        pixel_width=width,
+        pixel_height=height,
+        background=(0, 0, 0, 1),
+        camera="three_d",
+        phi=1.25,
+        theta=-0.75,
+        light_model="ce",
+        **FRAME,
+    )
+    order = []
+    if alpha is not None:
+        bent = square(1.0)
+        bent[4:12, 2] = [0, 1 / 3, 2 / 3, 1, 1, 2 / 3, 1 / 3, 0]
+        key = delta.upload_path(bent)
+        delta.set_record(
+            "path",
+            1,
+            11,
+            shape=key,
+            stroke=(0.4, 0.6, 0.8, alpha),
+            stroke_width=20.0,
+            space="world",
+            shade_in_3d=True,
+        )
+        order = [("moving", 1, 0)]
+    delta.set_order(order)
+    stream = ac.Stream()
+    stream.apply(delta)
+    return stream.draw(width, height)
+
+
+def test_a_shaded_stroke_whose_stops_cairo_finds_clear_leaves_the_frame_untouched():
+    # A stop's alpha as Cairo's short is int(a * 65535 + 0.5): 233 here. A gradient
+    # whose every stop is at most 0xff is clear to Cairo, which draws nothing from it;
+    # at 0x100 it draws.
+    background = shaded_stroke_frame(None)
+    assert (shaded_stroke_frame(0.003548) == background).all()
+    assert (shaded_stroke_frame(0x100 / 65535) != background).any()
 
 
 def test_a_reserved_kind_is_refused_and_nothing_is_drawn():
@@ -621,3 +734,561 @@ def test_sub_frame_placement_rank_and_self_capture():
     )
     with pytest.raises(ac.XfError, match="no shape"):
         stream.apply(bad)
+
+
+@pytest.mark.parametrize("kind", ["path", "points", "image"])
+def test_pre_projected_sets_its_feature_and_is_drawn_from_its_tail(kind):
+    delta = background_delta(4, 4, (0, 0, 0, 1))
+    shape = delta.upload_path(square())
+    # As many points as the shape: a points record's colours are one per point.
+    points = delta.upload_path(square(0.5) + [0, 0, 1])
+    body = {}
+    if kind == "points":
+        body = {"colors": delta.upload_paint(np.ones((16, 4))), "radius": 2}
+    elif kind == "image":
+        shape = delta.upload_image(np.ones((1, 1, 4), dtype=np.uint8))
+        body = {"corners": np.zeros((4, 3))}
+    delta.set_record(kind, 3, 33, shape=shape, pre_projected={"points": points}, **body)
+    fields = delta.contents()["set"][0][3]
+    assert fields["features"] == 2
+    assert fields["pre_projected"] == {
+        "points": points,
+        "gradient": None,
+        "fill": None,
+        "stroke": None,
+        "background_stroke": None,
+    }
+    assert delta.to_bytes()[:4] == struct.pack("<HH", 1, 1)
+    stream = ac.Stream()
+    stream.apply(ac.FrameDelta.from_bytes(delta.to_bytes()))
+    stream.draw(4, 4)  # Not drawn yet.
+    order = ac.FrameDelta()
+    order.set_order([("moving", 3, 0)])
+    stream.apply(order)
+    if kind == "image":
+        with pytest.raises(ac.Unsupported, match="image records"):
+            stream.draw(4, 4)
+    else:
+        assert stream.draw(4, 4).shape == (4, 4, 4)
+
+
+def test_pre_projected_bit_needs_its_field_and_preserves_other_bits():
+    delta = ac.FrameDelta()
+    with pytest.raises(ac.XfError, match="pre_projected"):
+        delta.set_record("path", 1, 1, features=2)
+    delta.set_record("path", 1, 1, features=16, pre_projected={"points": bytes(16)})
+    assert delta.contents()["set"][0][3]["features"] == 18
+    assert ac.FrameDelta().to_bytes()[:4] == struct.pack("<HH", 1, 0)
+
+
+def pre_projected_sample():
+    delta = ac.FrameDelta(t=(2, 15), seq=3)
+    original = delta.upload_path(square())
+    points = delta.upload_path([[1.25, -2.5, 0.125], [3.5, 4.75, -0.625]])
+    table = delta.upload_paint(
+        [[0.125, 0.25, 0.375, 0.5], [0.625, 0.75, 0.875, 1], [0.9, 0.8, 0.7, 0.6]]
+    )
+    delta.set_record(
+        "path",
+        11,
+        111,
+        shape=original,
+        pre_projected={
+            "points": points,
+            "gradient": ((-1.25, -2.5, -3.75), (4.125, 5.25, 6.5)),
+            "fill": (0.15, 0.25, 0.35, 0.45),
+            "stroke": [(0.55, 0.65, 0.75, 0.85), (0.95, 0.05, 0.125, 0.375)],
+            "background_stroke": table,
+        },
+    )
+    return delta
+
+
+PRE_PROJECTED_SHA256 = (
+    "df6b52077f443b5db275ed07837ef7235a089298af0c410c770150ddf796983c"
+)
+
+
+def test_pre_projected_canonical_sample_is_pinned_separately(tmp_path):
+    delta = pre_projected_sample()
+    assert delta.version == (1, 1)
+    file = tmp_path / "pre-projected.xf"
+    ac.write_xf(file, [delta])
+    assert hashlib.sha256(file.read_bytes()).hexdigest() == PRE_PROJECTED_SHA256
+    assert ac.read_xf(file)[0].to_bytes() == delta.to_bytes()
+
+
+def snapped_sample():
+    delta = ac.FrameDelta(t=(4, 15), seq=5)
+    delta.set_view(
+        pixel_width=32,
+        pixel_height=18,
+        background=(0.0, 0.0, 0.0, 1.0),
+        input_grid=1 / 32768,
+        **FRAME,
+    )
+    shape = delta.upload_path(square())
+    delta.set_record(
+        "path",
+        12,
+        112,
+        shape=shape,
+        fill=(0.2, 0.4, 0.6, 1.0),
+        planes=[1, 6, 0],
+        normals=[
+            (0, 0.6, 0.8),
+            (0, 0, 0),
+            (0.6, 0, -0.8),
+            (0, 0, 1),
+            (0, 0, 0),
+            (1, 0, 0),
+        ],
+    )
+    return delta
+
+
+SNAPPED_SHA256 = "217cef58ae3b74302edc0d74b1740fd16264efb2780b8694f56b24c79585a866"
+
+
+def test_snapped_canonical_sample_is_pinned_separately(tmp_path):
+    delta = snapped_sample()
+    assert delta.version == (1, 2)
+    file = tmp_path / "snapped.xf"
+    ac.write_xf(file, [delta])
+    assert hashlib.sha256(file.read_bytes()).hexdigest() == SNAPPED_SHA256
+    contents = ac.read_xf(file)[0].contents()
+    assert contents["view"]["input_grid"] == 1 / 32768
+    assert contents["set"][0][3]["planes"] == (1, 6, 0)
+    assert contents["set"][0][3]["normals"][:2] == ((0, 0.6, 0.8), (0, 0, 0))
+
+
+def face_ends_sample():
+    """XF 1.3's canonical sample, as ``core/tests/common/mod.rs`` builds it."""
+    delta = ac.FrameDelta(t=(5, 15), seq=6)
+    delta.set_view(pixel_width=32, pixel_height=18, camera="three_d", **FRAME)
+    shape = delta.upload_path(np.concatenate([square(), square(0.5)[:8]]))
+    fills = delta.upload_paint([(0.2, 0.4, 0.6, 0.32), (0.6, 0.4, 0.2, 0.32)])
+    delta.set_record(
+        "face_group",
+        13,
+        113,
+        shape=shape,
+        uv=[(0, 0), (1, 0)],
+        grid=(2, 1),
+        face_fill=fills,
+        stroke_width=2.0,
+        face_ends=[16, 24],
+        face_widths=[2.0, 0.5],
+    )
+    return delta
+
+
+def test_a_face_group_s_face_ends_and_widths_are_xf_1_3_and_read_back():
+    delta = face_ends_sample()
+    assert delta.version == (1, 3)
+    back = ac.FrameDelta.from_bytes(delta.to_bytes())
+    assert back.to_bytes() == delta.to_bytes()
+    record = back.contents()["set"][0][3]
+    assert record["face_ends"] == (16, 24)
+    assert record["face_widths"] == (2.0, 0.5)
+    for bad in ({"face_ends": [16, 8]}, {"face_widths": [1.0]}):
+        refused = ac.FrameDelta()
+        fields = {
+            "shape": refused.upload_path(np.concatenate([square(), square(0.5)[:8]])),
+            "uv": [(0, 0), (1, 0)],
+            "grid": (2, 1),
+            "face_fill": refused.upload_paint(np.ones((2, 4))),
+            **bad,
+        }
+        refused.set_record("face_group", 1, 1, **fields)
+        with pytest.raises(ac.XfError):
+            ac.Stream().apply(refused)
+
+
+def test_a_face_group_without_face_ends_stays_at_its_minor_and_carries_neither():
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(pixel_width=4, pixel_height=4, camera="three_d", **FRAME)
+    delta.set_record(
+        "face_group",
+        1,
+        1,
+        shape=delta.upload_path(np.concatenate([square(), square()])),
+        uv=[(0, 0), (1, 0)],
+        grid=(2, 1),
+        face_fill=delta.upload_paint(np.ones((2, 4))),
+    )
+    record = delta.contents()["set"][0][3]
+    assert "face_ends" not in record
+    assert "face_widths" not in record
+    assert delta.version == (1, 0)
+
+
+@pytest.mark.parametrize(
+    ("ends", "widths"),
+    [(None, None), ([16, 24], None), (None, [2.0, 0.5]), ([16, 24], [2.0, 0.5])],
+    ids=["neither", "ends alone", "widths alone", "both"],
+)
+def test_each_absent_face_list_reads_as_uniform_whatever_the_other(ends, widths):
+    """Each list a face group may carry is read back as sent, an absent one
+    absent, and draws as the group stating it uniform: equal runs, the
+    record's width.
+    """
+    points = np.concatenate([square(), square(0.5)[: 8 if ends else 16]])
+
+    def drawn(face_ends, face_widths):
+        delta = ac.FrameDelta(t=(0, 1), seq=0)
+        delta.set_view(pixel_width=32, pixel_height=18, camera="three_d", **FRAME)
+        fields = {
+            "shape": delta.upload_path(points),
+            "uv": [(0, 0), (1, 0)],
+            "grid": (2, 1),
+            "face_fill": delta.upload_paint([(1, 0, 0, 0.5), (0, 0, 1, 0.5)]),
+            "face_stroke": delta.upload_paint([(1, 1, 1, 1), (0, 1, 0, 1)]),
+            "stroke_width": 1.5,
+            "space": "world",
+        }
+        if face_ends is not None:
+            fields["face_ends"] = face_ends
+        if face_widths is not None:
+            fields["face_widths"] = face_widths
+        delta.set_record("face_group", 1, 1, **fields)
+        delta.set_order([("moving", 1, 0), ("moving", 1, 1)])
+        back = ac.FrameDelta.from_bytes(delta.to_bytes())
+        stream = ac.Stream()
+        stream.apply(back)
+        return back, stream.draw(32, 18)
+
+    back, frame = drawn(ends, widths)
+    record = back.contents()["set"][0][3]
+    assert record.get("face_ends") == (None if ends is None else tuple(ends))
+    assert record.get("face_widths") == (None if widths is None else tuple(widths))
+    assert (back.version == (1, 3)) == (ends is not None or widths is not None)
+    _, stated = drawn(ends or [16, 32], widths or [1.5, 1.5])
+    np.testing.assert_array_equal(frame, stated)
+
+
+def test_an_unsnapped_delta_carries_neither_field_and_stays_below_1_2():
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(pixel_width=4, pixel_height=4, **FRAME)
+    delta.set_record("path", 1, 1, shape=delta.upload_path(square()))
+    contents = delta.contents()
+    assert "input_grid" not in contents["view"]
+    assert "planes" not in contents["set"][0][3]
+    assert "normals" not in contents["set"][0][3]
+    assert delta.version == (1, 0)
+
+
+def test_the_planes_of_a_record_are_found_as_the_drawer_finds_them():
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(pixel_width=8, pixel_height=8, camera="three_d", **FRAME)
+    flat = delta.upload_path(square())
+    bent = square()
+    bent[5, 2] = 0.25
+    on_a_line = np.array([[t, 2 * t, 3 * t] for t in np.linspace(0, 1, 8)])
+    delta.set_record("path", 1, 1, shape=flat, fill=(1, 1, 1, 1))
+    delta.set_record("path", 2, 2, shape=delta.upload_path(bent), fill=(1, 1, 1, 1))
+    delta.set_record("path", 3, 3, shape=delta.upload_path(on_a_line))
+    stream = ac.Stream()
+    stream.apply(delta)
+    # A flat square shares z: its axis plane (z, code 6); bent: a curve (0); a line too.
+    assert stream.planes([1, 2, 3, 9]) == {1: [6], 2: [0], 3: [0]}
+
+
+#: Normals of length ``L`` along (0.6, 0, 0.8): ``(L, extent, perimeter, grid, points anywhere)``,
+#: unsnapped and at two grids, as the core's own test answers them (``core/tests/path.rs`` holds
+#: ``depth::points_somewhere`` to the same table).
+SOMEWHERE = [
+    (1e-3, 1.0, 4.0, 0.0, True),
+    (1e-3, 1.0, 4.0, 1 / 32768, True),
+    (1e-3, 1.0, 4.0, 1 / 16384, True),
+    (6e-4, 1.0, 4.0, 1 / 32768, True),
+    (6e-4, 1.0, 4.0, 1 / 16384, False),
+    (2e-4, 1.0, 4.0, 0.0, True),
+    (2e-4, 1.0, 4.0, 1 / 32768, False),
+    (2e-4, 1.0, 4.0, 1 / 16384, False),
+    (2e-4, 1000.0, 4.0, 0.0, False),
+    (5e-10, 1.0, 4.0, 0.0, False),
+    (5e-10, 1.0, 0.0, 1 / 16384, False),
+]
+
+
+@pytest.mark.parametrize(("length", "extent", "perimeter", "grid", "want"), SOMEWHERE)
+def test_points_somewhere_is_the_core_s_own_bound_at_the_grid_given(
+    length, extent, perimeter, grid, want
+):
+    from arachne_core._core import _points_somewhere
+
+    newell = (0.6 * length, 0.0, 0.8 * length)
+    assert _points_somewhere(newell, extent, perimeter, grid) is want
+
+
+def test_rounded_plane_rounds_each_coefficient_to_the_nearest_step_of_2_to_the_minus_20():
+    from arachne_core._core import _rounded_plane
+
+    step = 2.0**-20
+    # Halves of a step go away from zero.
+    normal, offset = _rounded_plane((2.5 * step, -2.5 * step, 1.5 * step), -1.5 * step)
+    assert normal == (3 * step, -3 * step, 2 * step)
+    assert offset == -2 * step
+    # Anything else to the nearer step: 0.6 and 0.8 are 629145.6 and 838860.8 steps.
+    normal, offset = _rounded_plane((0.6, 0.8, (7.5 - 2.0**-30) * step), 0.6)
+    assert normal == (629146 * step, 838861 * step, 7 * step)
+    assert offset == 629146 * step
+    # A negative zero comes back positive, a coefficient rounding to zero included.
+    normal, offset = _rounded_plane((-0.0, -0.4 * step, -1.0), -0.0)
+    assert normal == (0.0, 0.0, -1.0)
+    assert offset == 0.0
+    assert [np.copysign(1.0, v) for v in (*normal, offset)] == [1.0, 1.0, -1.0, 1.0]
+
+
+IDENTITY_PLACES = [
+    [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+] * 2
+
+
+def test_registry_tolerance_is_the_snap_s_departure_and_a_flat_record_s_own():
+    from arachne_core._core import _registry_tolerance
+
+    grid, half = 1 / 16384, 1 / 32768
+    up, diagonal = (0.0, 0.0, 1.0), (3**-0.5,) * 3
+    face = [tuple(p) for p in square(0.5)]
+    # Unplaced: half a step times |n|_1, besides rounding.
+    tolerance, flat = _registry_tolerance(face, up, grid, IDENTITY_PLACES, face, 1)
+    assert flat
+    assert half <= tolerance <= half + 1e-15
+    tolerance, _ = _registry_tolerance(face, diagonal, grid, IDENTITY_PLACES, face, 1)
+    assert 3**0.5 * half <= tolerance <= 3**0.5 * half + 1e-14
+    # Not snapped: the core's own placing alone.
+    tolerance, _ = _registry_tolerance(face, up, 0.0, IDENTITY_PLACES, face, 1)
+    assert tolerance < 1e-15
+    # A bowed quad: its departure from its own plane (Newell's, through its first corner) counts,
+    # unless it is a curve, which has no plane of its own.
+    bow = 4 * grid
+    bowed = [(0.0, 0.0, bow), (1.0, 0.0, -bow), (1.0, 1.0, bow), (0.0, 1.0, -bow)]
+    as_face, flat = _registry_tolerance(bowed, up, grid, IDENTITY_PLACES, bowed, 1)
+    as_curve, curve_flat = _registry_tolerance(
+        bowed, up, grid, IDENTITY_PLACES, bowed, 0
+    )
+    assert flat
+    assert not curve_flat
+    assert as_curve <= half + 1e-14
+    assert as_face >= as_curve + 1.9 * bow
+    # Points on a line have no plane of their own, whatever their code.
+    line = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    tolerance, flat = _registry_tolerance(line, up, grid, IDENTITY_PLACES, line, 1)
+    assert not flat
+    assert half <= tolerance <= half + 1e-15
+    # A mesh triangle, on the plane through its corners; one whose corners lie on a line has no
+    # plane of its own.
+    corners = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+    tolerance, flat = _registry_tolerance(
+        corners, up, grid, IDENTITY_PLACES, corners, None
+    )
+    assert flat
+    assert half <= tolerance <= half + 1e-15
+    tolerance, flat = _registry_tolerance(line, up, grid, IDENTITY_PLACES, line, None)
+    assert not flat
+    assert half <= tolerance <= half + 1e-15
+    # Placed from coordinates in the thousands: the placement's translation and its snapped
+    # linear part (2^-25 of each coordinate it places), then the shape's points seen through it.
+    s = 1 / 2000
+    inner = [[s, 0.0, 0.0, 0.5], [0.0, s, 0.0, 0.5], [0.0, 0.0, s, 0.0]]
+    local = [tuple(p) for p in square(1000.0)]
+    placed = [(s * x + 0.5, s * y + 0.5, s * z) for x, y, z in local]
+    tolerance, flat = _registry_tolerance(
+        placed, up, grid, [IDENTITY_PLACES[0], inner], local, 1
+    )
+    want = half + 2000 * 2**-25 + half * s
+    assert flat
+    assert abs(tolerance - want) <= 1e-14
+    # A path on the plane nearest its points is not offered.
+    with pytest.raises(ValueError):
+        _registry_tolerance(face, up, grid, IDENTITY_PLACES, face, 3)
+
+
+def outline(corners) -> list:
+    """The closed polygon through `corners` in CE's cubic layout."""
+    curves = []
+    for i, a in enumerate(corners):
+        b = corners[(i + 1) % len(corners)]
+        curves += [
+            tuple(u + (v - u) * t for u, v in zip(a, b, strict=False))
+            for t in (0, 1 / 3, 2 / 3, 1)
+        ]
+    return curves
+
+
+def test_attaches_is_the_registry_s_attach_pass_on_the_identity_its_members_settle_into():
+    from arachne_core._core import _attaches, _registry_tolerance
+
+    grid, up = 1 / 16384, (0.0, 0.0, 1.0)
+    corner = [(1.0, 1.0, 0.0)]
+    snap, _ = _registry_tolerance(corner, up, grid, IDENTITY_PLACES, corner, 0)
+
+    def member(points, planes=1):
+        return (points, IDENTITY_PLACES, points, planes)
+
+    def attaches(points, members, planes=0):
+        return _attaches(points, IDENTITY_PLACES, points, planes, members, grid)
+
+    # A face 2 across whose corners at x = 1 stand 0.99 of their snap's departure below z = 0, and
+    # a line along that edge 0.99 of its own above: z = 0 holds both, though the face's own plane
+    # does not hold the line. Raised ten times as far, no plane holds both.
+    a = 0.99 * snap
+    face = outline(
+        [(-1.0, -1.0, 0.0), (1.0, -1.0, -a), (1.0, 1.0, -a), (-1.0, 1.0, 0.0)]
+    )
+    assert attaches([(1.0, -1.0, a), (1.0, 0.0, a), (1.0, 1.0, a)], [member(face)])
+    up_10 = 10 * snap
+    assert not attaches(
+        [(1.0, -1.0, up_10), (1.0, 0.0, up_10), (1.0, 1.0, up_10)], [member(face)]
+    )
+    # A tick five units from a square 0.1 across, raised 20 grid steps: a plane rising from the
+    # square to the tick holds both, and the bound grows enough outside the square's hull to reach
+    # it, but the tick never enters that hull.
+    s = 0.05
+    small = outline([(-s, -s, 0.0), (s, -s, 0.0), (s, s, 0.0), (-s, s, 0.0)])
+    h = 20 * grid
+    assert not attaches(
+        [(5.0, -0.15, h), (5.0, 0.0, h), (5.0, 0.15, h)], [member(small)]
+    )
+    # Mesh triangles: two halves of a square as members, a triangle whose corners lie on its
+    # diagonal as the record.
+    halves = [
+        member([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)], None),
+        member([(0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)], None),
+    ]
+    diagonal = [(0.0, 0.0, 0.0), (0.5, 0.5, 0.0), (1.0, 1.0, 0.0)]
+    assert attaches(diagonal, halves, None)
+    line = [(-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    with pytest.raises(ValueError, match="flat"):
+        attaches(face, [member(small)], 1)
+    with pytest.raises(ValueError, match="no members"):
+        attaches(line, [])
+    with pytest.raises(ValueError, match="no plane of its own"):
+        attaches(line, [member(face), member(line)])
+    lifted = [(x, y, z + 1.0) for x, y, z in face]
+    with pytest.raises(ValueError, match="more than one identity"):
+        attaches(line, [member(face), member(lifted)])
+    with pytest.raises(ValueError):
+        attaches(line, [member(face)], 3)
+
+
+def test_near_parallel_holds_up_to_the_turn_the_two_records_snaps_allow():
+    from arachne_core._core import _near_parallel
+
+    grid = 1 / 16384
+
+    def record(points, planes=1):
+        return (points, IDENTITY_PLACES, points, planes)
+
+    def turned(theta):
+        """The square 3 across in CE's cubic layout, turned by `theta` about the x axis."""
+        c, s = np.cos(theta), np.sin(theta)
+        return [(float(x), float(y * c), float(y * s)) for x, y, _ in square(1.5)]
+
+    def allowed(theta):
+        """theta_A + theta_B for the flat square and the turned one: 2 tau / 3 each, tau half a
+        step times |n|_1 (their points lie on their own planes but for rounding).
+        """
+        return grid / 3 * (1 + np.cos(theta) + np.sin(theta))
+
+    flat = record(turned(0.0))
+    for ratio, near in ((0.999, True), (1.001, False), (0.5, True), (2.0, False)):
+        theta = ratio * allowed(0.0)
+        for _ in range(4):
+            theta = ratio * allowed(theta)
+        tilted = record(turned(theta))
+        for a, b in ((flat, tilted), (tilted, flat)):
+            got, measured = _near_parallel(a, b, grid)
+            assert got is near, (ratio, got, measured)
+            assert abs(measured - ratio) < 1e-6, (ratio, got, measured)
+    # Points on a line have no plane of their own, nor a mesh triangle whose corners lie on one.
+    line = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    for other in (record(line), record(line, None)):
+        got, measured = _near_parallel(flat, other, grid)
+        assert got is False
+        assert np.isnan(measured)
+    # Mesh triangles, on the planes through their corners.
+    lower = record([(0.0, 0.0, 0.0), (3.0, 0.0, 0.0), (0.0, 3.0, 0.0)], None)
+    upper = record([(0.0, 0.0, 0.0), (3.0, 0.0, 3e-5), (0.0, 3.0, 0.0)], None)
+    assert _near_parallel(lower, upper, grid)[0] is True
+    with pytest.raises(ValueError):
+        _near_parallel(flat, record(turned(0.0), 3), grid)
+
+
+def test_line_share_is_the_snap_s_reach_along_the_sight_axis_over_each_point_s_room():
+    from arachne_core._core import _line_share, _lines_tied
+
+    grid, d = 1 / 16384, 20.0
+    line = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.5), (2.0, 0.0, 1.0)]
+    depths = [0.0, 0.5, 1.0]
+    square = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    c, s3 = 0.6, 0.8
+    turned = ((c, 0.0, -s3), (0.0, 1.0, 0.0), (s3, 0.0, c))
+
+    def share(points=line, planes=0, depths=depths, exponential=False, axes=square):
+        return _line_share(
+            points, IDENTITY_PLACES, points, planes, grid, depths, d, exponential, axes
+        )
+
+    # Unplaced, the snap moves a point by half a step along each axis: along a unit axis `n`,
+    # half a step times |n|_1. The nearest point has the least room from the eye.
+    w, s, across = share()
+    assert w == pytest.approx(0.5 * grid, rel=1e-9)
+    assert across == pytest.approx((0.5 * grid, 0.5 * grid), rel=1e-9)
+    assert s == pytest.approx(w / (d - 1.0 - w), rel=1e-12)
+    w2, s2, across2 = share(axes=turned)
+    assert w2 == pytest.approx(0.5 * grid * (s3 + c), rel=1e-9)
+    assert across2 == pytest.approx((0.5 * grid * (c + s3), 0.5 * grid), rel=1e-9)
+    assert s2 == pytest.approx(w2 / (d - 1.0 - w2), rel=1e-12)
+    assert share(exponential=True)[:2] == pytest.approx((w, w / (d - w)), rel=1e-12)
+    assert share(depths=[d])[1] == float("inf")
+    face = outline([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+    with pytest.raises(ValueError, match="flat"):
+        share(face, 1)
+    with pytest.raises(ValueError, match="path"):
+        share(planes=None)
+    with pytest.raises(ValueError, match="no depths"):
+        share(depths=[])
+    # A stroke's own share at each pixel: its share at fixed points of its curve and how far its
+    # reads there may slide, never below that share.
+    grid, width, height = 1 / 16384, 96, 54
+    delta = ac.FrameDelta(t=(0, 1), seq=0)
+    delta.set_view(
+        pixel_width=width,
+        pixel_height=height,
+        camera="three_d",
+        phi=1.2,
+        theta=-1.9,
+        background=(0, 0, 0, 1),
+        input_grid=grid,
+        **FRAME,
+    )
+    thirds = (0, 1 / 3, 2 / 3, 1)
+    steep = np.array(
+        [[0.31 + 2.7 * t, -0.17 - 1.2 * t, 0.23 + 3.1 * t] for t in thirds]
+    )
+    steep = np.round(steep / grid) * grid
+    delta.set_record(
+        "path",
+        1,
+        11,
+        shape=delta.upload_path(steep),
+        stroke=(1, 1, 1, 1),
+        stroke_width=30.0,
+        space="world",
+    )
+    delta.set_order([("moving", 1, 0)])
+    stream = ac.Stream()
+    stream.apply(delta)
+    shares = stream.own_shares(0, 0, width, height)
+    held = [s for leaves in shares.values() for (obj, _, s) in leaves if obj == 11]
+    assert len(held) > 20
+    assert all(0.0 < s < float("inf") for s in held)
+    assert max(held) > min(held)
+    # The term: two keys within each one's bound and own share of itself of each other.
+    k, e = -1.0, 1e-15
+    reach = e + (abs(k) + e) * s
+    assert _lines_tied((k, e, s), (k - 1.999 * reach, e, s))
+    assert not _lines_tied((k, e, s), (k - 2.001 * reach, e, s))

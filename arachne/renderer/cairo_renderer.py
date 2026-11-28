@@ -61,6 +61,8 @@ class CairoRenderer:
         self.skip_animations = skip_animations
         self.animations_hashes: list[str | None] = []
         self.num_plays = 0
+        #: Whether the capture being made is a play's static picture.
+        self._capturing_static = False
         self._clock = Fraction(0)
         self.static_image: PixelArray | None = None
 
@@ -135,7 +137,7 @@ class CairoRenderer:
                 encoder_fingerprint=video_encoder_fingerprint(
                     scene.session_spec.video_encoder,
                 ),
-                renderer_state=self._grid_phase(scene),
+                renderer_state=(*self._grid_phase(scene), *self._painter_state()),
             )
 
         timeline = scene._arachne_timeline
@@ -237,6 +239,17 @@ class CairoRenderer:
         fps = exact(self.camera.frame_rate)
         return (str((start * fps) % 1), str((start * TICK_RATE) % 1))
 
+    def _painter_state(self) -> tuple[str, ...]:
+        """The painter a play's frames are asked of, where it is not Cairo: a
+        segment drawn on the core is not Cairo's, and a render on one path
+        never reuses the other's (a scene the core refused is drawn on Cairo
+        again from its start, past the core's segments of the plays before).
+        Cairo's two paths draw the same pixels, so share their segments.
+        """
+        from ..frame_ir.painter import scene_path
+
+        return ("core",) if scene_path(self.camera, config.draw_path) == "core" else ()
+
     def _draw_play(
         self, scene: Scene, play: PlayRecord, frames: list[Fraction]
     ) -> PixelArray | None:
@@ -287,15 +300,19 @@ class CairoRenderer:
                 scene.mobjects,
                 scene.foreground_mobjects,
             )
-        if self.static_image is not None:
-            self.camera.set_frame_to_background(self.static_image)
-        else:
-            self.camera.reset()
-
         kwargs["include_submobjects"] = include_submobjects
         from ..frame_ir.live import live
 
-        with live(self.camera, self.clock):
+        # A play's static picture is told apart from its frames: the core
+        # watches the first of each (``LivePainter._sample``). The picture the
+        # frame starts on is set within, so the frame is described over it.
+        play = ("static", self.num_plays) if self._capturing_static else self.num_plays
+        roots = list_update(scene.mobjects, scene.foreground_mobjects)
+        with live(self.camera, self.clock, play=play, roots=roots):
+            if self.static_image is not None:
+                self.camera.set_frame_to_background(self.static_image)
+            else:
+                self.camera.reset()
             self.camera.capture_mobjects(mobjects, **kwargs)
 
     def render(
@@ -378,8 +395,15 @@ class CairoRenderer:
         self.static_image = None
         if not static_mobjects:
             return None
-        self.update_frame(scene, mobjects=static_mobjects)
+        self._capturing_static = True
+        try:
+            self.update_frame(scene, mobjects=static_mobjects)
+        finally:
+            self._capturing_static = False
         self.static_image = self.get_frame()
+        from ..frame_ir.live import keep_static_picture
+
+        keep_static_picture(self.camera, self.static_image)
         return self.static_image
 
     def update_skipping_status(self) -> None:

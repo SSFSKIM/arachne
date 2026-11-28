@@ -206,8 +206,8 @@ sticks to our coding conventions.
 - **Tests**: The pipeline runs Manim's test suite on different operating systems
   (the latest versions of Ubuntu, macOS, and Windows) for different versions of Python.
   The test suite consists of two different kinds of tests: integration tests
-  and doctests. You can run them locally by executing `uv run pytest`
-  and `uv run pytest --doctest-modules arachne`, respectively, from the
+  and doctests. You can run them locally by executing `PYTHONHASHSEED=0 uv run pytest`
+  and `PYTHONHASHSEED=0 uv run pytest --doctest-modules arachne`, respectively, from the
   root directory of your cloned fork.
 - **Documentation**: We also build a version of the documentation corresponding
   to your pull request. Make sure not to introduce any Sphinx errors, and have

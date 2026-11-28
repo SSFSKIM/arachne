@@ -7,7 +7,7 @@
 
 mod common;
 
-use arachne_core::composite::{COVERAGE_TO_SAMPLE_LSB, Resolve};
+use arachne_core::composite::{Partial, Resolve, coverage_to_sample_bound};
 use arachne_core::probes::{
     closed, fill_record, first_delta, mesh_record, polyline, sheet, stroke_record, view,
 };
@@ -136,13 +136,20 @@ fn switches(stroke_alpha: f64, sheet_alpha: f64, at: Scene) -> Switches {
     out
 }
 
+/// What a switching pixel's jump is held to: the derived bound for the widest stack these scenes
+/// put on the coverage resolve, a path's edge under one full layer (the stroke's edge under the
+/// sheet). A silhouette's mask beside the stroke is bound tighter.
+fn bound() -> i32 {
+    coverage_to_sample_bound(Partial::Path, 1) as i32
+}
+
 #[test]
 fn a_path_edge_lands_within_the_bound_whichever_resolve_its_pixel_takes() {
     for (stroke_alpha, sheet_alpha) in CASES {
         let s = switches(stroke_alpha, sheet_alpha, MIDDLE);
         assert!(s.pixels > 10, "{} switching pixels", s.pixels);
         assert!(
-            s.worst <= COVERAGE_TO_SAMPLE_LSB as i32,
+            s.worst <= bound(),
             "stroke alpha {stroke_alpha}, sheet alpha {sheet_alpha}: a jump of {} at frame {}, \
              pixel {},{}",
             s.worst,
@@ -182,7 +189,7 @@ fn where_a_silhouette_a_path_edge_and_a_crossing_share_a_pixel_the_switch_stays_
     if std::env::var_os("CORE_STATS").is_some() {
         eprintln!("silhouette, path edge and crossing: across {across}, along {along}");
     }
-    let bound = COVERAGE_TO_SAMPLE_LSB as i32;
+    let bound = bound();
     assert!(
         across <= bound && along <= bound,
         "jumps of {across} across and {along} along, past {bound}"
