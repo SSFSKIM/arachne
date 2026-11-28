@@ -479,6 +479,9 @@ fn a_soft_lit_sphere_is_smooth_across_its_faces() {
                 .map(|k| (a[k] as i32 - b[k] as i32).abs())
                 .max()
                 .unwrap();
+            if step > 6 {
+                eprintln!("step {step} at ({x}, {y}): {a:?} {b:?}");
+            }
             worst = worst.max(step);
             pairs += 1;
         }
