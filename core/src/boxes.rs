@@ -1,8 +1,8 @@
-//! Where each record lands on the frame, found without drawing: the box of its points as CE's
-//! camera places them for display (`transform_points_pre_display`) and maps them to pixels, by the
-//! mapping its kind is drawn through ([`FrameMap::of_kind`]). It is the box
-//! `arachne.camera.projection.pixel_box` gives the record's mobject (points, not ink), so the two
-//! can be compared record by record; nothing here rasterizes.
+//! Where each record lands on the frame, found without drawing: the box of the points the record
+//! draws (points, not ink), as CE's camera places them for display (`transform_points_pre_display`)
+//! and maps them to pixels, by the mapping its kind is drawn through ([`FrameMap::of_kind`]). For a
+//! face group these are its Surface's uv faces alone, never `arachne.camera.projection.pixel_box`
+//! of the Surface, whose family holds parts drawn as records of their own. Nothing here rasterizes.
 
 use crate::geometry::path_points;
 use crate::project::{FrameMap, Projection, mapping_centre_of, placement, pre_display};
