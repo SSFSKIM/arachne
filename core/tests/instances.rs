@@ -476,6 +476,43 @@ fn parts_travel_on_the_wire_and_are_checked_when_applied() {
     }
 }
 
+/// An XF 1.5 reader (this reader at minor 5: what XF 1.6 appended skipped) reads a delta with
+/// parts and widths as one plain instances record carrying a feature bit it does not know, which
+/// its drawer refuses, and reads every other record and section as written: the record's own
+/// bytes are XF 1.5's, its member styles in a section of the delta after XF 1.5's last.
+#[test]
+fn an_xf_1_5_reader_skips_parts_and_widths_and_its_drawer_refuses_the_record() {
+    let (shaft, tip) = arrow();
+    let (shaft_paint, tip_paint) = arrow_paints();
+    let prototypes = [(shaft.clone(), shaft_paint), (tip.clone(), tip_paint)];
+    let placements = arrow_placements(3);
+    let rows: Vec<[f64; 4]> = (0..6).map(|i| colour(i, 0.0)).collect();
+    let (_, record, paints) = batch(2, &prototypes, &placements, &rows, &[2.0; 6], 300);
+    let mut d = arachne_core::probes::first_delta(
+        flat_view(W, H, [0.0, 0.0, 0.0, 1.0]),
+        &[(shaft.clone(), record.clone()), ordinary(3, false)],
+        &[2, 3],
+    );
+    d.upload.push(tip.clone());
+    d.upload_paints = paints;
+    let bytes = encode_delta(&d);
+    let old = arachne_core::xf::wire::decode_delta_as(&bytes, 5).expect("a 1.5 reader reads it");
+    let mut plain = record.clone();
+    if let Body::Instances(i) = &mut plain.body {
+        i.parts.clear();
+        i.widths.clear();
+    }
+    assert_eq!(old.set[0], plain);
+    assert_eq!(old.set[1], d.set[1]);
+    assert_eq!((old.upload.len(), old.order), (d.upload.len(), d.order.clone()));
+    // The bit XF 1.5 does not know: its drawer refuses the frame rather than drawing every member
+    // as the first prototype.
+    const XF_1_5_FEATURES: u64 = FEATURE_BACKGROUND_IMAGE | FEATURE_PRE_PROJECTED;
+    assert_ne!(old.set[0].features & !XF_1_5_FEATURES, 0);
+    // This build reads the section back onto the record.
+    assert_eq!(decode_delta(&bytes).unwrap().set[0], record);
+}
+
 /// A drawer that does not know a feature bit refuses the record whole rather than drawing it
 /// partly: so an instances record's parts are never drawn as copies of its first prototype by a
 /// drawer of XF 1.5, which does not know the members bit. This build knows it, and refuses the bit
@@ -496,6 +533,95 @@ fn an_unknown_feature_bit_on_an_instances_record_is_refused_when_drawn() {
     let mut s = Stream::new();
     s.apply(&d).unwrap();
     assert!(matches!(s.draw(W, H, 1), Err(DrawError::Unsupported(_))));
+}
+
+/// A prototype's paint given as a table of one stop draws as that stop given inline, for the
+/// record's prototype and a part's alike, path and mesh; a part's gradient (a table of two stops)
+/// is refused, never drawn without its paint.
+#[test]
+fn a_prototype_s_paint_in_a_table_of_one_stop_draws_as_the_stop() {
+    let (shaft, tip) = arrow();
+    let (shaft_paint, tip_paint) = arrow_paints();
+    let placements = arrow_placements(4);
+    let rows: Vec<[f64; 4]> = (0..placements.len()).map(|i| colour(i, 0.3)).collect();
+    let tabled = |paint: &Paint, tables: &mut Vec<Stops>| match paint {
+        Paint::One(c) => {
+            let t = Stops::new(vec![*c]);
+            let key = t.key();
+            tables.push(t);
+            Paint::Table(key)
+        }
+        other => other.clone(),
+    };
+    let draw = |shaft_paint: PaintBlock, tip_paint: PaintBlock, more: Vec<Stops>| {
+        let prototypes = [(shaft.clone(), shaft_paint), (tip.clone(), tip_paint)];
+        let (shape, record, mut paints) = batch(2, &prototypes, &placements, &rows, &[], 300);
+        paints.extend(more);
+        let mut d = arachne_core::probes::first_delta(
+            looking_down(),
+            &[(shape, record)],
+            &[2],
+        );
+        d.upload.push(tip.clone());
+        for t in paints {
+            if !d.upload_paints.iter().any(|u| u.key() == t.key()) {
+                d.upload_paints.push(t);
+            }
+        }
+        let mut s = Stream::new();
+        s.apply(&d).expect("the delta applies");
+        s.draw(W, H, 2)
+    };
+    let inline = draw(shaft_paint.clone(), tip_paint.clone(), Vec::new()).unwrap();
+    let mut tables = Vec::new();
+    let mut shaft_tabled = shaft_paint.clone();
+    shaft_tabled.stroke = tabled(&shaft_paint.stroke, &mut tables);
+    let mut tip_tabled = tip_paint.clone();
+    tip_tabled.fill = tabled(&tip_paint.fill, &mut tables);
+    tip_tabled.stroke = tabled(&tip_paint.stroke, &mut tables);
+    tip_tabled.background_stroke = tabled(&tip_paint.background_stroke, &mut tables);
+    let from_tables = draw(shaft_tabled.clone(), tip_tabled.clone(), tables.clone()).unwrap();
+    assert!(inline == from_tables, "a one-stop table draws otherwise");
+    assert!(drawn_pixels(&inline) > 600);
+    let two = Stops::new(vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]);
+    let mut graded = tip_tabled;
+    graded.fill = Paint::Table(two.key());
+    tables.push(two);
+    assert!(matches!(
+        draw(shaft_tabled, graded, tables),
+        Err(DrawError::Unsupported(_))
+    ));
+
+    // A mesh prototype filled from a table of one stop.
+    let ball = common::meshes::sphere([0.0, 0.0, 0.0], 1.0, 6, 10);
+    let mesh = |fill: Paint, more: Vec<Stops>| {
+        let (shape, mut record, mut paints) = batch(
+            2,
+            &[(
+                ball.clone(),
+                PaintBlock {
+                    fill,
+                    ..PaintBlock::default()
+                },
+            )],
+            &[placed(0.0, 0.8, -1.0, 0.0), placed(0.0, 0.8, 1.2, 0.3)],
+            &rows[..2],
+            &[],
+            300,
+        );
+        record.depth.shade_in_3d = true;
+        paints.extend(more);
+        let mut d = arachne_core::probes::first_delta(looking_down(), &[(shape, record)], &[2]);
+        d.upload_paints = paints;
+        let mut s = Stream::new();
+        s.apply(&d).expect("the delta applies");
+        s.draw(W, H, 2).unwrap()
+    };
+    let white = Stops::new(vec![[1.0; 4]]);
+    let key = white.key();
+    let inline = mesh(Paint::One([1.0; 4]), Vec::new());
+    assert!(inline == mesh(Paint::Table(key), vec![white]));
+    assert!(drawn_pixels(&inline) > 300);
 }
 
 /// A thousand coincident points of one cloud, each a 64-pixel block: the frame its last point

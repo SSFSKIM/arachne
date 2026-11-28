@@ -31,65 +31,12 @@ from arachne import (
 from arachne.camera.camera import Camera
 from arachne.camera.three_d_camera import ThreeDCamera
 from arachne.frame_ir import instancing
+from arachne.frame_ir.affine import RECONSTRUCTION, placed
 from arachne.frame_ir.extract import FrameStream, batching
-from arachne.frame_ir.instancing import (
-    MOST_FACTORED_POINTS,
-    RECONSTRUCTION,
-    SLOT_BASE,
-    Instancing,
-    factor,
-)
+from arachne.frame_ir.instancing import SLOT_BASE, Instancing
+from arachne.frame_ir.xf import Delta, Record, Shape, StreamState
 
 SMALL = {"pixel_width": 192, "pixel_height": 108}
-
-
-def _turned(points: np.ndarray, angle: float, scale: float, shift) -> np.ndarray:
-    c, s = np.cos(angle), np.sin(angle)
-    m = np.array([[c, -s, 0.2], [s, c, -0.1], [0.3, 0.1, 0.9]]) * scale
-    return points @ m.T + np.asarray(shift, dtype=float)
-
-
-def _snapped(values: np.ndarray, grid: float = 2.0**-16) -> np.ndarray:
-    return np.round(values / grid) * grid + 0.0
-
-
-def test_an_affine_image_of_a_path_factors_into_its_canonical_shape():
-    triangle = Triangle().points
-    line = np.array(
-        [[0.0, 0.0, 0.0], [1.0, 0.5, 0.0], [2.0, 1.0, 0.0], [3.0, 1.5, 0.0]]
-    )
-    for path in (triangle, line, Circle().points):
-        found = factor(path)
-        assert found is not None
-        for angle, scale, shift in ((0.7, 0.4, (1, 2, 3)), (-2.1, 3.0, (-4, 0.5, 0))):
-            image = _turned(path, angle, scale, shift)
-            other = factor(image)
-            assert other is not None
-            # One canonical shape, once the snap has had its say.
-            assert np.array_equal(_snapped(other.shape), _snapped(found.shape))
-            back = other.shape @ other.place[:, :3].T + other.place[:, 3]
-            assert np.abs(back - image).max() <= RECONSTRUCTION
-
-
-def test_a_path_too_long_or_not_mapped_back_closely_enough_is_not_factored(
-    monkeypatch,
-):
-    assert factor(np.zeros((MOST_FACTORED_POINTS + 1, 3))) is None
-    assert factor(np.array([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0]])) is None
-    # A circle turned and scaled maps back off by its rounding, a few ulps:
-    # within the bound, factored; under a bound of none, not.
-    circle = _turned(Circle().points, 0.731, 0.37, (0.2, -1.3, 0.4))
-    found = factor(circle)
-    assert found is not None
-    back = found.shape @ found.place[:, :3].T + found.place[:, 3]
-    assert 0 < np.abs(back - circle).max() <= RECONSTRUCTION
-    monkeypatch.setattr(instancing, "RECONSTRUCTION", 0.0)
-    assert factor(circle) is None
-    # A path at one point is placed there.
-    monkeypatch.undo()
-    dot = factor(np.full((4, 3), 2.5))
-    assert dot is not None
-    assert not dot.shape.any()
 
 
 def _deltas(camera, groups, frames=1):
@@ -141,11 +88,11 @@ def test_an_arrow_field_reaches_the_core_as_one_run_of_shafts_and_tips():
     prototypes = [fields["shape"], fields["parts"][0]["shape"]]
     for i, leaf in enumerate(leaves):
         place = fields["placements"][i]
-        prototype = shapes[prototypes[i % 2]]
-        back = prototype @ place[:, :3].T + place[:, 3]
+        # The prototype emitted, placed as the core places it: each member
+        # within the bound of its leaf's points.
+        back = placed(place, shapes[prototypes[i % 2]])
         own = made_shapes[records[leaf].fields["shape"]]
-        # The prototype is snapped to the frame's grid already.
-        assert np.abs(back - own).max() < 1e-4
+        assert np.abs(back - own).max() <= RECONSTRUCTION
     # CE thins each short arrow's shaft by its length: each member strokes at
     # its own width.
     widths = [records[leaf].fields["stroke_width"] for leaf in leaves]
@@ -313,3 +260,192 @@ def test_a_factored_arrow_field_draws_within_the_parity_tolerance_of_its_leaves(
         assert (off_by > 0).mean() < 0.01
     # Cairo reads the members as the core placed them.
     assert len(outlines) == 2 * len(field.submobjects)
+
+
+# What a batch may not lose of its leaves.
+
+
+def _spike():
+    """:mod:`test_joins`'s sharp join: a closed spike whose tip turns 175
+    degrees, which Cairo bevels on its own points.
+    """
+    from arachne import Polygon
+
+    return Polygon([-3, -0.2, 0], [3, 0, 0], [-3, 0.2, 0], stroke_width=8)
+
+
+def test_paths_whose_joins_are_decided_as_made_are_drawn_unbatched():
+    """Two copies of one sharp-joined path repeat exactly, but each carries
+    Cairo's join decisions on its points as made (XF 1.4), which an
+    instances record cannot: they stay records, and the frame is the
+    leaves' bytes.
+    """
+    pytest.importorskip("arachne_core")
+    with tempconfig(SMALL):
+        spikes = VGroup(_spike(), _spike().shift(0.3 * UP))
+        groups = [("moving", [spikes])]
+        with batching() as tally:
+            on, painter = _drawn(Camera(), groups, instancing_on=True, frames=1)
+        off, _ = _drawn(Camera(), groups, instancing_on=False, frames=1)
+    assert tally == {"instances": 0, "factored": 0}
+    carried = [r.fields.get("joins") for _, r in painter.last.set]
+    assert len(carried) == 2
+    assert all(j is not None for j in carried)
+    assert np.array_equal(on[0], off[0])
+
+
+def _labelled_squares():
+    """A label kept facing the camera, at the origin, and ten filled squares
+    nearer the camera, two of them over the label: each square a sheet of
+    its own, which the label goes behind where they overlap it.
+    """
+    from arachne import OUT
+
+    label = VGroup(Square(0.8, fill_opacity=1.0, color=RED, stroke_width=0))
+    squares = VGroup(
+        *(
+            Square(0.5, fill_opacity=1.0, color=BLUE, stroke_width=0).shift(
+                OUT + x * RIGHT + y * UP
+            )
+            for x, y in [(-0.25, 0.0), (0.25, 0.0)] + [(2 + 0.6 * k, 2.0) for k in range(8)]
+        )
+    )
+    return label, squares
+
+
+def test_a_frame_with_a_camera_facing_label_keeps_its_surfaces_own_sheets():
+    """A batch is drawn from its first leaf's source, but a frame that draws a
+    label reads each surface's sheet from its own: leaves of other sources
+    stay records there, and the frame is the leaves' bytes.
+    """
+    pytest.importorskip("arachne_core")
+    frames = []
+    for on in (True, False):
+        with tempconfig({"pixel_width": 384, "pixel_height": 216}):
+            camera = ThreeDCamera()
+            label, squares = _labelled_squares()
+            camera.add_fixed_orientation_mobjects(label)
+            with batching() as tally:
+                drawn, _ = _drawn(
+                    camera, [("moving", [squares, label])], instancing_on=on, frames=1
+                )
+        frames.append(drawn[0])
+        if on:
+            assert tally["instances"] == 0
+    assert np.array_equal(*frames)
+
+
+def test_without_a_label_leaves_of_other_sources_batch():
+    with tempconfig(SMALL):
+        _, squares = _labelled_squares()
+        with batching() as tally:
+            _deltas(ThreeDCamera(), [("moving", [squares])])
+    assert tally["instances"] == 1
+
+
+def _member_shapes(deltas):
+    state = StreamState()
+    for delta in deltas:
+        state.apply(delta)
+    members = instancing.expand(state)
+    return {
+        slot: members.shapes[record.fields["shape"]].data
+        for slot, record in members.records.items()
+    }
+
+
+def test_a_stream_regridded_finer_is_batched_as_one_extracted_at_the_finer_grid():
+    with tempconfig(SMALL):
+        camera = ThreeDCamera()
+        field = _field()
+        stream, batched = FrameStream(), Instancing()
+        groups = [("moving", [field])]
+        made = stream.frame(camera, groups)
+        coarse, fine = 2.0**-10, 2.0**-16
+        sent = [batched(made, coarse)]
+        sent.append(batched(stream.frame(camera, groups, t=Fraction(1, 15)), fine))
+        fresh = Instancing()(made, fine)
+    regridded, extracted = _member_shapes(sent), _member_shapes([fresh])
+    assert regridded.keys() == extracted.keys()
+    for slot, points in extracted.items():
+        assert np.array_equal(regridded[slot], points)
+
+
+def test_batching_tallies_nest_and_each_closes_its_own():
+    from arachne.frame_ir.extract import _count_batching
+
+    with batching() as outer:
+        with batching() as inner:
+            # Both open and equal: closing the inner must not close the outer.
+            assert inner == outer
+        _count_batching(instances=1, factored=2)
+        with batching() as again:
+            _count_batching(instances=1)
+    assert inner == {"instances": 0, "factored": 0}
+    assert again == {"instances": 1, "factored": 0}
+    assert outer == {"instances": 2, "factored": 2}
+    _count_batching(instances=5)
+    assert outer == {"instances": 2, "factored": 2}
+
+
+_VIEW = {
+    "pixel_width": 192,
+    "pixel_height": 108,
+    "frame_width": 14.222222222222221,
+    "frame_height": 8.0,
+    "frame_center": (0.0, 0.0, 0.0),
+    "mapping_centre": (0.0, 0.0, 0.0),
+    "cairo_line_width_multiple": 0.01,
+    "use_z_index": True,
+    "background": (0.0, 0.0, 0.0, 1.0),
+    "camera": "flat",
+}
+
+
+def _placed_leaves() -> Delta:
+    """Six path records of one shape, each at a placement of its own, in
+    colours of their own.
+    """
+    shape = Shape("path", Square(0.6).points)
+    delta = Delta(view=dict(_VIEW), upload=[shape])
+    for i in range(6):
+        place = np.hstack(
+            [np.eye(3) * (1 + 0.2 * i), np.array([[-4 + 1.5 * i], [0.4 * i - 1], [0.0]])]
+        )
+        fields = {
+            "shape": shape.key,
+            "place": place,
+            "fill": np.array([[0.2 + 0.1 * i, 0.5, 0.9, 0.7]]),
+            "stroke": np.array([[1.0, 1.0, 1.0, 1.0]]),
+            "stroke_width": 4.0,
+            "joint": "auto",
+            "cap": "auto",
+            "space": "screen",
+            "z_index": 0.0,
+            "shade_in_3d": False,
+        }
+        delta.set.append((i + 1, Record("path", fields)))
+    delta.order = [("moving", i + 1, 0) for i in range(6)]
+    return delta
+
+
+def test_placed_leaves_of_one_shape_batch_at_their_placements():
+    delta = _placed_leaves()
+    with batching() as tally:
+        sent = Instancing()(delta)
+    assert tally == {"instances": 1, "factored": 0}
+    ((_, run),) = sent.set
+    assert run.fields["shape"] == delta.set[0][1].fields["shape"]
+    places = np.stack([r.fields["place"] for _, r in delta.set])
+    assert np.array_equal(run.fields["placements"], places)
+
+
+def test_placed_leaves_batched_draw_their_records_bytes():
+    pytest.importorskip("arachne_core")
+    from arachne.frame_ir.core_painter import CorePainter
+
+    frames = [
+        CorePainter(instancing=on).draw(_placed_leaves()).copy() for on in (True, False)
+    ]
+    assert np.array_equal(*frames)
+    assert (frames[0] != frames[0][0, 0]).any(axis=-1).sum() > 500
