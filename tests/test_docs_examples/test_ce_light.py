@@ -6,7 +6,11 @@ default.
 ``ce_light.json`` holds, for each 3D example drawn on the core, how many frames
 the core drew and a digest of every delta the core was handed (as XF bytes, in
 order) and of every frame it drew, recorded at the engine revision before the
-soft light (07b24b12). Run with ``--set_test`` to record them again.
+soft light (07b24b12) on the CI runner the documentation examples run on. Run
+with ``--set_test`` to record them again. The frames are the same bytes on
+other machines; a few examples' deltas are not, since they carry values the
+engine computes in floating point down to the last bit, so the digests hold on
+the runner they were recorded on.
 """
 
 from __future__ import annotations

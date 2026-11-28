@@ -101,12 +101,12 @@
  },
  "ParallelLineExample": {
   "frames": 1,
-  "deltas": "79998621aefcecc6286b12c2250abb2c5e210b1f6ca7cff5985b8b3226708fa3",
+  "deltas": "0ba4a67c1e72392ff7568802e978408b6bc0da1b8b986e7a7927696f7179ff57",
   "pixels": "70431d1b8d2bc5501a4b471da34a44d52cc7ddbb1b124f3ae82bf1327a0bb2b1"
  },
  "PerpLineExample": {
   "frames": 1,
-  "deltas": "7a8a5e04824645ae3bd19a3df5b38c42fa23d54d6538deda2135c1e7c0681956",
+  "deltas": "8a09592465b3692fcb56ad5cab2e383a0442308a6bb71ebd7c4d6d19f5d62c24",
   "pixels": "37b06db4dfd1274ebf929952b482c3633458cfca35dfd21a275173424724298e"
  },
  "PlotSurfaceExample": {
@@ -156,7 +156,7 @@
  },
  "ThreeDSurfacePlot": {
   "frames": 1,
-  "deltas": "38fe91c897cf93e073917ead9467fa69c729fd73a2dca72d6b47462021ed18fe",
+  "deltas": "7360ad5f9141845d22d18143d23b27d57d14c402289a9d8fffafa614903d3aa7",
   "pixels": "bd450eab59bf5ea2a166fd5ee233a66ca3ae7566eb438cab15947cd75718e1f1"
  }
 }
